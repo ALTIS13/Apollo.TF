@@ -1,6 +1,62 @@
 # Apollo TF implementation status
 
-Last updated: 2026-08-10.
+Last updated: 2026-08-24.
+
+## Unified Apollo TF integration handoff checkpoint
+
+### Что сделано
+
+- Подготовлен proposed handoff для включения Apollo TF в единый Apollo как
+  верхнеуровневый module entitlement `TF` при сохранении TF runtime/API
+  ownership.
+- Зафиксировано разделение authority: Supabase Auth отвечает только за identity
+  и source session; Platform API - за policy, installation identity,
+  entitlements/capabilities, module access, release/download admission и root
+  audit; Apollo.GAP сохраняет AWG/OlcRTC subscriptions, signed routes/bundles,
+  nodes, rooms, runtime и network telemetry.
+- Определены необходимые unified UI contracts: module access/catalog, bounded
+  TF runtime status, one-time launch/deep-link admission, module release
+  download admission и server-to-server policy decision/introspection.
+- Зафиксированы capability keys `tf.launch`, `tf.search`, `tf.playback`,
+  `tf.integrations`, `tf.collections`, `tf.downloads`,
+  `tf.release.download`, `tf.admin.observe` и additive compatibility mapping
+  для существующих `tf.*` grants без destructive rename.
+- Подготовлен поэтапный implementation plan с обязательным source-of-truth gate
+  для `platform-contract`, `platform-api`, `platform-db`, Supabase adapters и
+  Quasar deep-link resolver.
+- Старые Platform/Identity спецификации помечены superseding-ссылками, чтобы не
+  расширять текущий Platform credential/session runtime в параллельную систему
+  identity.
+- Runtime, API behavior, БД, Supabase, контейнеры, HomeNode, Coolify, Caddy,
+  UFW, DNS, Docker, Android и GitHub Actions не изменялись.
+
+### Validation
+
+- Выполнена read-only сверка `origin`, текущих worktrees, открытых PR, последних
+  commits и существующих Platform assertion/introspection, TF route-policy и
+  installation contracts.
+- Handoff сверён с действующими legacy keys и текущим TF PKCE/cookie/CSRF/
+  WebSocket boundary; migration описана additive, без немедленного удаления
+  существующих schemas или данных.
+- Выполнены placeholder/contradiction scan и `git diff --check`. Runtime tests,
+  builds и container checks не запускались, потому что checkpoint меняет только
+  документацию.
+
+### Commit/push
+
+- Рабочая ветка: `codex/feat/admin-parser-observability` в изолированном
+  worktree.
+- Checkpoint оформляется отдельным docs-only commit. Deployment и merge не
+  выполняются; push не требуется до решения владельца по cross-project review.
+
+### Следующий логичный этап реализации
+
+- Согласовать proposed handoff между владельцами Platform/Apollo.Safe,
+  Apollo.TF, Apollo.Quasar и Apollo.GAP и назначить единственный source of truth
+  для общих контрактов.
+- После явного approval начать только Task 1 плана: добавить versioned additive
+  DTO в authoritative `platform-contract`, сохранив legacy schemas. Refactor,
+  Supabase migration и deployment до этого gate не начинать.
 
 ## Admin parser and account observability checkpoint
 
