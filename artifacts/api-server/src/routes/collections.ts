@@ -111,7 +111,7 @@ function decodeLikedCursor(cursor: string): number | null {
   return encodeLikedCursor(storageId) === cursor ? storageId : null;
 }
 
-const defaultLikedCollectionStore: LikedCollectionStore = {
+export const defaultLikedCollectionStore: LikedCollectionStore = {
   async list(input) {
     const owner = eq(likedTracksTable.sessionId, input.accountId);
     const rows = await db
