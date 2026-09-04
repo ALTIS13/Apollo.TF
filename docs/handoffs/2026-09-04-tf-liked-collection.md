@@ -99,3 +99,25 @@ This task did not independently repeat those observations.
 
 The API slice remains complete at `57fe6d6`. This coordination update adds no
 UI work, AI/Quasar refactor, runtime change or deployment.
+
+## Account infrastructure priority update
+
+The coordinating agent reports the user's new priority: self-hosted Supabase
+on HomeNode and connecting the Apollo account system to it. Apollo Web Platform
+owns this work and the Supabase-to-Platform adapter.
+
+Reported read-only HomeNode baseline: existing GoTrue with PostgreSQL 18,
+healthy, zero users/sessions, signup disabled, Quasar issuer. These are the
+coordinator's observations, not a fresh check by TF or evidence that the TF
+account integration is complete.
+
+- Preserve the current TF API and login/session behavior. Do not create a new
+  TF identity/session authority or perform auth cutover in this task.
+- Future TF UI/API integration consumes the owner's compatible Platform
+  contract backed by its Supabase adapter. No direct identity-table access or
+  client `service_role`; Platform retains entitlement and policy authority.
+- The two-account isolated PostgreSQL collection proof and account-scoped UI
+  cache remain outstanding TF follow-ups. They do not authorize HomeNode
+  changes or supersede the Platform-owned integration gate.
+- Claude-owned AI/Quasar remain read-only; no implementation work is started
+  there. This update only records coordination for the completed API slice.
