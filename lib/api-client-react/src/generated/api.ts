@@ -17,6 +17,7 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  CollectionErrorResponse,
   DownloadErrorResponse,
   DownloadJobCancelResponse,
   DownloadJobListResponse,
@@ -26,6 +27,10 @@ import type {
   DownloadResponse,
   ErrorResponse,
   HealthStatus,
+  LikedTrackMutationResponse,
+  LikedTrackPage,
+  ListLikedTracksParams,
+  SaveLikedTrackRequest,
   SearchRequest,
   SearchResponse,
   SearchUnavailableResponse,
@@ -805,4 +810,272 @@ export const useCancelDownloadJob = <
   TContext
 > => {
   return useMutation(getCancelDownloadJobMutationOptions(options));
+};
+
+/**
+ * @summary List tracks saved by the current account
+ */
+export const getListLikedTracksUrl = (params?: ListLikedTracksParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/collections/liked?${stringifiedParams}`
+    : `/api/collections/liked`;
+};
+
+export const listLikedTracks = async (
+  params?: ListLikedTracksParams,
+  options?: RequestInit,
+): Promise<LikedTrackPage> => {
+  return customFetch<LikedTrackPage>(getListLikedTracksUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListLikedTracksQueryKey = (params?: ListLikedTracksParams) => {
+  return [`/api/collections/liked`, ...(params ? [params] : [])] as const;
+};
+
+export const getListLikedTracksQueryOptions = <
+  TData = Awaited<ReturnType<typeof listLikedTracks>>,
+  TError = ErrorType<CollectionErrorResponse>,
+>(
+  params?: ListLikedTracksParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listLikedTracks>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListLikedTracksQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof listLikedTracks>>> = ({
+    signal,
+  }) => listLikedTracks(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listLikedTracks>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListLikedTracksQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listLikedTracks>>
+>;
+export type ListLikedTracksQueryError = ErrorType<CollectionErrorResponse>;
+
+/**
+ * @summary List tracks saved by the current account
+ */
+
+export function useListLikedTracks<
+  TData = Awaited<ReturnType<typeof listLikedTracks>>,
+  TError = ErrorType<CollectionErrorResponse>,
+>(
+  params?: ListLikedTracksParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listLikedTracks>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListLikedTracksQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Save or update one track for the current account
+ */
+export const getSaveLikedTrackUrl = (trackId: string) => {
+  return `/api/collections/liked/${trackId}`;
+};
+
+export const saveLikedTrack = async (
+  trackId: string,
+  saveLikedTrackRequest: SaveLikedTrackRequest,
+  options?: RequestInit,
+): Promise<LikedTrackMutationResponse> => {
+  return customFetch<LikedTrackMutationResponse>(
+    getSaveLikedTrackUrl(trackId),
+    {
+      ...options,
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(saveLikedTrackRequest),
+    },
+  );
+};
+
+export const getSaveLikedTrackMutationOptions = <
+  TError = ErrorType<CollectionErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof saveLikedTrack>>,
+    TError,
+    { trackId: string; data: BodyType<SaveLikedTrackRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof saveLikedTrack>>,
+  TError,
+  { trackId: string; data: BodyType<SaveLikedTrackRequest> },
+  TContext
+> => {
+  const mutationKey = ["saveLikedTrack"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof saveLikedTrack>>,
+    { trackId: string; data: BodyType<SaveLikedTrackRequest> }
+  > = (props) => {
+    const { trackId, data } = props ?? {};
+
+    return saveLikedTrack(trackId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SaveLikedTrackMutationResult = NonNullable<
+  Awaited<ReturnType<typeof saveLikedTrack>>
+>;
+export type SaveLikedTrackMutationBody = BodyType<SaveLikedTrackRequest>;
+export type SaveLikedTrackMutationError = ErrorType<CollectionErrorResponse>;
+
+/**
+ * @summary Save or update one track for the current account
+ */
+export const useSaveLikedTrack = <
+  TError = ErrorType<CollectionErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof saveLikedTrack>>,
+    TError,
+    { trackId: string; data: BodyType<SaveLikedTrackRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof saveLikedTrack>>,
+  TError,
+  { trackId: string; data: BodyType<SaveLikedTrackRequest> },
+  TContext
+> => {
+  return useMutation(getSaveLikedTrackMutationOptions(options));
+};
+
+/**
+ * @summary Remove one track from the current account collection
+ */
+export const getRemoveLikedTrackUrl = (trackId: string) => {
+  return `/api/collections/liked/${trackId}`;
+};
+
+export const removeLikedTrack = async (
+  trackId: string,
+  options?: RequestInit,
+): Promise<void> => {
+  return customFetch<void>(getRemoveLikedTrackUrl(trackId), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getRemoveLikedTrackMutationOptions = <
+  TError = ErrorType<CollectionErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof removeLikedTrack>>,
+    TError,
+    { trackId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof removeLikedTrack>>,
+  TError,
+  { trackId: string },
+  TContext
+> => {
+  const mutationKey = ["removeLikedTrack"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof removeLikedTrack>>,
+    { trackId: string }
+  > = (props) => {
+    const { trackId } = props ?? {};
+
+    return removeLikedTrack(trackId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RemoveLikedTrackMutationResult = NonNullable<
+  Awaited<ReturnType<typeof removeLikedTrack>>
+>;
+
+export type RemoveLikedTrackMutationError = ErrorType<CollectionErrorResponse>;
+
+/**
+ * @summary Remove one track from the current account collection
+ */
+export const useRemoveLikedTrack = <
+  TError = ErrorType<CollectionErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof removeLikedTrack>>,
+    TError,
+    { trackId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof removeLikedTrack>>,
+  TError,
+  { trackId: string },
+  TContext
+> => {
+  return useMutation(getRemoveLikedTrackMutationOptions(options));
 };

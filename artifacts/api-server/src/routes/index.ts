@@ -14,6 +14,10 @@ import { createAuthRouter, type AuthRouteDependencies } from "./auth.js";
 import { requireTfCapability } from "../lib/tf-policy.js";
 import { createWebSocketTicketRouter } from "./websocket-tickets.js";
 import type { TfIntegrationsGateway } from "../lib/tf-integrations-client.js";
+import {
+  createCollectionsRouter,
+  type CollectionRouteDependencies,
+} from "./collections.js";
 
 export interface ApiRouterOptions {
   readonly auth?: AuthRouteDependencies;
@@ -24,6 +28,7 @@ export interface ApiRouterOptions {
   readonly yandex?: Omit<Partial<YandexRouteDependencies>, "gateway">;
   readonly integrationsGateway?: TfIntegrationsGateway;
   readonly tracks?: Partial<TrackRouteDependencies>;
+  readonly collections?: Partial<CollectionRouteDependencies>;
   readonly readiness?: () => Promise<boolean>;
 }
 
@@ -35,14 +40,14 @@ export function createApiRouter(options: ApiRouterOptions = {}): IRouter {
   router.use(createHealthRouter(options.readiness));
   if (options.auth === undefined) {
     router.use(
-      ["/tracks", "/spotify", "/yandex", "/ws/tickets"],
+      ["/tracks", "/collections", "/spotify", "/yandex", "/ws/tickets"],
       (_request, response) => {
         response.status(503).json({ error: "policy_unavailable" });
       },
     );
   } else {
     router.use(
-      ["/tracks", "/spotify", "/yandex", "/ws/tickets"],
+      ["/tracks", "/collections", "/spotify", "/yandex", "/ws/tickets"],
       requireTfCapability({
         platform: options.auth.platform,
         sessionStore: options.auth.sessionStore,
@@ -58,6 +63,7 @@ export function createApiRouter(options: ApiRouterOptions = {}): IRouter {
     );
   }
   router.use(createTracksRouter(options.tracks));
+  router.use(createCollectionsRouter(options.collections));
   router.use(
     createSpotifyRouter({
       ...options.spotify,

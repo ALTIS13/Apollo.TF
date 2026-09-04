@@ -1,6 +1,45 @@
 # Apollo TF implementation status
 
-Last updated: 2026-08-24.
+Last updated: 2026-09-04.
+
+## TF liked collection API checkpoint
+
+Status: `TF_LIKED_COLLECTION_API_LOCAL_VALIDATED`.
+
+### Что сделано
+
+- Added account-scoped GET `/api/collections/liked` and idempotent
+  PUT/DELETE `/api/collections/liked/:trackId`, cursor pagination and bounded
+  metadata validation. Reuses existing `liked_tracks`; no migration required.
+- All three routes require live `tf.collections` policy. Owner comes only from
+  `tfPrincipal.accountId`; the existing login/session contract is unchanged.
+- Added OpenAPI, generated React client and strict Zod schemas. Corrected
+  generated collection timestamp, integer and trimmed-metadata validation.
+- Handoff: `docs/handoffs/2026-09-04-tf-liked-collection.md`.
+
+### Validation
+
+- Previously passed: 45/45 route/policy tests. Not rerun on resume because
+  their behavior did not change.
+- Collection contract: 3/3 passed after correcting the generator mismatch.
+  Includes the original two tests plus one focused JSON/input regression.
+- Final `pnpm exec tsc -b lib/api-zod lib/api-client-react` and
+  `pnpm --filter @workspace/api-server typecheck`: exit 0.
+- Codegen: exit 0. `git diff --check`: exit 0.
+- Storage predicates and composite upsert key reviewed against the existing
+  schema/migration. No live PostgreSQL two-account execution performed.
+
+### Commit/push
+
+- Isolated branch `codex/tf-product-finish`, based on `073613d`.
+- This checkpoint is saved with the implementation in a local commit.
+  No push, merge or deployment. Platform and UI ownership remains unchanged.
+
+### Следующий логичный этап реализации
+
+- Review this isolated slice and integrate it into the chosen TF branch.
+  UI wiring and a PostgreSQL two-account integration check remain separate
+  follow-up work; neither was started. Cross-project auth cutover remains gated.
 
 ## Unified Apollo TF integration handoff checkpoint
 

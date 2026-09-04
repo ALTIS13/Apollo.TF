@@ -15,6 +15,7 @@ import {
 import { createSpotifyRouter } from "./spotify.js";
 import { createTracksRouter } from "./tracks.js";
 import { createYandexRouter } from "./yandex.js";
+import { createCollectionsRouter } from "./collections.js";
 
 vi.hoisted(() => {
   process.env["DATABASE_URL"] ??= "postgres://unused:unused@127.0.0.1:1/unused";
@@ -52,6 +53,9 @@ function exactInventory(): TfProtectedRoute[] {
     { method: "GET", path: "/api/tracks/recent" },
     { method: "POST", path: "/api/tracks/play" },
     { method: "GET", path: "/api/tracks/recommendations" },
+    { method: "GET", path: "/api/collections/liked" },
+    { method: "PUT", path: "/api/collections/liked/:trackId" },
+    { method: "DELETE", path: "/api/collections/liked/:trackId" },
     { method: "GET", path: "/api/tracks/suggest" },
     { method: "GET", path: "/api/tracks/lyrics" },
     { method: "POST", path: "/api/tracks/download/queue" },
@@ -134,8 +138,9 @@ afterEach(async () => {
 });
 
 describe("protected route policy coverage", () => {
-  it("discovers exactly 15 track, 9 Spotify, 6 Yandex, and 1 WebSocket ticket route", async () => {
+  it("discovers the exact protected route inventory", async () => {
     const trackRoutes = discoverRoutes(createTracksRouter());
+    const collectionRoutes = discoverRoutes(createCollectionsRouter());
     const spotifyRoutes = discoverRoutes(createSpotifyRouter());
     const yandexRoutes = discoverRoutes(createYandexRouter());
     const { createWebSocketTicketRouter } =
@@ -147,12 +152,14 @@ describe("protected route policy coverage", () => {
     );
     const discovered = [
       ...trackRoutes,
+      ...collectionRoutes,
       ...spotifyRoutes,
       ...yandexRoutes,
       ...websocketTicketRoutes,
     ];
 
     expect(trackRoutes).toHaveLength(15);
+    expect(collectionRoutes).toHaveLength(3);
     expect(spotifyRoutes).toHaveLength(9);
     expect(yandexRoutes).toHaveLength(6);
     expect(websocketTicketRoutes).toHaveLength(1);
@@ -204,7 +211,7 @@ describe("protected route policy coverage", () => {
 });
 
 describe("direct protected endpoints", () => {
-  it("denies direct track, Spotify, and Yandex calls without the TF cookie", async () => {
+  it("denies direct track, collection, Spotify, and Yandex calls without the TF cookie", async () => {
     const { origin, dependencies } = await startApp();
     const canary = randomBytes(32).toString("base64url");
     const responses = await Promise.all([
@@ -230,15 +237,17 @@ describe("direct protected endpoints", () => {
       fetch(`${origin}/api/yandex/status?sessionId=${canary}`, {
         headers: { "x-client-session": canary },
       }),
+      fetch(`${origin}/api/collections/liked`),
     ]);
 
     expect(responses.map((response) => response.status)).toEqual([
-      403, 401, 401,
+      403, 401, 401, 401,
     ]);
     await expect(
       Promise.all(responses.map((response) => response.json())),
     ).resolves.toEqual([
       { error: "forbidden" },
+      { error: "unauthorized" },
       { error: "unauthorized" },
       { error: "unauthorized" },
     ]);

@@ -28,7 +28,7 @@ export interface TfPrincipal {
 }
 
 export interface TfRoutePolicy {
-  readonly method: "DELETE" | "GET" | "POST";
+  readonly method: "DELETE" | "GET" | "POST" | "PUT";
   readonly path: string;
   readonly pattern: RegExp;
   readonly capability: TfCapability;
@@ -110,6 +110,27 @@ export const TF_ROUTE_POLICIES: readonly TfRoutePolicy[] = Object.freeze([
     method: "GET",
     path: "/api/tracks/recommendations",
     pattern: /^\/api\/tracks\/recommendations$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "GET",
+    path: "/api/collections/liked",
+    pattern: /^\/api\/collections\/liked$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "PUT",
+    path: "/api/collections/liked/:trackId",
+    pattern: /^\/api\/collections\/liked\/[^/]+$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "DELETE",
+    path: "/api/collections/liked/:trackId",
+    pattern: /^\/api\/collections\/liked\/[^/]+$/,
     capability: "tf.collections",
     live: true,
   },

@@ -62,7 +62,15 @@ export default defineConfig({
             param: ['boolean', 'number', 'string'],
           },
         },
-        useDates: true,
+        useDates: false,
+        tags: {
+          collections: {
+            zod: {
+              strict: { body: true, query: true, param: true, response: true },
+              coerce: { query: ["number"] },
+            },
+          },
+        },
       },
     },
   },
