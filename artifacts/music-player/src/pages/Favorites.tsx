@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import {
   Music2,
   LogIn,
@@ -37,11 +37,12 @@ import {
 } from "@/hooks/use-yandex";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { LikedCollection } from "@/components/LikedCollection";
 
 const SPOTIFY_GREEN = "#1DB954";
 const YANDEX_YELLOW = "#FFCC00";
 
-type ServiceTab = "spotify" | "yandex";
+type ServiceTab = "apollo" | "spotify" | "yandex";
 type CatalogTab = "liked" | "playlists" | "top";
 
 function formatDuration(ms: number) {
@@ -523,14 +524,15 @@ function YandexPlaylistsTab({ onSearchVariants }: { onSearchVariants: (title: st
 }
 
 export default function Favorites() {
+  const reduceMotion = useReducedMotion();
   const [, navigate] = useLocation();
-  const [service, setService] = useState<ServiceTab>("spotify");
+  const [service, setService] = useState<ServiceTab>("apollo");
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data: spotifyStatus, isLoading: spotifyLoading } = useSpotifyStatus();
+  const { data: spotifyStatus, isLoading: spotifyLoading } = useSpotifyStatus(service === "spotify");
   const spotifyLogout = useSpotifyLogout();
-  const { data: yandexStatus, isLoading: yandexLoading } = useYandexStatus();
+  const { data: yandexStatus, isLoading: yandexLoading } = useYandexStatus(service === "yandex");
   const yandexLogout = useYandexLogout();
 
   useEffect(() => {
@@ -551,17 +553,18 @@ export default function Favorites() {
   };
 
   const services = [
+    { id: "apollo" as ServiceTab, label: "Apollo", color: "#8b5cf6", connected: false },
     { id: "spotify" as ServiceTab, label: "Spotify", color: SPOTIFY_GREEN, connected: spotifyStatus?.connected },
     { id: "yandex" as ServiceTab, label: "Yandex Music", color: YANDEX_YELLOW, connected: yandexStatus?.connected },
   ];
 
   const activeService = services.find((s) => s.id === service)!;
-  const activeStatus = service === "spotify" ? spotifyStatus : yandexStatus;
-  const activeLoading = service === "spotify" ? spotifyLoading : yandexLoading;
+  const activeStatus = service === "apollo" ? undefined : service === "spotify" ? spotifyStatus : yandexStatus;
+  const activeLoading = service === "apollo" ? false : service === "spotify" ? spotifyLoading : yandexLoading;
   const displayName = activeStatus?.connected ? activeStatus.displayName : undefined;
 
   return (
-    <div className="min-h-screen pb-32">
+    <div className="min-h-full bg-[#09090b] pb-12">
       <div className="border-b border-white/5 bg-black/20">
         <div className="max-w-5xl mx-auto px-4 pt-6 pb-5">
           <div className="flex items-center justify-between flex-wrap gap-3">
@@ -573,12 +576,12 @@ export default function Favorites() {
                 <Music2 className="w-4 h-4 text-black" />
               </div>
               <div>
-                <h1 className="text-xl font-bold text-white">Favorites</h1>
+                <h1 className="text-xl font-bold tracking-normal text-white">Apollo TF <span className="font-normal text-white/30">|</span> Избранное</h1>
                 {displayName && <p className="text-white/35 text-xs">{displayName}</p>}
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex max-w-full flex-wrap items-center gap-2">
               <div className="flex gap-1 p-1 rounded-xl bg-white/5">
                 {services.map((svc) => (
                   <button
@@ -614,12 +617,12 @@ export default function Favorites() {
         <AnimatePresence mode="wait">
           <motion.div
             key={service}
-            initial={{ opacity: 0, x: service === "spotify" ? -12 : 12 }}
+            initial={reduceMotion ? false : { opacity: 0, x: service === "spotify" ? -12 : 12 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
+            transition={{ duration: reduceMotion ? 0 : 0.15 }}
           >
-            {activeLoading ? (
+            {service === "apollo" ? <LikedCollection /> : activeLoading ? (
               <LoadingState label="Checking connection..." color={activeService.color} />
             ) : service === "spotify" ? (
               spotifyStatus?.connected

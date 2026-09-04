@@ -62,7 +62,8 @@ remain null on reads. The cursor is a position, never an authorization token.
 - React Query consumers must scope query keys to the active account or clear
   collection cache on account switch/logout; generated default keys contain
   only endpoint and pagination. Invalidate affected pages after mutations.
-- Client UI is not wired. Legacy device/session-owned favorites are not migrated.
+- The 2026-09-05 UI continuation below wires these behaviors into music-player.
+  Legacy device/session-owned favorites are not migrated.
   This slice saves metadata, not audio or a guarantee of full-track availability.
 - Storage failures use the existing sanitized API error handler. No new DB,
   migration, container, Supabase, Platform runtime or production changes.
@@ -121,3 +122,65 @@ account integration is complete.
   changes or supersede the Platform-owned integration gate.
 - Claude-owned AI/Quasar remain read-only; no implementation work is started
   there. This update only records coordination for the completed API slice.
+
+## UI continuation (2026-09-05)
+
+The coordinator authorized independent product work while Web Platform owns
+Supabase integration. Existing music-player Favorites now defaults to an Apollo
+collection alongside its unchanged provider catalogue tabs. `use-liked-collection`
+uses `['tf', 'liked', accountId]`, cancellation signals, generated API clients
+with current cookie/CSRF via `tfRequestInit`, and account-only invalidation after
+save/delete. Existing `TfAuthProvider`
+already cancels/clears queries on refresh, account switch and logout; no replacement
+auth provider is added. Late mutation callbacks cannot invalidate a different
+account and never write response data directly into cache. Auth errors are
+forwarded only while the original session object/account remains active; a late
+401 from an old mutation cannot invalidate the replacement session. Successful
+mutations still invalidate their captured account key after navigation unmounts
+the originating hook, without inserting cache data or affecting another account.
+
+Search/recommendation TrackCard instances receive a save action; the base card
+and download behavior remain reusable. The collection has compact rows, player
+actions, deletion, cursor pagination, refresh, empty/loading/error/stale states
+and reduced-motion handling. Provider status requests are deferred until their
+tab is selected so Apollo collection access does not require provider integration.
+
+Local evidence:
+
+- Hook transport/invalidation, account switch/logout, late canceled response,
+  cursor pagination, late old-session mutation 401 and save completion after
+  navigation: six passed. The last two regressions reproduced replacement-account
+  logout and stale collection after navigation before their respective fixes.
+  Independent review has no remaining concrete finding after the navigation fix.
+- Existing Yandex disconnected case: one passed, twelve unrelated cases skipped.
+- Final music-player typecheck and build: exit 0. Build reports tooltip sourcemap
+  and chunk-size warnings above 500 kB; no broad build optimization was attempted.
+- Browser plugin unavailable; regular Playwright used installed Chrome against
+  local Vite at `http://127.0.0.1:4191/favorites` with isolated HTTP fixtures.
+  Search/save/list/refresh-error/retry/delete passed with CSRF and no owner in
+  payload. Fixtures and screenshots are outside source, not product demo data.
+- Screenshots: `C:\Users\maksi\.codex\tmp\tf-liked-ui-evidence\` contains
+  loading-desktop, empty-desktop, normal-desktop, stale-desktop, normal-mobile
+  and error-mobile PNGs. Viewports 1440x900 and 390x844; zero page errors and no
+  mobile horizontal document overflow.
+- Compared rendered collection against the saved `apollo-portal-selected-v1.png`
+  composition and the coordinator's `PORTAL_VISUAL_REFERENCE.md` live-composition
+  section. Preserved graphite surfaces, quiet violet actions and compact rows;
+  existing TF sidebar/player differences remain intentional within this slice.
+  The saved portal image is not current AI/Quasar live evidence. Their live PNGs
+  were unavailable; full side-by-side acceptance is not claimed or a blocker
+  for the locally verified flow, as directed by the coordinator.
+
+Outstanding integration evidence:
+
+- `8756bca` pins the real-store proof to coordinator-selected PostgreSQL 17,
+  superseding the initial PG18 target; TF SQL needs no PG18-specific feature.
+  Runner/role/database marker instructions are in
+  `docs/operations/tf-liked-collection-postgres-proof.md`. Expected: three passed,
+  zero skipped. Infra is preparing a disposable Coolify Application; no real DB
+  result has been returned yet. Local Docker stayed off.
+- Browser fixtures prove rendering/transport, not deployed persistence, provider
+  availability, actual audio streaming or Supabase-to-Platform integration.
+- All permanent components and proof containers must be Coolify Applications,
+  reproducible from Git/Compose. Secrets/private environment are excluded from Git;
+  volume backup/restore and key custody are separate requirements, not automatic HA.

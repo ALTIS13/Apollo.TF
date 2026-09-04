@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { searchTracks } from "@workspace/api-client-react";
 import type { SearchRequest, TrackType, TrackResult } from "@workspace/api-client-react";
 import { TrackCard } from "@/components/TrackCard";
+import { SaveLikedTrackButton } from "@/components/LikedCollection";
 import { reportTfAuthError, tfRequestInit } from "@/lib/tf-session-client";
 import { Search, Music2, Loader2, Sparkles } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -323,7 +324,7 @@ export default function Home() {
             ) : (
               <div className="space-y-4">
                 {filteredResults.map((track, i) => (
-                  <TrackCard key={`${track.id}-${i}`} track={track} index={i} />
+                  <TrackCard key={`${track.id}-${i}`} track={track} index={i} collectionAction={<SaveLikedTrackButton track={track} />} />
                 ))}
               </div>
             )}

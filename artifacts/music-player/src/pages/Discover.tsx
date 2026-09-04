@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { TrackCard } from "@/components/TrackCard";
+import { SaveLikedTrackButton } from "@/components/LikedCollection";
 import { Sparkles, Music2, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { TrackResult } from "@workspace/api-client-react";
@@ -85,7 +86,7 @@ export default function Discover() {
             className="space-y-4"
           >
             {recommendations.map((track, i) => (
-              <TrackCard key={`${track.id}-${i}`} track={track} index={i} />
+              <TrackCard key={`${track.id}-${i}`} track={track} index={i} collectionAction={<SaveLikedTrackButton track={track} />} />
             ))}
           </motion.div>
         )}

@@ -1,6 +1,64 @@
 # Apollo TF implementation status
 
-Last updated: 2026-09-04.
+Last updated: 2026-09-05.
+
+## TF liked collection UI and PostgreSQL proof checkpoint
+
+Status: `TF_LIKED_UI_LOCAL_VALIDATED_DB_PROOF_PENDING`.
+
+### Что сделано
+
+- Existing Favorites now opens the Apollo collection; Spotify/Yandex catalogues
+  remain available. Search and recommendations can save tracks; collection rows
+  reuse the player and support deletion and cursor pagination.
+- Query keys include the account ID. Existing auth cancellation/cache clearing
+  is reused for account switch/logout; delayed canceled responses cannot refill
+  the old account cache. Generated clients use current cookie/CSRF through
+  `tfRequestInit` and invalidate only the account collection. Auth errors are
+  reported only for the original active session; a late old-account 401 cannot
+  sign out its replacement. Successful mutations still invalidate their account
+  collection after navigation unmounts the originating hook. No login or authority cutover.
+- Compact graphite/violet collection surface includes loading, empty, error,
+  stale data, refresh and mutation failure states; reduced-motion is respected.
+- Real-store PostgreSQL proof prepared in `b89b580`, then aligned with the
+  coordinator's PostgreSQL 17 staging target in `8756bca`. Expected outcome is
+  three real database tests, zero skipped. Run is owned by infrastructure.
+
+### Validation
+
+- Collection hook behavior: 6/6 passed for mutation transport/invalidation,
+  account switch/logout, late canceled responses, cursor pagination and late
+  old-session mutation 401, and save completion after navigation. The last two
+  regressions reproduced their bugs before correction. Independent review has
+  no remaining concrete finding after the navigation fix.
+- Existing Yandex disconnected regression: 1 passed, other 12 deliberately skipped.
+- Music-player final typecheck and production build: exit 0. Build still reports
+  a tooltip sourcemap warning and a bundle-size warning above 500 kB.
+- Playwright with local HTTP fixtures: save from search, list, refresh failure
+  preserving stale rows, retry and delete passed; desktop 1440x900 and mobile
+  390x844, no page errors or mobile horizontal document overflow.
+- Screenshots reviewed for loading/empty/normal/stale/error states. Compared
+  against the saved portal composition and current written visual guardrail;
+  missing live AI/Quasar PNGs mean no new live side-by-side approval is claimed.
+- Real PostgreSQL execution and deployed full-stack UI remain unverified.
+  Local Docker is off; no daemon/network change was made. Old 45 API tests were
+  not rerun; proof export is the only API production-code change.
+
+### Commit/push
+
+- Work remains isolated in `codex/tf-product-finish`. No shared-main merge,
+  push, production deployment, AI/Quasar/LetsCube or Platform runtime change.
+- PostgreSQL proof must run as a disposable Coolify Application from the exact
+  reviewed revision. All permanent components also require Coolify Applications
+  reproducible from Git/Compose; no raw standalone deployment or Service resource.
+- Secrets stay private. Volumes, backups/restore and key custody require separate
+  ownership; Coolify alone is not high availability.
+
+### Следующий логичный этап реализации
+
+- Infra executes the prepared PostgreSQL 17 proof and returns redacted evidence
+  and cleanup outcome. Then review the isolated UI commit and validate against
+  the existing TF runtime when an approved local/staging backend is available.
 
 ## TF liked collection API checkpoint
 

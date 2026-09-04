@@ -27,10 +27,11 @@ export interface SpotifyStatus {
   spotifyUserId?: string;
 }
 
-export function useSpotifyStatus() {
+export function useSpotifyStatus(enabled = true) {
   return useQuery<SpotifyStatus>({
     queryKey: ["spotify", "status"],
     queryFn: () => tfFetch("/spotify/status"),
+    enabled,
     retry: false,
   });
 }

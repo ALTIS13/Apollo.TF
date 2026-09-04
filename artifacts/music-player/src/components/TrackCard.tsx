@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Play,
   Pause,
@@ -19,9 +19,10 @@ import { useTrackDownload } from "@/hooks/use-track-download";
 interface TrackCardProps {
   track: TrackResult;
   index: number;
+  collectionAction?: ReactNode;
 }
 
-export function TrackCard({ track, index }: TrackCardProps) {
+export function TrackCard({ track, index, collectionAction }: TrackCardProps) {
   const {
     currentTrack,
     isPlaying,
@@ -186,6 +187,7 @@ export function TrackCard({ track, index }: TrackCardProps) {
 
       {/* Actions */}
       <div className="flex-shrink-0 w-full sm:w-auto flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2 border-t sm:border-t-0 sm:border-l border-white/10 pt-4 sm:pt-0 sm:pl-6">
+        {collectionAction}
         <button
           onClick={handleAddToQueue}
           className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold transition-all border ${
