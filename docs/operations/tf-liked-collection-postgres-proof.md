@@ -10,8 +10,11 @@ The proof image has not been built locally.
 - Use the local `codex/tf-product-finish` commit adding this proof, or a supplied
   archive of that exact revision. The remote branch may not contain this proof;
   publication is not authorized by this runbook.
-- Required server: **PostgreSQL 18.x** (the new baseline). The legacy
-  `lib/db/src/integration.test.ts` PG16 suite is not invoked or modified.
+- Proof target: **PostgreSQL 17.x**, matching the coordinator's selected
+  Supabase staging component snapshot. This is an explicit validation baseline,
+  not a TF SQL feature requirement. It supersedes the initial PG18 selection.
+  The legacy `lib/db/src/integration.test.ts` PG16 suite and migrations are
+  not invoked or modified.
 - Runtime login: `apollo_tf_runtime`, LOGIN, NOINHERIT, NOSUPERUSER, NOCREATEDB,
   NOCREATEROLE, NOREPLICATION, NOBYPASSRLS, no memberships. Do not pass admin or
   migrator credentials to the runner.

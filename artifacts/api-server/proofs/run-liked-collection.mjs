@@ -10,7 +10,7 @@ const env = { ...process.env };
 delete env.DATABASE_URL;
 if (!env.TF_TEST_RUNTIME_DATABASE_URL || !env.TF_TEST_RUN_ID) {
   process.stderr.write(
-    "Set TF_TEST_RUNTIME_DATABASE_URL and TF_TEST_RUN_ID for the disposable PostgreSQL 18 proof.\n",
+    "Set TF_TEST_RUNTIME_DATABASE_URL and TF_TEST_RUN_ID for the disposable PostgreSQL 17 proof.\n",
   );
   process.exit(2);
 }

@@ -53,7 +53,7 @@ const runtimeUrl = process.env.TF_TEST_RUNTIME_DATABASE_URL;
 const runId = process.env.TF_TEST_RUN_ID;
 
 describe.skipIf(runtimeUrl === undefined && runId === undefined)(
-  "actual liked collection store with PostgreSQL 18 and two accounts",
+  "actual liked collection store with PostgreSQL 17 and two accounts",
   () => {
     let pool: (typeof import("@workspace/db"))["pool"] | undefined;
     let store: LikedCollectionStore;
@@ -103,8 +103,8 @@ describe.skipIf(runtimeUrl === undefined && runId === undefined)(
           member_of_role: false,
         },
       ]);
-      expect(identity.rows[0].server_version).toBeGreaterThanOrEqual(180_000);
-      expect(identity.rows[0].server_version).toBeLessThan(190_000);
+      expect(identity.rows[0].server_version).toBeGreaterThanOrEqual(170_000);
+      expect(identity.rows[0].server_version).toBeLessThan(180_000);
       expect(await createTfMigrationReadinessProbe(pool)()).toBe(true);
 
       const privileges = await pool.query(`
