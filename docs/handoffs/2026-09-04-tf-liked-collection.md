@@ -184,3 +184,19 @@ Outstanding integration evidence:
 - All permanent components and proof containers must be Coolify Applications,
   reproducible from Git/Compose. Secrets/private environment are excluded from Git;
   volume backup/restore and key custody are separate requirements, not automatic HA.
+
+## Source-only proof orchestration and independent UI follow-up
+
+- `05d162b` adds the missing disposable Coolify Application package; accepted
+  runner/test/migration sources from `8756bca` remain unchanged. Exact inputs,
+  Git-content provenance check, root execute gate, evidence export and cleanup
+  responsibilities are in `docs/operations/tf-liked-proof-application.md`.
+- `08a1355` removes only the duplicate sidebar queue per the existing client
+  design. Canonical Queue page/player state and mobile navigation are preserved;
+  3 focused tests, typecheck/build and desktop/mobile browser fixtures passed.
+- Source package has passed daemon-free Compose/gate/syntax/migration-bundle
+  checks and independent source review. Git/local source digest matched on the
+  clean UI commit; a wrong expected digest was rejected. No old suites rerun.
+- No image build, real DB, remote writes, push or deploy performed. Official
+  PostgreSQL17 result must still be **3 passed / 0 skipped**, with root-exported
+  terminal evidence and verified removal of only the new proof Application.

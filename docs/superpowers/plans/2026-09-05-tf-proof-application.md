@@ -24,11 +24,11 @@
 - [x] Bootstrap refuses an existing cluster, provisions fixed least-privilege roles and run-marked database. Migration wrapper invokes the existing TF migrator using a private temporary URL file; runner receives only runtime credentials.
 - [x] Emit bounded redacted runner output plus terminal outcome with source/run identity and transcript SHA-256. Export through Coolify logs before removing the Application.
 - [x] Validate Compose without a daemon, shell/Node syntax, migration bundle and fail-closed entry gate. Do not add tests of the accepted tests or rerun green product suites.
-- [ ] Verify source content binding against the clean committed checkout. Review found that an operator-supplied SHA alone was not provenance; build now requires a separately computed Git-content digest.
-- [ ] Independent review, local commit, exact root execution handoff with pending real DB evidence.
+- [x] Verify source content binding against the clean committed checkout. Review found that an operator-supplied SHA alone was not provenance; build now requires a separately computed Git-content digest. Git/local digest matched on `08a1355`; wrong digest rejected with exit 2.
+- [x] Independent review, local commit, exact root execution handoff with pending real DB evidence. Package `05d162b`, no remaining source-only review finding. Runbook: `docs/operations/tf-liked-proof-application.md`.
 
 ## Task 2: Independent Product Gap
 
 - [x] Read current product spec/code; send root one concrete unimplemented gap before edits. Root confirmed removal of the duplicate sidebar queue.
 - [x] Implement only that gap with focused behavioral validation and local UI inspection where applicable. No second queue or auth authority. Sidebar tests: 3 passed (2 regressions first failed). Desktop/mobile browser fixtures verify canonical queue state and mobile close; typecheck/build pass.
-- [ ] Commit separately and update the current implementation status; do not claim deployment/full-stack proof.
+- [x] Commit separately and update the current implementation status; do not claim deployment/full-stack proof. Sidebar commit `08a1355`; real DB/container execution remains pending.

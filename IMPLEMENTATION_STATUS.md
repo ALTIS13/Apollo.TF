@@ -2,6 +2,66 @@
 
 Last updated: 2026-09-05.
 
+## Disposable proof Application and canonical queue checkpoint
+
+Status: `TF_PROOF_APPLICATION_SOURCE_READY_REAL_DB_PENDING`.
+
+### Что сделано
+
+- Added a source-only Git/Compose-backed Coolify Application package: fresh PG17
+  tmpfs, canonical TF migrator, unchanged official liked-collection Node runner.
+  Separate run/resource, internal network, no public ports or persistent volumes.
+- Root-only `execute:<runId>` gate, three separate random role credentials, no
+  external database input. Proof child gets only runtime credentials; source
+  revision/content digest and observed test counts bind the redacted terminal
+  outcome. Evidence must be exported from Coolify logs before resource cleanup.
+- Independent review findings were fixed: build verifies actual copied source
+  against the approved Git-content digest; no claim that tmpfs evidence survives
+  an exited container. No remaining actionable source-only review finding.
+- Removed the duplicate sidebar queue required by the existing client design.
+  Canonical Queue page/player state, one queue navigation link, mobile close,
+  account placement and existing visual style remain unchanged.
+
+### Validation
+
+- Compose config resolves three services, zero public ports, zero persistent
+  volumes, one internal network and runtime-only proof credentials. Missing root
+  execute input is rejected. These are daemon-free configuration checks.
+- Node/Bash syntax and existing migrator bundling passed; both entrypoints reject
+  missing execution gate with exit 2 before database access.
+- On clean `08a13557c6fbab75c6ad52023b6e254edaf6df50`, Git-blob digest equals local
+  build-source digest: `eb9b0adee483c1f2f088d12bcd64e1390b86d0868d12b164b8275efc9a58a541`.
+  Wrong expected digest is rejected with exit 2. This is not an image-build proof.
+- Sidebar TDD: two expected regressions first failed, then all 3 cases passed.
+  Scoped music-player typecheck and production build passed. Existing tooltip
+  sourcemap and >500 kB bundle warnings remain (530.82 kB main bundle).
+- Playwright HTTP fixtures at 1440x900 and 390x844 confirmed one queue surface,
+  retained queued track, mobile same-route drawer close and canonical clear;
+  zero page errors/mobile document overflow. Screenshots inspected after animation
+  completion at `C:\Users\maksi\.codex\tmp\tf-sidebar-queue-evidence\`.
+- No old liked UI/store suites rerun. Runner/tests/migrations from `8756bca`
+  unchanged. Real PG17 3 passed / 0 skipped evidence is still **pending**.
+
+### Commit/push
+
+- Local package commit `05d162b`; separate sidebar commit `08a1355` on
+  `codex/tf-product-finish`. This status checkpoint is documentation-only.
+- No push, merge, Docker Desktop startup, real DB, HomeNode/Coolify deployment,
+  Platform/auth or Claude project changes.
+
+### Следующий логичный этап реализации
+
+- Root reviews `docs/operations/tf-liked-proof-application.md`, selects the exact
+  clean source revision and official PG17 digest, generates private run inputs,
+  and separately approves a new isolated Coolify Application execution.
+- Remaining gates: actual image builds, Linux/bootstrap/migration execution,
+  Coolify one-shot lifecycle, official runner exit 0 with 3 passed / 0 skipped,
+  exported evidence and verified Application cleanup. No success is inferred
+  from source checks or a healthy database indicator.
+- Afterwards validate the accepted liked UI against an approved TF backend.
+  Shared Supabase/Platform adapter and cross-project auth cutover remain owned
+  by Web Platform, not this TF slice.
+
 ## TF liked collection UI and PostgreSQL proof checkpoint
 
 Status: `TF_LIKED_UI_LOCAL_VALIDATED_DB_PROOF_PENDING`.
