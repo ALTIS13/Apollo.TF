@@ -3,6 +3,11 @@
 Status: prepared for remote execution; no real PostgreSQL execution claimed.
 The proof image has not been built locally.
 
+The source-only three-service Coolify Application package is documented in
+`tf-liked-proof-application.md`. It adds fresh isolated provisioning, canonical
+migration and terminal evidence capture around this unchanged runner. Root must
+separately approve its exact resource/run/source inputs before execution.
+
 ## Execution Contract
 
 - Infra owns all provisioning. Every proof/persistent container must be a Coolify
