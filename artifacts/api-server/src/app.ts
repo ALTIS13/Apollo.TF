@@ -12,7 +12,10 @@ import pinoHttp from "pino-http";
 
 import { adminRequestTelemetry } from "./lib/admin-telemetry.js";
 import { logger } from "./lib/logger.js";
-import { requireTfBrowserMutation } from "./lib/tf-browser-session.js";
+import {
+  requireTfBrowserMutation,
+  hasFamilyCookie,
+} from "./lib/tf-browser-session.js";
 import { createApiRouter, type ApiRouterOptions } from "./routes/index.js";
 import { moduleHeartbeatRouter } from "./routes/module-heartbeats.js";
 
@@ -199,7 +202,54 @@ export function createApiApp(options: ApiAppOptions = {}): Express {
 
   app.use(cookieParser());
   if (options.auth !== undefined) {
-    app.use("/api", requireTfBrowserMutation(options.auth.webOrigin));
+    app.use("/api", (request, response, next) => {
+      if (
+        hasFamilyCookie(request) ||
+        /^\/api\/auth\/renew(?:-context)?(?:\?|$)/.test(request.originalUrl)
+      ) {
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("Pragma", "no-cache");
+        response.setHeader("Referrer-Policy", "no-referrer");
+      }
+      next();
+    });
+    app.use(
+      "/api",
+      requireTfBrowserMutation(
+        options.auth.webOrigin,
+        options.auth.renewal !== undefined,
+      ),
+    );
+    const parseRenewalBody = express.json({ limit: 12 * 1024, inflate: false });
+    app.use("/api", (request, response, next) => {
+      const path = request.originalUrl.split("?")[0];
+      if (
+        request.method !== "POST" ||
+        !(
+          path === "/api/auth/renew" ||
+          path === "/api/auth/renew-context" ||
+          (path === "/api/auth/logout" && hasFamilyCookie(request))
+        )
+      ) {
+        next();
+        return;
+      }
+      parseRenewalBody(request, response, (error: unknown) => {
+        if (!error) {
+          next();
+          return;
+        }
+        const status =
+          typeof error === "object" &&
+          error !== null &&
+          dataProperty(error, "status", true) === 413
+            ? 413
+            : 400;
+        response
+          .status(status)
+          .json({ code: "TF_RENEWAL_INVALID_REQUEST", retryable: false });
+      });
+    });
   }
   app.use(
     withParserProvenance(

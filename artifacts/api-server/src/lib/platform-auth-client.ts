@@ -16,9 +16,15 @@ import {
   createRemoteJWKSet,
   customFetch,
   decodeProtectedHeader,
+  errors as joseErrors,
   jwtVerify,
 } from "jose";
 import { z } from "zod";
+import {
+  TfRenewalClient,
+  TfRenewalError,
+  parseRenewalJson,
+} from "./tf-renewal-contract.js";
 
 const AUTHORIZATION_PATH = "/v1/oauth/authorize";
 const TOKEN_PATH = "/v1/oauth/token";
@@ -266,6 +272,7 @@ function validConfidentialClientCredentials(
 }
 
 export class PlatformAuthClient {
+  readonly renewal: TfRenewalClient;
   private readonly issuer: string;
   private readonly apiOrigin: string;
   private readonly clientId: string;
@@ -333,6 +340,65 @@ export class PlatformAuthClient {
         });
       },
     });
+    this.renewal = new TfRenewalClient({
+      clientId: this.clientId,
+      request: async (path, body, headers) => {
+        if (new URL(this.apiOrigin).protocol !== "https:")
+          throw new PlatformAuthUnavailableError();
+        return this.fetchImplementation(new URL(path, this.apiOrigin), {
+          method: "POST",
+          headers: { ...headers, Authorization: this.basicAuthorization() },
+          body,
+          redirect: "error",
+          signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+        });
+      },
+      read: readBoundedResponse,
+      verify: (assertion, nonce) => this.verifyTfAssertion(assertion, nonce),
+    });
+  }
+
+  private async verifyTfAssertion(
+    assertion: string,
+    nonce?: string,
+  ): Promise<PlatformAssertionClaims> {
+    const segments = assertion.split(".");
+    if (segments.length !== 3) throw new PlatformAuthUnavailableError();
+    parseRenewalJson(
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        Buffer.from(segments[0]!, "base64url"),
+      ),
+    );
+    platformAssertionClaimsSchema.parse(
+      parseRenewalJson(
+        new TextDecoder("utf-8", { fatal: true }).decode(
+          Buffer.from(segments[1]!, "base64url"),
+        ),
+      ),
+    );
+    const header = decodeProtectedHeader(assertion);
+    if (
+      header.alg !== "EdDSA" ||
+      typeof header.kid !== "string" ||
+      header.kid.length < 1 ||
+      header.kid.length > 128
+    )
+      throw new PlatformAuthUnavailableError();
+    const verified = await jwtVerify(assertion, this.jwks, {
+      issuer: this.issuer,
+      audience: ASSERTION_AUDIENCE,
+      algorithms: ["EdDSA"],
+      clockTolerance: 0,
+      maxTokenAge: 300,
+    }).catch((error) => {
+      if (error instanceof joseErrors.JWTExpired)
+        throw new TfRenewalError("ACCESS_EXPIRED");
+      throw error;
+    });
+    const claims = platformAssertionClaimsSchema.parse(verified.payload);
+    if (nonce !== undefined && !fixedLengthEqual(claims.nonce, nonce))
+      throw new PlatformAuthUnavailableError();
+    return claims;
   }
 
   createAuthorizationUrl(

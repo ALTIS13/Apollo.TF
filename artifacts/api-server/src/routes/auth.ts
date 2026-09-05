@@ -17,7 +17,20 @@ import {
   PlatformAuthUnavailableError,
   type PlatformAuthClient,
 } from "../lib/platform-auth-client.js";
-import { AUTH_COOKIE_NAMES } from "../lib/tf-browser-session.js";
+import {
+  AUTH_COOKIE_NAMES,
+  hasFamilyCookie,
+  familyCookies,
+  clearFamilyCookies,
+  sendRenewalError,
+} from "../lib/tf-browser-session.js";
+import type { TfRenewalConsumer } from "../lib/tf-renewal-consumer.js";
+import {
+  TfRenewalError,
+  unavailable,
+  renewalVersion,
+} from "../lib/tf-renewal-contract.js";
+import type { FamilyObservation } from "../lib/tf-family-store.js";
 import {
   TfSessionStoreUnavailableError,
   type TfSessionStore,
@@ -54,6 +67,7 @@ export interface AuthRouteDependencies {
   readonly webOrigin: string;
   readonly secureCookies: boolean;
   readonly pkceVerifier?: () => string;
+  readonly renewal?: TfRenewalConsumer;
 }
 
 class AuthRequestError extends Error {
@@ -189,9 +203,30 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
   const router = Router();
   const httpOnlyCookie = baseCookieOptions(dependencies.secureCookies, true);
   const csrfCookie = baseCookieOptions(dependencies.secureCookies, false);
+  function setFamily(
+    handle: string,
+    observation: FamilyObservation,
+    response: Response,
+  ) {
+    const r = observation.record;
+    if (r.phase === "CLOSED") throw new TfRenewalError("INVALID_REFERENCE");
+    const expires = new Date(r.expiresAt);
+    setHostCookie(response, AUTH_COOKIE_NAMES.family, handle, {
+      ...httpOnlyCookie,
+      secure: true,
+      expires,
+    });
+    setHostCookie(response, AUTH_COOKIE_NAMES.familyCsrf, r.csrf, {
+      ...csrfCookie,
+      secure: true,
+      expires,
+    });
+  }
 
   router.use((_request, response, next) => {
     response.setHeader("Cache-Control", "no-store");
+    response.setHeader("Pragma", "no-cache");
+    response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("X-Content-Type-Options", "nosniff");
     next();
   });
@@ -213,6 +248,18 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
       if (!/^[A-Za-z0-9._~-]{43,128}$/.test(codeVerifier)) {
         throw new AuthRequestError(503);
       }
+      let familyHandle: string | undefined;
+      if (dependencies.renewal) {
+        if (hasFamilyCookie(request)) {
+          const previous = familyCookies(request);
+          clearFamilyCookies(response, dependencies.secureCookies);
+          await dependencies.renewal.logout(
+            previous.handle,
+            "LOCAL_SESSION_REPLACED",
+          );
+        }
+        familyHandle = (await dependencies.renewal.createLogin()).handle;
+      } else if (hasFamilyCookie(request)) throw unavailable();
       const transactionHandle =
         await dependencies.sessionStore.createTransaction({
           state,
@@ -220,6 +267,7 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
           codeVerifier,
           installationId,
           installationLabel: INSTALLATION_LABEL,
+          ...(familyHandle ? { familyHandle } : {}),
         });
       const codeChallenge = createHash("sha256")
         .update(codeVerifier, "ascii")
@@ -283,6 +331,45 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
         codeVerifier: transaction.codeVerifier,
         expectedNonce: transaction.nonce,
       });
+      if (
+        transaction.familyHandle !== undefined ||
+        dependencies.renewal !== undefined ||
+        hasFamilyCookie(request)
+      ) {
+        if (!dependencies.renewal || !transaction.familyHandle)
+          throw unavailable();
+        await dependencies.renewal.store.beginEnrollment(
+          transaction.familyHandle,
+          {
+            ...renewalVersion,
+            account_id: exchange.claims.sub,
+            session_id: exchange.claims.sid,
+            installation_id: exchange.claims.installation_id,
+            client_id: dependencies.renewal.clientId,
+            audience: "apollo-tf",
+          },
+          exchange.assertion,
+        );
+        const pending = await dependencies.renewal.store.read(
+          transaction.familyHandle,
+        );
+        if (!pending) throw unavailable();
+        // Persisted pending identity and nonce let a lost upstream response be resolved by /renew.
+        setFamily(transaction.familyHandle, pending, response);
+        const enrolled = await dependencies.renewal.renew(
+          transaction.familyHandle,
+        );
+        setFamily(transaction.familyHandle, enrolled, response);
+        clearHostCookie(
+          response,
+          AUTH_COOKIE_NAMES.transaction,
+          httpOnlyCookie,
+        );
+        clearHostCookie(response, AUTH_COOKIE_NAMES.session, httpOnlyCookie);
+        clearHostCookie(response, AUTH_COOKIE_NAMES.csrf, csrfCookie);
+        response.redirect(303, dependencies.webOrigin);
+        return;
+      }
       const introspection = await dependencies.platform.introspect({
         accountId: exchange.claims.sub,
         sessionId: exchange.claims.sid,
@@ -316,6 +403,33 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
   });
 
   router.get("/me", async (request, response) => {
+    if (hasFamilyCookie(request)) {
+      try {
+        if (!dependencies.renewal) throw unavailable();
+        const { handle, csrf } = familyCookies(request);
+        if (!(await dependencies.renewal.validateCsrf(handle, csrf, csrf)))
+          throw new TfRenewalError("INVALID_REFERENCE");
+        const session = await dependencies.renewal.authorize(handle);
+        response.json({
+          accountId: session.accountId,
+          installationId: session.installationId,
+          entitlements: session.entitlements,
+          expiresAt: session.expiresAt,
+          csrfToken: csrf,
+        });
+      } catch (error) {
+        if (error instanceof TfRenewalError && error.terminal)
+          clearFamilyCookies(response, dependencies.secureCookies);
+        sendAuthenticationError(
+          response,
+          error instanceof TfRenewalError &&
+            (error.status === 401 || error.status === 403)
+            ? error.status
+            : 503,
+        );
+      }
+      return;
+    }
     const handle = cookieValue(request, AUTH_COOKIE_NAMES.session);
     const csrf = cookieValue(request, AUTH_COOKIE_NAMES.csrf);
     if (
@@ -346,6 +460,31 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
   });
 
   router.post("/logout", async (request, response) => {
+    if (hasFamilyCookie(request)) {
+      try {
+        requireEmptyRenewalBody(request);
+        if (!dependencies.renewal) throw unavailable();
+        const { handle, csrf } = familyCookies(request);
+        if (
+          !(await dependencies.renewal.validateCsrf(
+            handle,
+            csrf,
+            request.get("x-csrf-token") ?? "",
+          ))
+        ) {
+          response
+            .status(403)
+            .json({ code: "TF_RENEWAL_CSRF_REJECTED", retryable: false });
+          return;
+        }
+        clearFamilyCookies(response, dependencies.secureCookies);
+        await dependencies.renewal.logout(handle);
+        response.status(204).end();
+      } catch (error) {
+        sendLocalRenewalError(response, error);
+      }
+      return;
+    }
     const handle = cookieValue(request, AUTH_COOKIE_NAMES.session);
     if (handle === null || !OPAQUE_PATTERN.test(handle)) {
       sendAuthenticationError(response, 403);
@@ -368,5 +507,56 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
     response.status(204).end();
   });
 
+  function requireEmptyRenewalBody(request: Request) {
+    if (
+      request.originalUrl.includes("?") ||
+      !request.body ||
+      Array.isArray(request.body) ||
+      typeof request.body !== "object" ||
+      Object.keys(request.body).length !== 0
+    )
+      throw new AuthRequestError(400);
+  }
+  function sendLocalRenewalError(response: Response, error: unknown) {
+    if (error instanceof AuthRequestError && error.status === 400) {
+      response
+        .status(400)
+        .json({ code: "TF_RENEWAL_INVALID_REQUEST", retryable: false });
+      return;
+    }
+    sendRenewalError(response, error, dependencies.secureCookies);
+  }
+  for (const route of ["/renew-context", "/renew"] as const) {
+    router.post(route, async (request, response) => {
+      try {
+        requireEmptyRenewalBody(request);
+        if (!dependencies.renewal) throw unavailable();
+        const { handle, csrf } = familyCookies(request);
+        if (route === "/renew-context") {
+          response.json({
+            csrf_token: await dependencies.renewal.context(handle, csrf),
+          });
+          return;
+        }
+        if (
+          !(await dependencies.renewal.validateCsrf(
+            handle,
+            csrf,
+            request.get("x-csrf-token") ?? "",
+          ))
+        ) {
+          response
+            .status(403)
+            .json({ code: "TF_RENEWAL_CSRF_REJECTED", retryable: false });
+          return;
+        }
+        const renewed = await dependencies.renewal.renew(handle);
+        setFamily(handle, renewed, response);
+        response.status(204).end();
+      } catch (error) {
+        sendLocalRenewalError(response, error);
+      }
+    });
+  }
   return router;
 }
