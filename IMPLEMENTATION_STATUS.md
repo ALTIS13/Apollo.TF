@@ -2,6 +2,31 @@
 
 Last updated: 2026-09-05.
 
+## Queue keyboard and touch accessibility checkpoint
+
+Status: `TF_QUEUE_ACCESSIBILITY_LOCAL_REVIEW_READY`.
+
+- Queue rows now use sibling native play/remove buttons with track-specific
+  accessible names and visible keyboard focus. Remove retains desktop hover
+  visibility and is always visible on touch, with a 40px target. Existing queue
+  order, current-track styling, player callbacks and state remain unchanged.
+- Queue-local Space propagation guard preserves native button activation without
+  triggering the existing global playback shortcut; clear uses the same guard.
+  No global hotkey, API, DTO, auth, entitlement or runtime changes.
+- Validation: the 2 focused Queue behavioral tests failed before implementation
+  and passed after it; music-player typecheck passed. Chrome HTTP/Audio fixture
+  QA passed at 1440x900 (Tab, Enter, Space, focus and action isolation) and
+  390x844 with coarse touch (visible remove, tap, clear). Zero page/console
+  errors or document overflow; screenshots inspected in
+  `C:\Users\maksi\.codex\tmp\tf-queue-accessibility-evidence\`.
+- Only affected checks; no existing liked/store/sidebar suites rerun. Browser
+  checks do not prove live auth, backend integration or audio decoding.
+- Commit/push: local commit on `codex/tf-product-finish`, root review pending.
+  No UI push/deploy, WSL/Docker, HomeNode or other-project changes.
+- Next: root reviews this three-file slice. Isolated PG17/Coolify proof and
+  approved-backend liked UI verification remain separate outstanding gates;
+  the frozen private proof source is not modified by this UI change.
+
 ## Disposable proof Application and canonical queue checkpoint
 
 Status: `TF_PROOF_APPLICATION_SOURCE_READY_REAL_DB_PENDING`.
