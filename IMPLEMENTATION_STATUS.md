@@ -2,6 +2,16 @@
 
 Last updated: 2026-09-05.
 
+## Current remaining-gates handoff
+
+- Root independently accepted `700ed3e` after `9745291` and `97851c8`; those
+  source-only UI slices are closed, still local and undeployed.
+- Current residual work and ownership gates are reconciled in
+  [TF remaining gates](docs/handoffs/2026-09-05-tf-remaining-gates.md).
+  Earlier checkpoint review-pending wording is historical, not a new task.
+- Documentation only: no tests/builds/runtime probes rerun. Frozen TF PG17
+  Application remains separate from root's Supabase/account staging.
+
 ## Footer native keyboard activation checkpoint
 
 Status: `TF_PLAYER_KEYBOARD_LOCAL_REVIEW_READY`.
