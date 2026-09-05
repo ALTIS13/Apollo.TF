@@ -52,8 +52,8 @@ export class TfRenewalConsumer {
     }
     if (!this.keys.has(options.revocationKeys.active)) throw unavailable();
   }
-  createLogin() {
-    return this.store.createLogin();
+  createLogin(lineageId?: string) {
+    return this.store.createLogin(lineageId);
   }
   async context(handle: string, csrf: string) {
     const current = await this.store.read(handle);
@@ -122,7 +122,10 @@ export class TfRenewalConsumer {
         generation: result.generation,
         access_assertion: result.token.access_token,
       });
-      return await this.store.complete(handle, claimed, result);
+      const completed = await this.store.complete(handle, claimed, result);
+      if (completed.replacedHandle)
+        await this.close(completed.replacedHandle, "LOCAL_SESSION_REPLACED");
+      return completed;
     } catch (error) {
       const failure = error instanceof TfRenewalError ? error : unavailable();
       if (failure.terminal)

@@ -317,11 +317,14 @@ describe("D05 actual TF routes", () => {
     f.platform.createAuthorizationUrl.mockReturnValue(
       "https://api.apollot.ru/v1/oauth/authorize",
     );
-    const start = await f.request("/auth/start", { redirect: "manual" });
+    const start = await f.request("/auth/start", {
+      redirect: "manual",
+      headers: { "X-CSRF-Token": f.login.record.csrf },
+    });
     expect(start.status).toBe(303);
     const tx = f.sessionStore.createTransaction.mock.calls[0]![0];
     expect(tx.familyHandle).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect((await f.store.read(f.login.handle))?.record.phase).toBe("CLOSED");
+    expect((await f.store.read(f.login.handle))?.record.phase).toBe("ACTIVE");
     f.sessionStore.consumeTransaction.mockResolvedValue(tx);
     f.platform.exchangeCode.mockResolvedValue({
       assertion: "initial.test.assertion",

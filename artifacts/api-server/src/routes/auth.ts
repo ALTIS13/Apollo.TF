@@ -22,6 +22,7 @@ import {
   hasFamilyCookie,
   familyCookies,
   clearFamilyCookies,
+  clearLegacyCookies,
   sendRenewalError,
 } from "../lib/tf-browser-session.js";
 import type { TfRenewalConsumer } from "../lib/tf-renewal-consumer.js";
@@ -29,6 +30,7 @@ import {
   TfRenewalError,
   unavailable,
   renewalVersion,
+  opaqueSchema,
 } from "../lib/tf-renewal-contract.js";
 import type { FamilyObservation } from "../lib/tf-family-store.js";
 import {
@@ -203,6 +205,11 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
   const router = Router();
   const httpOnlyCookie = baseCookieOptions(dependencies.secureCookies, true);
   const csrfCookie = baseCookieOptions(dependencies.secureCookies, false);
+  async function retireLegacy(request: Request) {
+    const handle = cookieValue(request, AUTH_COOKIE_NAMES.session);
+    if (handle && OPAQUE_PATTERN.test(handle))
+      await dependencies.sessionStore.revokeSession(handle);
+  }
   function setFamily(
     handle: string,
     observation: FamilyObservation,
@@ -249,16 +256,50 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
         throw new AuthRequestError(503);
       }
       let familyHandle: string | undefined;
+      let familyReplacementAuthorized = true;
       if (dependencies.renewal) {
+        const suppliedBinder = cookieValue(request, AUTH_COOKIE_NAMES.browser);
+        let binder = opaqueSchema.safeParse(suppliedBinder).success
+          ? suppliedBinder!
+          : opaqueValue();
+        let previous: ReturnType<typeof familyCookies> | undefined;
         if (hasFamilyCookie(request)) {
-          const previous = familyCookies(request);
-          clearFamilyCookies(response, dependencies.secureCookies);
-          await dependencies.renewal.logout(
+          previous = familyCookies(request);
+          const current = await dependencies.renewal.store.read(
             previous.handle,
-            "LOCAL_SESSION_REPLACED",
           );
+          if (current && current.record.phase !== "CLOSED") {
+            if (
+              !(await dependencies.renewal.validateCsrf(
+                previous.handle,
+                previous.csrf,
+                previous.csrf,
+              )) ||
+              (opaqueSchema.safeParse(suppliedBinder).success &&
+                suppliedBinder !== current.record.lineageId)
+            )
+              throw new AuthRequestError(403);
+            binder = current.record.lineageId;
+          }
         }
-        familyHandle = (await dependencies.renewal.createLogin()).handle;
+        const active =
+          await dependencies.renewal.store.activeForBrowser(binder);
+        if (active)
+          familyReplacementAuthorized =
+            previous?.handle === active.handle &&
+            request.get("origin") === dependencies.webOrigin &&
+            (await dependencies.renewal.validateCsrf(
+              active.handle,
+              previous.csrf,
+              request.get("x-csrf-token") ?? "",
+            ));
+        familyHandle = (await dependencies.renewal.createLogin(binder)).handle;
+        // Non-authorizing browser custody, independent of the public installation hint.
+        setHostCookie(response, AUTH_COOKIE_NAMES.browser, binder, {
+          ...httpOnlyCookie,
+          secure: true,
+          maxAge: INSTALLATION_MAX_AGE_MS,
+        });
       } else if (hasFamilyCookie(request)) throw unavailable();
       const transactionHandle =
         await dependencies.sessionStore.createTransaction({
@@ -267,7 +308,9 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
           codeVerifier,
           installationId,
           installationLabel: INSTALLATION_LABEL,
-          ...(familyHandle ? { familyHandle } : {}),
+          ...(familyHandle
+            ? { familyHandle, familyReplacementAuthorized }
+            : {}),
         });
       const codeChallenge = createHash("sha256")
         .update(codeVerifier, "ascii")
@@ -295,11 +338,17 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
       );
       response.redirect(303, location);
     } catch (error) {
-      sendAuthenticationError(response, statusFor(error));
+      sendAuthenticationError(
+        response,
+        error instanceof AuthRequestError && error.status === 403
+          ? 403
+          : statusFor(error),
+      );
     }
   });
 
   router.get("/callback", async (request, response) => {
+    let successorHandle: string | undefined;
     try {
       const transactionHandle = cookieValue(
         request,
@@ -316,6 +365,7 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
       if (transaction === null) {
         throw new AuthRequestError(400);
       }
+      successorHandle = transaction.familyHandle;
       const query = exactQuery(request, ["code", "state"]);
       const code = query.code!;
       const state = query.state!;
@@ -338,6 +388,8 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
       ) {
         if (!dependencies.renewal || !transaction.familyHandle)
           throw unavailable();
+        if (transaction.familyReplacementAuthorized !== true)
+          throw new AuthRequestError(403);
         await dependencies.renewal.store.beginEnrollment(
           transaction.familyHandle,
           {
@@ -350,23 +402,19 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
           },
           exchange.assertion,
         );
-        const pending = await dependencies.renewal.store.read(
+        await retireLegacy(request);
+        await dependencies.renewal.renew(transaction.familyHandle);
+        const current = await dependencies.renewal.store.read(
           transaction.familyHandle,
         );
-        if (!pending) throw unavailable();
-        // Persisted pending identity and nonce let a lost upstream response be resolved by /renew.
-        setFamily(transaction.familyHandle, pending, response);
-        const enrolled = await dependencies.renewal.renew(
-          transaction.familyHandle,
-        );
-        setFamily(transaction.familyHandle, enrolled, response);
+        if (!current || current.record.phase !== "ACTIVE") throw unavailable();
+        setFamily(transaction.familyHandle, current, response);
         clearHostCookie(
           response,
           AUTH_COOKIE_NAMES.transaction,
           httpOnlyCookie,
         );
-        clearHostCookie(response, AUTH_COOKIE_NAMES.session, httpOnlyCookie);
-        clearHostCookie(response, AUTH_COOKIE_NAMES.csrf, csrfCookie);
+        clearLegacyCookies(response, dependencies.secureCookies);
         response.redirect(303, dependencies.webOrigin);
         return;
       }
@@ -397,8 +445,42 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
       });
       response.redirect(303, dependencies.webOrigin);
     } catch (error) {
-      clearHostCookie(response, AUTH_COOKIE_NAMES.transaction, httpOnlyCookie);
-      sendAuthenticationError(response, statusFor(error));
+      if (dependencies.renewal || successorHandle) {
+        // Only the still-selected pending/successful login may publish cookies.
+        // A stale callback must not even clear the newer transaction/family cookies.
+        if (successorHandle && dependencies.renewal) {
+          try {
+            const current =
+              await dependencies.renewal.store.read(successorHandle);
+            if (
+              current &&
+              (current.record.phase === "ENROLLING" ||
+                current.record.phase === "ACTIVE")
+            ) {
+              setFamily(successorHandle, current, response);
+              clearLegacyCookies(response, dependencies.secureCookies);
+              clearHostCookie(
+                response,
+                AUTH_COOKIE_NAMES.transaction,
+                httpOnlyCookie,
+              );
+            }
+          } catch {
+            /* Unavailable lineage never publishes a callback identity. */
+          }
+        }
+      } else
+        clearHostCookie(
+          response,
+          AUTH_COOKIE_NAMES.transaction,
+          httpOnlyCookie,
+        );
+      sendAuthenticationError(
+        response,
+        error instanceof AuthRequestError && error.status === 403
+          ? 403
+          : statusFor(error),
+      );
     }
   });
 
@@ -478,7 +560,11 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
           return;
         }
         clearFamilyCookies(response, dependencies.secureCookies);
-        await dependencies.renewal.logout(handle);
+        try {
+          await dependencies.renewal.logout(handle);
+        } finally {
+          await retireLegacy(request);
+        }
         response.status(204).end();
       } catch (error) {
         sendLocalRenewalError(response, error);

@@ -1,42 +1,12 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import * as sessions from "./tf-session-store.js";
+import { memoryFamilyPersistence } from "./tf-renewal-test-support.js";
 
 const opaque = () => randomBytes(32).toString("base64url");
 function fixture() {
   let now = Date.now();
-  const entries = new Map<
-    string,
-    { value: string; expiry: number; outbox: boolean }
-  >();
-  const persistence = {
-    async read(key: string) {
-      const e = entries.get(key);
-      return e && e.expiry > now ? e.value : null;
-    },
-    async cas(
-      key: string,
-      expected: string | null,
-      value: string,
-      expiry: number,
-      extend = false,
-      outbox = false,
-    ) {
-      if ((await this.read(key)) !== expected) return false;
-      const current = entries.get(key);
-      entries.set(key, {
-        value,
-        expiry: extend || !current ? expiry : Math.min(current.expiry, expiry),
-        outbox,
-      });
-      return true;
-    },
-    async pending() {
-      return [...entries]
-        .filter(([, e]) => e.outbox && e.expiry > now)
-        .map(([key]) => key);
-    },
-  };
+  const persistence = memoryFamilyPersistence(() => now);
   const Store = (
     sessions as unknown as {
       TfFamilyStore: new (p: typeof persistence, clock: () => number) => any;
@@ -72,7 +42,6 @@ function fixture() {
     store,
     binding,
     response,
-    entries,
     advance(ms: number) {
       now += ms;
     },

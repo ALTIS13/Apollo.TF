@@ -12,6 +12,7 @@ const OPAQUE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const UNSAFE_METHODS = new Set(["DELETE", "PATCH", "POST", "PUT"]);
 
 export const AUTH_COOKIE_NAMES = Object.freeze({
+  browser: "__Host-apollo_tf_browser",
   family: "__Host-apollo_tf_family",
   familyCsrf: "__Host-apollo_tf_family_csrf",
   installation: "__Host-apollo_tf_installation",
@@ -72,6 +73,7 @@ export function familyCookies(request: Request): {
   return { handle: handle!, csrf: csrf! };
 }
 export function clearFamilyCookies(response: Response, secure = true) {
+  clearLegacyCookies(response, secure);
   response.clearCookie(AUTH_COOKIE_NAMES.family, {
     path: "/",
     secure,
@@ -79,6 +81,20 @@ export function clearFamilyCookies(response: Response, secure = true) {
     sameSite: "lax",
   });
   response.clearCookie(AUTH_COOKIE_NAMES.familyCsrf, {
+    path: "/",
+    secure,
+    httpOnly: false,
+    sameSite: "lax",
+  });
+}
+export function clearLegacyCookies(response: Response, secure = true) {
+  response.clearCookie(AUTH_COOKIE_NAMES.session, {
+    path: "/",
+    secure,
+    httpOnly: true,
+    sameSite: "lax",
+  });
+  response.clearCookie(AUTH_COOKIE_NAMES.csrf, {
     path: "/",
     secure,
     httpOnly: false,
@@ -131,18 +147,26 @@ export function requireTfBrowserMutation(
       }
       try {
         if (!successor) throw unavailable();
+        // Reject foreign navigation/form requests before a cookie error can emit terminal clears.
+        if (
+          request.get("origin") !== webOrigin ||
+          request.get("content-encoding") !== undefined
+        ) {
+          response
+            .status(403)
+            .json({ code: "TF_RENEWAL_CSRF_REJECTED", retryable: false });
+          return;
+        }
         const cookies = familyCookies(request);
         const context =
           request.originalUrl === "/api/auth/renew-context" &&
           request.method === "POST";
         if (
-          request.get("origin") !== webOrigin ||
-          request.get("content-encoding") !== undefined ||
-          (!context &&
-            !constantTimeOpaqueMatch(
-              request.get("x-csrf-token") ?? "",
-              cookies.csrf,
-            ))
+          !context &&
+          !constantTimeOpaqueMatch(
+            request.get("x-csrf-token") ?? "",
+            cookies.csrf,
+          )
         ) {
           response
             .status(403)
