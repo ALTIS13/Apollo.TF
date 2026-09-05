@@ -5,8 +5,8 @@ Read-only reconciliation plus documentation; no new implementation or test run.
 
 ## Closed source work: do not repeat
 
-- Liked collection API and UI are implemented and locally validated. Their
-  remaining gate is real persistence/full-stack evidence, not another UI rewrite.
+- Liked collection API and UI are implemented and locally validated. Root has
+  now accepted the real PG17 store proof below; HTTP/UI integration remains open.
 - Single canonical queue, keyboard/touch queue actions (`9745291`), responsive
   footer (`97851c8`) and native footer Space actions (`700ed3e`) are root-accepted
   after independent source review. UI remains local, unpushed and undeployed.
@@ -30,22 +30,29 @@ invent a new micro-fix merely while waiting for runtime gates. Native Apollo
 playlists/history are mentioned in the broad client design, but only liked CRUD
 is delivered by `collections.ts`; provider playlists and `play_history` storage
 are not equivalent. Those are separate, unclosed product scopes, not authorized
-new implementation here and not prerequisites to rerun the liked proof.
+new implementation here and not reasons to rerun the accepted liked-store proof.
 
 ## Real PG17 and full-stack gates
 
-1. Root creates a **separate disposable Coolify Application** for the frozen
-   private proof source `a59d3be8de0b8358bd1f4a93583ca77c127b58fb`. Never use the
-   Supabase/account database, its credentials, volumes or Application.
-2. Pin the approved PG17 image digest, source/digest and unique run identity;
-   supply three private role secrets and explicit `execute:<runId>` gate.
-   Build and run the unchanged migrator/official runner. Required outcome:
-   **3 passed, 0 skipped, exit 0**, with redacted provenance-bound evidence.
-3. Export evidence before disposal and verify cleanup of only the owned proof
-   resource. Source review/configuration checks are not substitutes for this run.
-4. Against an approved TF backend, verify liked persistence/account isolation and
-   browser save/list/delete, then actual provider search/full-track playback and
-   media-job behavior. HTTP/Audio fixtures do not prove these outcomes.
+Root-reported accepted evidence (not independently rerun by TF):
+
+- Corrected private source `cc364d176d205c27930f87efc6d4e9c45ee7530f`, digest
+  `a5e652d07acd48f6ae2472e899b5c943946ad160af15e5ec8fb01b3250209db1`.
+- Separate Application `dl50veios5706uj33h8itja8`, run `tf20260905_28f286c2`;
+  runtime deployment `xhu38arvsjohvb9i08xqwv5z`.
+- PG17.6 healthy, two migrations applied, migration exit 0; all three unchanged
+  official tests **passed, 0 skipped, proof exit 0, accepted true**.
+- Proof transcript SHA-256:
+  `0b625c863d2ef17f930bf3a7203505fe93fbf09ac153fbe9790c9db7e6acb6ff`.
+- Root checked build/source/effective Compose isolation and retained redacted
+  evidence. Application deletion initiated; **cleanup verification still pending**.
+
+This closes real liked-store PG17 correctness, not HTTP/UI/audio or Platform
+cutover. Against an approved TF backend, the remaining integration check is the
+real authenticated browser save/list/delete path and its account/policy boundary.
+Provider search/full-track playback and media jobs still need live validation;
+HTTP/Audio fixtures are not evidence for those outcomes. Do not use account DB
+credentials/volumes for TF verification or repeat the accepted store suite.
 
 ## Platform Auth and cross-project gates
 
@@ -67,6 +74,13 @@ new implementation here and not prerequisites to rerun the liked proof.
 
 ## Next decision
 
-Prioritize the isolated TF PG17 Application when root is ready. A compact
-search-screen scope or existing admin visual smoke can proceed independently
-after root selects it; neither should change the frozen proof or auth boundary.
+1. Root confirms scoped cleanup; TF makes no cleanup or runtime call.
+2. When root provides an approved TF backend/session, close the real liked
+   HTTP/UI flow. Reuse accepted store code; no new identity or PG proof harness.
+3. Independently, root can select the missing admin visual smoke, then compact
+   search-first composition and integrations navigation from the existing design.
+4. Real provider/audio/media-job validation and unified Platform contracts remain
+   separate scoped runtime/ownership gates, not consequences of store success.
+
+No new code, tests, publication or deployment is authorized by this handoff;
+wait for root's next selected slice. Accepted local UI checkpoints remain frozen.

@@ -4,6 +4,11 @@ Last updated: 2026-09-05.
 
 ## Current remaining-gates handoff
 
+- Root reports real liked-store PG17 proof accepted on private `cc364d1`:
+  run `tf20260905_28f286c2`, two migrations/exit 0, original tests 3 passed /
+  0 skipped, proof exit 0/accepted true. Evidence retained by root; Application
+  deletion started but cleanup verification remains pending. Not HTTP/UI/audio
+  or Platform Auth acceptance. Older real-DB-pending notes below are historical.
 - Root independently accepted `700ed3e` after `9745291` and `97851c8`; those
   source-only UI slices are closed, still local and undeployed.
 - Current residual work and ownership gates are reconciled in
