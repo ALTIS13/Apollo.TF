@@ -2,6 +2,26 @@
 
 Last updated: 2026-09-05.
 
+## Footer native keyboard activation checkpoint
+
+Status: `TF_PLAYER_KEYBOARD_LOCAL_REVIEW_READY`.
+
+- Reproduced Space on Next/Previous/Mute toggling playback instead of the focused
+  action. Four footer buttons now stop only Space propagation, preserving native
+  activation without preventDefault or synthetic clicks. Global hotkeys, Queue,
+  layout, player state, auth and API are unchanged.
+- TDD: four intended keyboard failures before the patch; all five focused Player
+  tests pass after it, including disabled transport/tab-order coverage. Scoped
+  music-player typecheck passed. No unrelated suites/build or layout reruns.
+- Full App Chrome fixture QA passed Next/Previous Space+Enter, Play/Pause, Mute
+  without playback side effects, disabled empty controls and unchanged body Space.
+  No page/console errors. Reproduce: `node C:/Users/maksi/.codex/tmp/tf-player-keyboard-qa.cjs`
+  with local preview at `http://127.0.0.1:4191/`. HTTP/Audio are fixtures, not
+  real auth/backend/audio-decoding evidence.
+- Prior responsive commit `97851c8` is independently reviewed and root-accepted.
+  This three-file slice is local, awaiting review; no UI push/deploy. Frozen
+  TF PG17 proof and Platform account staging remain separate root-owned gates.
+
 ## Bottom player responsive bounds checkpoint
 
 Status: `TF_PLAYER_RESPONSIVE_LOCAL_REVIEW_READY`.
