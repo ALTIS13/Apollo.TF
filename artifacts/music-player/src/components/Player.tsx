@@ -50,7 +50,7 @@ export function Player() {
       <div className="h-[90px] px-4 flex items-center gap-4">
 
         {/* Track info */}
-        <div className="flex items-center gap-3 w-[28%] min-w-[140px]">
+        <div className="flex flex-1 min-w-0 items-center gap-3 sm:flex-none sm:w-[28%] sm:min-w-[140px]">
           <div className="w-12 h-12 rounded-lg overflow-hidden bg-secondary flex-shrink-0 relative shadow">
             {currentTrack?.thumbnailUrl ? (
               <img src={currentTrack.thumbnailUrl} alt={currentTrack.title} className="w-full h-full object-cover" />
@@ -78,7 +78,7 @@ export function Player() {
         </div>
 
         {/* Center: controls + seek */}
-        <div className="flex-1 flex flex-col items-center gap-1.5 max-w-[400px] mx-auto">
+        <div className="flex-1 min-w-[120px] flex flex-col items-center gap-1.5 max-w-[400px] mx-auto">
           {/* Buttons */}
           <div className="flex items-center gap-5">
             <button
@@ -129,7 +129,7 @@ export function Player() {
         </div>
 
         {/* Right: volume */}
-        <div className="flex items-center justify-end gap-2 w-[28%] min-w-[100px]">
+        <div className="flex shrink-0 items-center justify-end gap-2 sm:w-[28%] sm:min-w-[100px]">
           <button
             onClick={() => setVolume(volume === 0 ? 0.8 : 0)}
             className="text-muted-foreground hover:text-foreground transition-colors"

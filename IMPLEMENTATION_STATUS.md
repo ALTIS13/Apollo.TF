@@ -2,6 +2,28 @@
 
 Last updated: 2026-09-05.
 
+## Bottom player responsive bounds checkpoint
+
+Status: `TF_PLAYER_RESPONSIVE_LOCAL_REVIEW_READY`.
+
+- Fixed a reproduced mobile defect: mute was at x=392..408 on 320/375/390px
+  viewports, hidden by the app's overflow boundary. Only three responsive layout
+  classes in `Player.tsx` changed: shrinkable mobile track info, bounded controls,
+  and no desktop-width volume reservation on mobile. No state/hotkey/API changes.
+- Browser RED: nine clipped-mute failures across three mobile widths/states.
+  GREEN: all 15 empty/long-title-paused/active cases at 320/375/390/768/1440px
+  passed geometry, non-overlap, mute focus bounds, actual mute/unmute and seek
+  action checks. Height remains 90px; 768/1440px empty-state section/control
+  geometry exactly matches the pre-change measurements. Screenshots inspected.
+- Reproduce with Windows Node: `node C:/Users/maksi/.codex/tmp/tf-player-responsive-qa.cjs`
+  against local preview `http://127.0.0.1:4191/`. HTTP and Audio are fixtures;
+  this does not validate live auth/backend or audio decoding. RED/GREEN geometry
+  and screenshots: `C:\Users\maksi\.codex\tmp\tf-player-responsive-evidence\`.
+- Scoped music-player typecheck and diff check passed. No unrelated suites or
+  snapshot/className tests added. Previous Queue `9745291` is root-review accepted.
+- Commit/push: local two-file slice, root review next; no push/deploy. Frozen
+  private proof source, Platform/PG17 gates and other projects remain untouched.
+
 ## Queue keyboard and touch accessibility checkpoint
 
 Status: `TF_QUEUE_ACCESSIBILITY_LOCAL_REVIEW_READY`.
