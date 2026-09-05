@@ -19,17 +19,18 @@ export function memoryFamilyPersistence(
       const value = values.get(k);
       return value && value.expiry > now() ? value.raw : null;
     },
-    async cas(k, expected, raw, expiry, extend, outbox, lineage) {
+    async cas(k, expected, raw, expiry, extend, outbox, lineage, retirement) {
       const current = values.get(k);
       const actual = current && current.expiry > now() ? current.raw : null;
       if (actual !== expected || expiry <= now()) return false;
-      if (lineage) {
-        const currentLineage = values.get(lineage.key);
+      for (const guard of [lineage, retirement]) {
+        if (!guard) continue;
+        const currentLineage = values.get(guard.key);
         const actualLineage =
           currentLineage && currentLineage.expiry > now()
             ? currentLineage.raw
             : null;
-        if (actualLineage !== lineage.expected || lineage.expiry <= now())
+        if (actualLineage !== guard.expected || guard.expiry <= now())
           return false;
       }
       values.set(k, {
@@ -45,6 +46,12 @@ export function memoryFamilyPersistence(
           raw: lineage.value,
           expiry: lineage.expiry,
           outbox: false,
+        });
+      if (retirement)
+        values.set(retirement.key, {
+          raw: retirement.value,
+          expiry: retirement.expiry,
+          outbox: true,
         });
       return true;
     },

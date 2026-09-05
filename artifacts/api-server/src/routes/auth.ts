@@ -256,7 +256,6 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
         throw new AuthRequestError(503);
       }
       let familyHandle: string | undefined;
-      let familyReplacementAuthorized = true;
       if (dependencies.renewal) {
         const suppliedBinder = cookieValue(request, AUTH_COOKIE_NAMES.browser);
         let binder = opaqueSchema.safeParse(suppliedBinder).success
@@ -282,18 +281,24 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
             binder = current.record.lineageId;
           }
         }
-        const active =
+        const { requiresReplacement, ...observed } =
           await dependencies.renewal.store.activeForBrowser(binder);
-        if (active)
-          familyReplacementAuthorized =
-            previous?.handle === active.handle &&
+        const authorized =
+          !requiresReplacement ||
+          (observed.active !== null &&
+            previous?.handle === observed.active &&
             request.get("origin") === dependencies.webOrigin &&
             (await dependencies.renewal.validateCsrf(
-              active.handle,
+              observed.active,
               previous.csrf,
               request.get("x-csrf-token") ?? "",
-            ));
-        familyHandle = (await dependencies.renewal.createLogin(binder)).handle;
+            )));
+        familyHandle = (
+          await dependencies.renewal.createLogin(binder, {
+            ...observed,
+            authorized,
+          })
+        ).handle;
         // Non-authorizing browser custody, independent of the public installation hint.
         setHostCookie(response, AUTH_COOKIE_NAMES.browser, binder, {
           ...httpOnlyCookie,
@@ -308,9 +313,7 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
           codeVerifier,
           installationId,
           installationLabel: INSTALLATION_LABEL,
-          ...(familyHandle
-            ? { familyHandle, familyReplacementAuthorized }
-            : {}),
+          ...(familyHandle ? { familyHandle } : {}),
         });
       const codeChallenge = createHash("sha256")
         .update(codeVerifier, "ascii")
@@ -388,7 +391,11 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
       ) {
         if (!dependencies.renewal || !transaction.familyHandle)
           throw unavailable();
-        if (transaction.familyReplacementAuthorized !== true)
+        if (
+          !(await dependencies.renewal.store.loginAuthorized(
+            transaction.familyHandle,
+          ))
+        )
           throw new AuthRequestError(403);
         await dependencies.renewal.store.beginEnrollment(
           transaction.familyHandle,

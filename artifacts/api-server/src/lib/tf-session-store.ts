@@ -30,7 +30,6 @@ const providerOAuthBindingSchema = z
 const transactionInputSchema = z
   .object({
     familyHandle: z.string().regex(OPAQUE_PATTERN).optional(),
-    familyReplacementAuthorized: z.boolean().optional(),
     state: z.string().regex(OPAQUE_PATTERN),
     codeVerifier: z.string().regex(/^[A-Za-z0-9._~-]{43,128}$/),
     nonce: z.string().regex(OPAQUE_PATTERN),

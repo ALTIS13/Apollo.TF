@@ -10,6 +10,7 @@ import {
   TfFamilyStore,
   type FamilyRecord,
   type FamilyObservation,
+  type LoginAuthorization,
 } from "./tf-family-store.js";
 import {
   familyBinding,
@@ -52,8 +53,8 @@ export class TfRenewalConsumer {
     }
     if (!this.keys.has(options.revocationKeys.active)) throw unavailable();
   }
-  createLogin(lineageId?: string) {
-    return this.store.createLogin(lineageId);
+  createLogin(lineageId?: string, authorization?: LoginAuthorization) {
+    return this.store.createLogin(lineageId, authorization);
   }
   async context(handle: string, csrf: string) {
     const current = await this.store.read(handle);
@@ -122,10 +123,9 @@ export class TfRenewalConsumer {
         generation: result.generation,
         access_assertion: result.token.access_token,
       });
-      const completed = await this.store.complete(handle, claimed, result);
-      if (completed.replacedHandle)
-        await this.close(completed.replacedHandle, "LOCAL_SESSION_REPLACED");
-      return completed;
+      return await this.store.complete(handle, claimed, result, (r) =>
+        this.seal(r, "LOCAL_SESSION_REPLACED"),
+      );
     } catch (error) {
       const failure = error instanceof TfRenewalError ? error : unavailable();
       if (failure.terminal)
@@ -235,18 +235,29 @@ export class TfRenewalConsumer {
     handle: string,
     reason: RevokeRequest["reason"],
     expected?: FamilyObservation,
+    wholeBrowser = false,
   ) {
-    return this.store.close(handle, (r) => this.seal(r, reason), expected);
+    return this.store.close(
+      handle,
+      (r) => this.seal(r, reason),
+      expected,
+      wholeBrowser,
+    );
   }
   async logout(
     handle: string,
     reason: RevokeRequest["reason"] = "USER_LOGOUT",
   ) {
-    await this.close(handle, reason);
+    await this.close(handle, reason, undefined, true);
     await this.drainRevocations();
     const r = await this.store.read(handle);
     if (r?.record.phase === "CLOSED" && r.record.revocation)
       throw unavailable();
+    if (r?.record.phase === "CLOSED" && r.record.retiredHandle) {
+      const retired = await this.store.read(r.record.retiredHandle);
+      if (retired?.record.phase === "CLOSED" && retired.record.revocation)
+        throw unavailable();
+    }
   }
   /** Runtime scheduler may call this bounded, durable revoke-only outbox drain. */
   async drainRevocations() {

@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -56,8 +56,8 @@ class BrowserJar {
 async function fixture(withLegacy = false) {
   const jar = new BrowserJar();
   jar.values.set(names.installation, randomUUID());
-  const persistence = memoryFamilyPersistence();
-  const store = new TfFamilyStore(persistence);
+  const persistence = memoryFamilyPersistence(() => Date.now());
+  const store = new TfFamilyStore(persistence, () => Date.now());
   const grants = new Map<string, RenewalResult>();
   const bindings = { A: testBinding(), B: testBinding() };
   const client = {
@@ -256,6 +256,165 @@ async function fixture(withLegacy = false) {
 }
 
 describe("D05 review F1-F3 browser lineage", () => {
+  describe("round 2 reservation and retirement", () => {
+    it("permits fresh login after active expiry without treating its retained lineage locator as authority", async () => {
+      const f = await fixture();
+      expect((await f.callback(await f.start())).status).toBe(303);
+      const old = f.jar.values.get(names.family)!;
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(Date.now() + 3600_001);
+        f.jar.values.delete(names.family);
+        f.jar.values.delete(names.familyCsrf);
+        expect((await f.callback(await f.start(), "B")).status).toBe(303);
+        expect(await f.store.read(old)).toBeNull();
+        expect(await (await f.send("/auth/me")).json()).toMatchObject({
+          accountId: f.bindings.B.account_id,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    it("rejects navigation A when B completes between active lookup and reservation", async () => {
+      const f = await fixture();
+      const b = await f.start();
+      const lookup = f.store.activeForBrowser.bind(f.store);
+      let raced = false;
+      vi.spyOn(f.store, "activeForBrowser").mockImplementation(
+        async (binder) => {
+          const observed = await lookup(binder);
+          if (!raced) {
+            raced = true;
+            expect((await f.callback(b, "B")).status).toBe(303);
+          }
+          return observed;
+        },
+      );
+      const response = await f.send("/auth/start");
+      expect(response.status).not.toBe(303);
+      expect(response.headers.has("set-cookie")).toBe(false);
+      expect(await (await f.send("/auth/me")).json()).toMatchObject({
+        accountId: f.bindings.B.account_id,
+      });
+    });
+    it.each(["navigation", "binder-only"])(
+      "rejects same-revision %s replacement without deliberate authority",
+      async (mode) => {
+        const f = await fixture();
+        expect((await f.callback(await f.start())).status).toBe(303);
+        const old = f.jar.values.get(names.family)!;
+        if (mode === "binder-only") {
+          f.jar.values.delete(names.family);
+          f.jar.values.delete(names.familyCsrf);
+        }
+        expect((await f.callback(await f.start(), "B")).status).toBe(403);
+        expect((await f.renewal.authorize(old)).accountId).toBe(
+          f.bindings.A.account_id,
+        );
+      },
+    );
+    it("same-revision authorized promotion durably retires predecessor before returning", async () => {
+      const f = await fixture();
+      expect((await f.callback(await f.start())).status).toBe(303);
+      const old = f.jar.values.get(names.family)!;
+      expect((await f.callback(await f.start(true), "B")).status).toBe(303);
+      expect((await f.store.read(old))?.record.phase).toBe("CLOSED");
+      expect(await f.store.pendingRevocations()).toHaveLength(1);
+      expect(await (await f.send("/auth/me")).json()).toMatchObject({
+        accountId: f.bindings.B.account_id,
+      });
+    });
+    it("promotion commit followed by process-loss error leaves encrypted predecessor retirement durable", async () => {
+      const f = await fixture();
+      expect((await f.callback(await f.start())).status).toBe(303);
+      const old = f.jar.values.get(names.family)!;
+      const tx = await f.start(true);
+      const cas = f.persistence.cas;
+      let crashed = false;
+      f.persistence.cas = async (...args) => {
+        const committed = await cas(...args);
+        if (committed && !crashed && JSON.parse(args[2]).phase === "ACTIVE") {
+          crashed = true;
+          throw new Error(
+            "controlled response loss immediately after promotion commit",
+          );
+        }
+        return committed;
+      };
+      expect((await f.callback(tx, "B")).status).toBe(503);
+      const retired = await f.store.read(old);
+      expect(retired?.record.phase).toBe("CLOSED");
+      expect(retired?.raw).not.toContain("renewal_reference");
+      expect(retired?.raw).not.toContain("access_token");
+      expect(await f.store.pendingRevocations()).toHaveLength(1);
+      const restarted = new TfFamilyStore(f.persistence);
+      expect(await restarted.pendingRevocations()).toHaveLength(1);
+      await f.renewal.drainRevocations();
+      expect(await restarted.pendingRevocations()).toHaveLength(0);
+    });
+    it("terminal pending replacement failure deliberately preserves predecessor authority", async () => {
+      const f = await fixture();
+      expect((await f.callback(await f.start())).status).toBe(303);
+      const old = f.jar.values.get(names.family)!;
+      const tx = await f.start(true);
+      f.client.enroll.mockRejectedValueOnce(
+        new TfRenewalError("INVALID_REFERENCE"),
+      );
+      expect((await f.callback(tx, "B")).status).toBe(503);
+      expect((await f.renewal.authorize(old)).accountId).toBe(
+        f.bindings.A.account_id,
+      );
+      expect(await f.store.pendingRevocations()).toHaveLength(0);
+    });
+    it("explicit pending-context logout terminalizes predecessor with durable revoke despite upstream outage", async () => {
+      const f = await fixture();
+      expect((await f.callback(await f.start())).status).toBe(303);
+      const old = f.jar.values.get(names.family)!;
+      const tx = await f.start(true);
+      f.client.enroll.mockRejectedValueOnce(
+        new TfRenewalError("OPERATION_UNCERTAIN"),
+      );
+      expect((await f.callback(tx, "B")).status).toBe(503);
+      f.client.revoke.mockRejectedValue(
+        new TfRenewalError("OPERATION_UNCERTAIN"),
+      );
+      expect((await f.logout()).status).toBe(503);
+      expect((await f.store.read(old))?.record.phase).toBe("CLOSED");
+      expect(await f.store.pendingRevocations()).toHaveLength(1);
+      await expect(f.renewal.authorize(old)).rejects.toMatchObject({
+        status: 401,
+      });
+    });
+    it("predecessor CAS conflict prevents promotion instead of orphaning either context", async () => {
+      const f = await fixture();
+      expect((await f.callback(await f.start())).status).toBe(303);
+      const old = f.jar.values.get(names.family)!;
+      const tx = await f.start(true);
+      const cas = f.persistence.cas;
+      let raced = false;
+      f.persistence.cas = async (...args) => {
+        if (!raced && JSON.parse(args[2]).phase === "ACTIVE") {
+          raced = true;
+          const k = `tf-auth:{families}:${createHash("sha256").update(old).digest("hex")}`;
+          const raw = (await f.persistence.read(k))!;
+          const record = JSON.parse(raw);
+          await cas(
+            k,
+            raw,
+            JSON.stringify({ ...record, csrf: testOpaque() }),
+            record.expiresAt,
+          );
+        }
+        return cas(...args);
+      };
+      expect((await f.callback(tx, "B")).status).toBe(503);
+      expect((await f.store.read(old))?.record.phase).toBe("ACTIVE");
+      expect((await f.store.read(tx.tx.familyHandle!))?.record.phase).toBe(
+        "ENROLLING",
+      );
+      expect(await f.store.pendingRevocations()).toHaveLength(0);
+    });
+  });
   it("rejects a forged CSRF cookie on deliberate replacement without changing the active family", async () => {
     const f = await fixture();
     expect((await f.callback(await f.start())).status).toBe(303);

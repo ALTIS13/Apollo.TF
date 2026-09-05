@@ -35,12 +35,27 @@ const base = {
   expiresAt: millis,
 };
 const activeBase = { ...base, csrf: opaqueSchema };
+const replacementSchema = z
+  .object({
+    revision: z.string().uuid().nullable(),
+    active: opaqueSchema.nullable(),
+    authorized: z.boolean(),
+  })
+  .strict();
+export type LoginAuthorization = z.infer<typeof replacementSchema>;
 const recordSchema = z.discriminatedUnion("phase", [
-  z.object({ ...activeBase, phase: z.literal("LOGIN") }).strict(),
+  z
+    .object({
+      ...activeBase,
+      phase: z.literal("LOGIN"),
+      replacement: replacementSchema,
+    })
+    .strict(),
   z
     .object({
       ...activeBase,
       phase: z.literal("ENROLLING"),
+      replacement: replacementSchema,
       binding: bindingSchema,
       initialAssertion: z.string().min(1).max(8192),
       operation: operationSchema,
@@ -59,6 +74,7 @@ const recordSchema = z.discriminatedUnion("phase", [
       ...base,
       phase: z.literal("CLOSED"),
       revocation: z.string().max(24000).nullable(),
+      retiredHandle: opaqueSchema.optional(),
     })
     .strict(),
 ]);
@@ -66,7 +82,6 @@ export type FamilyRecord = z.infer<typeof recordSchema>;
 export interface FamilyObservation {
   raw: string;
   record: FamilyRecord;
-  replacedHandle?: string;
 }
 const lineageSchema = z
   .object({
@@ -98,6 +113,7 @@ export interface FamilyPersistence {
     extend?: boolean,
     outbox?: boolean,
     lineage?: LineageGuard,
+    retirement?: LineageGuard,
   ): Promise<boolean>;
   pending(): Promise<string[]>;
   allowContext(key: string): Promise<boolean>;
@@ -114,6 +130,10 @@ if ARGV[6] == '1' then
   if (redis.call('GET',KEYS[3]) or '') ~= ARGV[7] then return 0 end
   if tonumber(ARGV[9]) <= now then return 0 end
 end
+if ARGV[10] == '1' then
+  if (redis.call('GET',KEYS[4]) or '') ~= ARGV[11] then return 0 end
+  if tonumber(ARGV[13]) <= now then return 0 end
+end
 if current and ARGV[4] ~= '1' then
   local ttl = redis.call('PTTL', KEYS[1])
   if ttl <= 0 then return 0 end
@@ -121,6 +141,10 @@ if current and ARGV[4] ~= '1' then
 end
 redis.call('SET', KEYS[1], ARGV[2], 'PXAT', expiry)
 if ARGV[6] == '1' then redis.call('SET',KEYS[3],ARGV[8],'PXAT',ARGV[9]) end
+if ARGV[10] == '1' then
+  redis.call('SET',KEYS[4],ARGV[12],'PXAT',ARGV[13])
+  redis.call('ZADD',KEYS[2],ARGV[13],KEYS[4])
+end
 if ARGV[5] == '1' then redis.call('ZADD', KEYS[2], expiry, KEYS[1])
 else redis.call('ZREM', KEYS[2], KEYS[1]) end
 return 1`;
@@ -143,13 +167,23 @@ export function redisFamilyPersistence(
         throw unavailable();
       return result <= 10;
     },
-    async cas(key, expected, value, expiry, extend, outbox, lineage) {
+    async cas(
+      key,
+      expected,
+      value,
+      expiry,
+      extend,
+      outbox,
+      lineage,
+      retirement,
+    ) {
       const result = await redis.eval(
         CAS,
-        3,
+        4,
         key,
         OUTBOX,
         lineage?.key ?? key,
+        retirement?.key ?? key,
         expected ?? "",
         value,
         expiry,
@@ -159,6 +193,10 @@ export function redisFamilyPersistence(
         lineage?.expected ?? "",
         lineage?.value ?? "",
         lineage?.expiry ?? expiry,
+        retirement ? "1" : "0",
+        retirement?.expected ?? "",
+        retirement?.value ?? "",
+        retirement?.expiry ?? expiry,
       );
       if (result !== 0 && result !== 1) throw unavailable();
       return result === 1;
@@ -248,11 +286,21 @@ export class TfFamilyStore {
   }
   async activeForBrowser(binder: string) {
     const lineage = await this.lineage(binder);
-    if (!lineage.record?.active) return null;
-    const current = await this.read(lineage.record.active);
-    return current?.record.phase === "ACTIVE"
-      ? { handle: lineage.record.active, observation: current }
+    const current = lineage.record?.active
+      ? await this.readKey(key(lineage.record.active))
       : null;
+    if (current && current.record.phase !== "ACTIVE") throw unavailable();
+    return {
+      revision: lineage.record?.revision ?? null,
+      active: lineage.record?.active ?? null,
+      requiresReplacement: current !== null,
+    };
+  }
+  async loginAuthorized(handle: string) {
+    const current = await this.read(handle);
+    return (
+      current?.record.phase === "LOGIN" && current.record.replacement.authorized
+    );
   }
   private async currentGuard(handle: string, record: FamilyRecord) {
     const lineage = await this.lineage(record.lineageId);
@@ -278,6 +326,7 @@ export class TfFamilyStore {
     record: FamilyRecord,
     extend = false,
     lineage?: LineageGuard,
+    retirement?: LineageGuard,
   ): Promise<FamilyObservation> {
     const validated = recordSchema.parse(record),
       raw = JSON.stringify(validated);
@@ -291,6 +340,7 @@ export class TfFamilyStore {
         extend,
         validated.phase === "CLOSED" && validated.revocation !== null,
         lineage,
+        retirement,
       );
     } catch {
       throw unavailable();
@@ -298,19 +348,35 @@ export class TfFamilyStore {
     if (!committed) throw new TfRenewalError("REFERENCE_SPENT");
     return { raw, record: validated };
   }
-  async createLogin(lineageId = opaque()) {
+  async createLogin(lineageId = opaque(), authorization?: LoginAuthorization) {
     const now = this.now(),
       handle = opaque();
+    const lineage = await this.lineage(lineageId);
+    const observed = {
+      revision: lineage.record?.revision ?? null,
+      active: lineage.record?.active ?? null,
+    };
+    const replacement = replacementSchema.parse(
+      authorization ?? {
+        ...observed,
+        authorized: observed.active === null,
+      },
+    );
+    if (
+      replacement.revision !== observed.revision ||
+      replacement.active !== observed.active
+    )
+      throw new TfRenewalError("REFERENCE_SPENT");
     const record = {
       version: 1,
       id: randomUUID(),
       lineageId,
       csrf: opaque(),
       phase: "LOGIN",
+      replacement,
       createdAt: now,
       expiresAt: now + 300_000,
     } as const;
-    const lineage = await this.lineage(lineageId);
     const next = {
       version: 1 as const,
       revision: record.id,
@@ -351,6 +417,8 @@ export class TfFamilyStore {
     const current = await this.read(handle);
     if (!current || current.record.phase !== "LOGIN")
       throw new TfRenewalError("INVALID_REFERENCE");
+    if (!current.record.replacement.authorized)
+      throw new TfRenewalError("POLICY_CHANGED");
     await this.replace(
       key(handle),
       current.raw,
@@ -410,6 +478,11 @@ export class TfFamilyStore {
     handle: string,
     claimed: ClaimedFamily,
     result: RenewalResult,
+    seal: (
+      record: Extract<FamilyRecord, { phase: "ACTIVE" }>,
+    ) => string = () => {
+      throw unavailable();
+    },
   ) {
     const now = this.now(),
       old = claimed.record;
@@ -439,6 +512,16 @@ export class TfFamilyStore {
         : lineage.record?.pending) !== handle
     )
       throw new TfRenewalError("REFERENCE_SPENT");
+    if (
+      old.phase === "ENROLLING" &&
+      (!old.replacement.authorized ||
+        old.replacement.active !== lineage.record?.active)
+    )
+      throw new TfRenewalError("REFERENCE_SPENT");
+    const retirement =
+      old.phase === "ENROLLING" && lineage.record?.active
+        ? await this.retirement(lineage.record.active, seal)
+        : undefined;
     const replacement =
       old.phase === "ENROLLING"
         ? {
@@ -465,12 +548,41 @@ export class TfFamilyStore {
       },
       old.phase === "ENROLLING",
       this.guard(lineage, replacement),
+      retirement,
     );
+    return completed;
+  }
+  private closed(
+    record: FamilyRecord,
+    revocation: string | null,
+    retiredHandle?: string,
+  ): FamilyRecord {
     return {
-      ...completed,
-      ...(old.phase === "ENROLLING" && lineage.record?.active
-        ? { replacedHandle: lineage.record.active }
-        : {}),
+      version: 1,
+      id: record.id,
+      lineageId: record.lineageId,
+      createdAt: record.createdAt,
+      expiresAt: record.expiresAt,
+      phase: "CLOSED",
+      revocation,
+      ...(retiredHandle ? { retiredHandle } : {}),
+    };
+  }
+  private async retirement(
+    handle: string,
+    seal: (record: Extract<FamilyRecord, { phase: "ACTIVE" }>) => string,
+  ): Promise<LineageGuard | undefined> {
+    const current = await this.readKey(key(handle));
+    // Expired keys have no remaining local authority or retained credentials.
+    if (!current) return undefined;
+    if (current.record.phase !== "ACTIVE") throw unavailable();
+    return {
+      key: key(handle),
+      expected: current.raw,
+      value: JSON.stringify(
+        recordSchema.parse(this.closed(current.record, seal(current.record))),
+      ),
+      expiry: current.record.expiresAt,
     };
   }
   async release(handle: string, claimed: ClaimedFamily, retryAfter = 1) {
@@ -496,6 +608,7 @@ export class TfFamilyStore {
     handle: string,
     seal: (record: Extract<FamilyRecord, { phase: "ACTIVE" }>) => string,
     expected?: FamilyObservation,
+    wholeBrowser = false,
   ) {
     for (let attempt = 0; attempt < 3; attempt++) {
       const current = await this.readKey(key(handle));
@@ -513,29 +626,36 @@ export class TfFamilyStore {
               ? {
                   ...lineage.record,
                   revision: randomUUID(),
-                  active: null,
+                  active:
+                    r.phase === "ACTIVE" || wholeBrowser
+                      ? null
+                      : lineage.record.active,
                   pending: null,
                 }
               : lineage.record,
           )
         : undefined;
+      const retirement =
+        selected &&
+        wholeBrowser &&
+        lineage.record?.active &&
+        lineage.record.active !== handle
+          ? await this.retirement(lineage.record.active, seal)
+          : undefined;
       // Create the non-authorizing outbox packet before atomically dropping the reference.
       const revocation = r.phase === "ACTIVE" ? seal(r) : null;
       try {
         await this.replace(
           key(handle),
           current.raw,
-          {
-            version: 1,
-            id: r.id,
-            lineageId: r.lineageId,
-            createdAt: r.createdAt,
-            expiresAt: r.expiresAt,
-            phase: "CLOSED",
+          this.closed(
+            r,
             revocation,
-          },
+            retirement ? lineage.record!.active! : undefined,
+          ),
           false,
           fence,
+          retirement,
         );
         return;
       } catch (error) {
