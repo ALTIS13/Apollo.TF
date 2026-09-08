@@ -206,13 +206,13 @@ async function fixture(withLegacy = false) {
   servers.push(server);
   await once(server, "listening");
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
-  async function send(path: string, init: RequestInit = {}) {
+  async function send(path: string, init: RequestInit = {}, browser = jar) {
     const response = await fetch(url + path, {
       ...init,
       redirect: "manual",
-      headers: { Cookie: jar.header(), ...init.headers },
+      headers: { Cookie: browser.header(), ...init.headers },
     });
-    jar.apply(response);
+    browser.apply(response);
     return response;
   }
   async function start(authorized = false) {
@@ -256,6 +256,140 @@ async function fixture(withLegacy = false) {
 }
 
 describe("D05 review F1-F3 browser lineage", () => {
+  describe("round 3 published pending recovery", () => {
+    it("immediate terminal callback preserves A only with its retained bound cookie pair, including logout custody", async () => {
+      const f = await fixture();
+      expect((await f.callback(await f.start())).status).toBe(303);
+      const old = f.jar.values.get(names.family)!;
+      const tx = await f.start(true);
+      f.client.enroll.mockRejectedValueOnce(
+        new TfRenewalError("INVALID_REFERENCE"),
+      );
+      expect((await f.callback(tx, "B")).status).toBe(503);
+      expect(f.jar.values.get(names.family)).toBe(old);
+      expect((await f.store.read(old))?.record.phase).toBe("ACTIVE");
+      expect((await f.send("/auth/me")).status).toBe(200);
+      expect(await f.store.pendingRevocations()).toHaveLength(0);
+      expect((await f.logout()).status).toBe(204);
+      expect((await f.store.read(old))?.record.phase).toBe("CLOSED");
+    });
+    it.each(["missing", "forged-csrf"])(
+      "terminal callback without usable retained A custody (%s) retires A",
+      async (custody) => {
+        const f = await fixture();
+        expect((await f.callback(await f.start())).status).toBe(303);
+        const old = f.jar.values.get(names.family)!;
+        const tx = await f.start(true);
+        if (custody === "missing") {
+          f.jar.values.delete(names.family);
+          f.jar.values.delete(names.familyCsrf);
+        } else f.jar.values.set(names.familyCsrf, testOpaque());
+        f.client.enroll.mockRejectedValueOnce(
+          new TfRenewalError("INVALID_REFERENCE"),
+        );
+        expect((await f.callback(tx, "B")).status).toBe(503);
+        expect((await f.store.read(old))?.record.phase).toBe("CLOSED");
+        expect(await f.store.pendingRevocations()).toHaveLength(1);
+        expect((await f.callback(await f.start(), "B")).status).toBe(303);
+      },
+    );
+    it.each(["csrf", "origin", "other-browser"])(
+      "rejects %s pending mutation without retiring either context",
+      async (kind) => {
+        const f = await fixture();
+        expect((await f.callback(await f.start())).status).toBe(303);
+        const old = f.jar.values.get(names.family)!;
+        const tx = await f.start(true);
+        f.client.enroll.mockRejectedValueOnce(
+          new TfRenewalError("OPERATION_UNCERTAIN"),
+        );
+        expect((await f.callback(tx, "B")).status).toBe(503);
+        const pending = f.jar.values.get(names.family)!;
+        const browser = kind === "other-browser" ? new BrowserJar() : f.jar;
+        if (kind === "other-browser") {
+          browser.values.set(names.browser, f.jar.values.get(names.browser)!);
+          browser.values.set(
+            names.installation,
+            f.jar.values.get(names.installation)!,
+          );
+        }
+        const response = await f.send(
+          "/auth/renew",
+          {
+            method: "POST",
+            body: "{}",
+            headers: {
+              Origin: kind === "origin" ? "https://foreign.invalid" : origin,
+              "Content-Type": "application/json",
+              "X-CSRF-Token":
+                kind === "csrf"
+                  ? testOpaque()
+                  : f.jar.values.get(names.familyCsrf)!,
+            },
+          },
+          browser,
+        );
+        expect(response.status).toBe(kind === "other-browser" ? 401 : 403);
+        expect((await f.store.read(old))?.record.phase).toBe("ACTIVE");
+        expect((await f.store.read(pending))?.record.phase).toBe("ENROLLING");
+        expect(await f.store.pendingRevocations()).toHaveLength(0);
+        expect(f.jar.values.get(names.family)).toBe(pending);
+      },
+    );
+    it("terminal same-key retry after pending publication retires inaccessible A and permits fresh login/logout", async () => {
+      const f = await fixture();
+      expect((await f.callback(await f.start())).status).toBe(303);
+      const old = f.jar.values.get(names.family)!;
+      const tx = await f.start(true);
+      f.client.enroll.mockRejectedValueOnce(
+        new TfRenewalError("OPERATION_UNCERTAIN"),
+      );
+      expect((await f.callback(tx, "B")).status).toBe(503);
+      const pending = f.jar.values.get(names.family)!;
+      expect(pending).not.toBe(old);
+      const first = f.client.enroll.mock.calls.at(-1)!;
+      f.client.enroll.mockImplementationOnce(async (input, operation) => {
+        expect(input).toEqual(first[0]);
+        expect(operation.idempotencyKey).toBe(first[1].idempotencyKey);
+        expect(operation.correlationId).toBe(first[1].correlationId);
+        throw new TfRenewalError("INVALID_REFERENCE");
+      });
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(Date.now() + 1100);
+        const terminal = await f.send("/auth/renew", {
+          method: "POST",
+          body: "{}",
+          headers: {
+            Origin: origin,
+            "Content-Type": "application/json",
+            "X-CSRF-Token": f.jar.values.get(names.familyCsrf)!,
+          },
+        });
+        expect(terminal.status).toBe(401);
+        expect(f.jar.values.has(names.family)).toBe(false);
+        expect((await f.store.read(pending))?.record.phase).toBe("CLOSED");
+        const retired = await f.store.read(old);
+        expect(retired?.record.phase).toBe("CLOSED");
+        expect(retired?.raw).not.toContain("renewal_reference");
+        expect(retired?.raw).not.toContain("access_token");
+        expect(
+          (await f.store.activeForBrowser(f.jar.values.get(names.browser)!))
+            .active,
+        ).toBeNull();
+        expect(await f.store.pendingRevocations()).toHaveLength(1);
+        expect((await f.callback(await f.start(), "B")).status).toBe(303);
+        expect(await (await f.send("/auth/me")).json()).toMatchObject({
+          accountId: f.bindings.B.account_id,
+        });
+        expect((await f.logout()).status).toBe(204);
+        expect((await f.send("/auth/me")).status).toBe(401);
+        expect(await f.store.pendingRevocations()).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
   describe("round 2 reservation and retirement", () => {
     it("permits fresh login after active expiry without treating its retained lineage locator as authority", async () => {
       const f = await fixture();

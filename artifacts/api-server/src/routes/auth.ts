@@ -410,7 +410,20 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
           exchange.assertion,
         );
         await retireLegacy(request);
-        await dependencies.renewal.renew(transaction.familyHandle);
+        let retainedBrowserContext:
+          | ReturnType<typeof familyCookies>
+          | undefined;
+        if (hasFamilyCookie(request)) {
+          try {
+            retainedBrowserContext = familyCookies(request);
+          } catch {
+            /* Malformed cookies provide no predecessor-retention custody. */
+          }
+        }
+        await dependencies.renewal.renew(
+          transaction.familyHandle,
+          retainedBrowserContext,
+        );
         const current = await dependencies.renewal.store.read(
           transaction.familyHandle,
         );

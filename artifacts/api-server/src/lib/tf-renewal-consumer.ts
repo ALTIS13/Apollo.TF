@@ -80,7 +80,10 @@ export class TfRenewalConsumer {
       return false;
     return true;
   }
-  async renew(handle: string) {
+  async renew(
+    handle: string,
+    retainedBrowserContext?: { handle: string; csrf: string },
+  ) {
     const existing = await this.store.read(handle);
     if (
       existing?.record.phase === "ACTIVE" &&
@@ -128,9 +131,25 @@ export class TfRenewalConsumer {
       );
     } catch (error) {
       const failure = error instanceof TfRenewalError ? error : unavailable();
-      if (failure.terminal)
-        await this.close(handle, "LOCAL_SESSION_REPLACED", claimed);
-      else await this.store.release(handle, claimed, failure.retryAfter);
+      if (failure.terminal) {
+        // Only an explicitly retained predecessor cookie pair permits preserving it.
+        // Pending-context retries have replaced that pair and must retire it atomically.
+        const retained =
+          record.phase === "ENROLLING" &&
+          retainedBrowserContext?.handle === record.replacement.active
+            ? await this.store.read(retainedBrowserContext.handle)
+            : null;
+        const preservePredecessor =
+          retained?.record.phase === "ACTIVE" &&
+          retained.record.lineageId === record.lineageId &&
+          equals(retained.record.csrf, retainedBrowserContext!.csrf);
+        await this.close(
+          handle,
+          "LOCAL_SESSION_REPLACED",
+          claimed,
+          !preservePredecessor,
+        );
+      } else await this.store.release(handle, claimed, failure.retryAfter);
       throw failure;
     }
   }
