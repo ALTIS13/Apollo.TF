@@ -18,6 +18,8 @@ const BUFFER_UNAVAILABLE_CLOSE = { code: 1013, reason: "buffer_unavailable" };
 
 export interface TfWebSocketLifecycleOptions {
   successor?: boolean;
+  recoveryBudget?: TfWebSocketRecoveryBudget;
+  onRetryableError?: (error: TfApiError, notBefore: number) => void;
   createTicket: (signal?: AbortSignal) => Promise<string>;
   buildUrl: (ticket: string) => string;
   createSocket: (url: string) => WebSocket;
@@ -27,27 +29,36 @@ export interface TfWebSocketLifecycleOptions {
   cancelSchedule?: typeof window.clearTimeout;
 }
 
+/** Non-authorizing budget retained by the player across auth/socket recreation. */
+export class TfWebSocketRecoveryBudget {
+  startedAt: number | null = null;
+  attempts = 0;
+  delayMs = INITIAL_RECONNECT_DELAY_MS;
+  retryAt = 0;
+  exhausted = false;
+}
+
 export class TfWebSocketLifecycle {
   private running = false;
   private attempt = 0;
-  private delayMs = INITIAL_RECONNECT_DELAY_MS;
   private timer: number | null = null;
   private socket: WebSocket | null = null;
   private abort: AbortController | null = null;
   private attemptTimer: number | null = null;
   private stableTimer: number | null = null;
-  private cycleStarted = 0;
-  private cycleAttempts = 0;
+  private readonly budget: TfWebSocketRecoveryBudget;
   private securityGeneration = 0;
 
-  constructor(private readonly options: TfWebSocketLifecycleOptions) {}
+  constructor(private readonly options: TfWebSocketLifecycleOptions) {
+    this.budget = options.recoveryBudget ?? new TfWebSocketRecoveryBudget();
+  }
 
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.delayMs = INITIAL_RECONNECT_DELAY_MS;
-    this.cycleStarted = Date.now();
-    this.cycleAttempts = 0;
+    if (!this.options.successor)
+      Object.assign(this.budget, new TfWebSocketRecoveryBudget());
+    this.budget.startedAt ??= Date.now();
     this.securityGeneration = captureTfSecurityGeneration();
     const attempt = ++this.attempt;
     void this.connect(attempt);
@@ -68,15 +79,15 @@ export class TfWebSocketLifecycle {
     if (!this.live(attempt)) return;
     if (
       this.options.successor &&
-      (this.cycleAttempts >= 3 || Date.now() - this.cycleStarted >= 60_000)
+      (this.budget.exhausted ||
+        this.budget.attempts >= 3 ||
+        (this.budget.startedAt !== null &&
+          Date.now() - this.budget.startedAt >= 60_000))
     ) {
-      this.terminate(
-        attempt,
-        new TfApiError(503, "websocket_unavailable", "unavailable"),
-      );
+      this.exhaust(attempt);
       return;
     }
-    this.cycleAttempts += 1;
+    this.budget.attempts += 1;
     this.abort = new AbortController();
     if (this.options.successor)
       this.attemptTimer = window.setTimeout(() => {
@@ -106,11 +117,9 @@ export class TfWebSocketLifecycle {
         if (this.options.successor)
           this.stableTimer = window.setTimeout(() => {
             if (!this.ownsSocket(attempt, socket)) return;
-            this.cycleStarted = Date.now();
-            this.cycleAttempts = 0;
-            this.delayMs = INITIAL_RECONNECT_DELAY_MS;
+            Object.assign(this.budget, new TfWebSocketRecoveryBudget());
           }, 60_000);
-        else this.delayMs = INITIAL_RECONNECT_DELAY_MS;
+        else this.budget.delayMs = INITIAL_RECONNECT_DELAY_MS;
       };
       socket.onmessage = (event) => {
         if (!this.ownsSocket(attempt, socket)) return;
@@ -146,6 +155,41 @@ export class TfWebSocketLifecycle {
       this.clearAttempt();
       const apiError = normalizeTfApiError(error);
       if (
+        this.options.successor &&
+        apiError.kind === "unavailable" &&
+        apiError.retryable &&
+        this.options.onRetryableError
+      ) {
+        const delay = Math.max(
+          this.budget.delayMs,
+          Math.min(30_000, apiError.retryAfter * 1000),
+        );
+        this.budget.exhausted =
+          this.budget.attempts >= 3 ||
+          (this.budget.startedAt !== null &&
+            Date.now() + delay - this.budget.startedAt >= 60_000);
+        this.budget.delayMs = Math.min(
+          this.budget.delayMs * 2,
+          MAX_RECONNECT_DELAY_MS,
+        );
+        this.budget.retryAt = this.budget.exhausted
+          ? Infinity
+          : Date.now() + delay;
+        // The provider owns suspension/revalidation; this generation's lifecycle is finished.
+        const reported = new TfApiError(
+          apiError.status,
+          apiError.code,
+          apiError.kind,
+          true,
+          this.securityGeneration,
+          apiError.renewalProfile,
+          apiError.retryAfter,
+        );
+        this.stop();
+        this.options.onRetryableError(reported, this.budget.retryAt);
+        return;
+      }
+      if (
         TERMINAL_ERROR_KINDS.has(apiError.kind) ||
         (this.options.successor &&
           ["expired", "invalid", "transport"].includes(apiError.kind))
@@ -159,6 +203,22 @@ export class TfWebSocketLifecycle {
 
   private ownsSocket(attempt: number, socket: WebSocket): boolean {
     return this.live(attempt) && this.socket === socket;
+  }
+  private exhaust(attempt: number): void {
+    if (!this.live(attempt)) return;
+    this.budget.exhausted = true;
+    this.budget.retryAt = Infinity;
+    const error = new TfApiError(
+      503,
+      "websocket_unavailable",
+      "unavailable",
+      true,
+      this.securityGeneration,
+    );
+    if (this.options.successor && this.options.onRetryableError) {
+      this.stop();
+      this.options.onRetryableError(error, Infinity);
+    } else this.terminate(attempt, error);
   }
   private live(attempt: number): boolean {
     return (
@@ -220,19 +280,22 @@ export class TfWebSocketLifecycle {
 
   private scheduleReconnect(attempt: number, retryAfter = 0): void {
     if (!this.live(attempt) || this.timer !== null) return;
+    this.budget.startedAt ??= Date.now();
     if (
       this.options.successor &&
-      (this.cycleAttempts >= 3 || Date.now() - this.cycleStarted >= 60_000)
+      (this.budget.exhausted ||
+        this.budget.attempts >= 3 ||
+        Date.now() - this.budget.startedAt >= 60_000)
     ) {
-      this.terminate(
-        attempt,
-        new TfApiError(503, "websocket_unavailable", "unavailable"),
-      );
+      this.exhaust(attempt);
       return;
     }
 
-    const delay = Math.max(this.delayMs, Math.min(30_000, retryAfter));
-    this.delayMs = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS);
+    const delay = Math.max(this.budget.delayMs, Math.min(30_000, retryAfter));
+    this.budget.delayMs = Math.min(
+      (this.options.successor ? this.budget.delayMs : delay) * 2,
+      MAX_RECONNECT_DELAY_MS,
+    );
     this.timer = (this.options.schedule ?? window.setTimeout)(() => {
       this.timer = null;
       if (!this.running || attempt !== this.attempt) return;

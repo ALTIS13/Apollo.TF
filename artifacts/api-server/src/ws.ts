@@ -527,15 +527,27 @@ export function attachWebSocketServer(
       if (target === source || !liveSocket(source, context)) continue;
       const recipient = contexts.get(target);
       if (!recipient || !liveSocket(target, recipient)) continue;
+      let targetAuth: FamilyWsAuthorization | undefined;
       try {
-        const targetAuth = recipient.family
+        targetAuth = recipient.family
           ? await familyCheck(target, recipient)
           : undefined;
-        if (sender)
+      } catch (error) {
+        if (recipient.family) stopFamily(target, recipient, error);
+        continue;
+      }
+      if (sender) {
+        try {
           await dependencies.familyWebSocket!.confirm(
             sender,
             context.family!.abort.signal,
           );
+        } catch (error) {
+          stopFamily(source, context, error);
+          return;
+        }
+      }
+      try {
         if (targetAuth)
           await dependencies.familyWebSocket!.confirm(
             targetAuth,
@@ -558,18 +570,6 @@ export function attachWebSocketServer(
         }
         target.send(message);
       } catch (error) {
-        if (sender) {
-          // A lost sender guard forbids the whole relay, not just this recipient.
-          try {
-            await dependencies.familyWebSocket!.confirm(
-              sender,
-              context.family!.abort.signal,
-            );
-          } catch (failure) {
-            stopFamily(source, context, failure);
-            return;
-          }
-        }
         if (recipient.family) stopFamily(target, recipient, error);
       }
     }

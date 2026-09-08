@@ -7,6 +7,7 @@ import {
   buildTfWebSocketUrl,
   createWebSocketTicket,
   reportTfAuthError,
+  reportTfWebSocketRecovery,
   tfFetch,
   tfRequestInit,
   canUseTfProtectedActivity,
@@ -58,7 +59,7 @@ interface PlayerSyncState {
 const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
-  const { session, status } = useTfAuth();
+  const { session, status, webSocketRecoveryBudget } = useTfAuth();
   const [currentTrack, setCurrentTrack] = useState<TrackResult | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -376,9 +377,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         };
         const targetPosition = msg.position;
         const targetIsPlaying = msg.isPlaying;
-        playTrackRef.current(remoteTrack, originLive)
-          .then(() => {
-            if (!originLive()) return;
+        const work = playTrackRef.current(remoteTrack, originLive);
+        const load = loadGeneration.current;
+        work.then(() => {
+            if (!originLive() || load !== loadGeneration.current || currentTrackRef.current?.id !== remoteTrack.id) return;
             if (targetPosition > 1 && audioRef.current) {
               audioRef.current.currentTime = targetPosition;
               setProgress(targetPosition);
@@ -413,6 +415,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     wsEpoch.current += 1;
     const lifecycle = new TfWebSocketLifecycle({
       successor,
+      recoveryBudget: successor ? webSocketRecoveryBudget : undefined,
+      onRetryableError: reportTfWebSocketRecovery,
       createTicket: createWebSocketTicket,
       buildUrl: buildTfWebSocketUrl,
       createSocket: (url) => {
@@ -440,7 +444,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       lifecycle.stop();
       wsRef.current = null;
     };
-  }, [handleWsMessage, toast, session?.renewalProfile, status, wsSecurityGeneration]);
+  }, [handleWsMessage, toast, session?.renewalProfile, status, wsSecurityGeneration, webSocketRecoveryBudget]);
 
   const sendWsState = useCallback(() => {
     if (!canUseTfProtectedActivity()) return;

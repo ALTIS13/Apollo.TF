@@ -79,10 +79,12 @@ export class TfApiError extends Error {
   }
 }
 
-export interface TfAuthSecurityEvent {
-  type: "invalidated" | "revalidate" | "expired" | "unavailable";
-  error: TfApiError;
-}
+export type TfAuthSecurityEvent =
+  | {
+      type: "invalidated" | "revalidate" | "expired" | "unavailable";
+      error: TfApiError;
+    }
+  | { type: "ws-recovery"; error: TfApiError; notBefore: number };
 
 type TfAuthSecurityListener = (event: TfAuthSecurityEvent) => void;
 
@@ -136,6 +138,28 @@ export function reportTfAuthError(error: unknown): boolean {
     listener(event);
   }
   return true;
+}
+
+/** Local coordination only: no authority is restored until the provider revalidates. */
+export function reportTfWebSocketRecovery(
+  error: TfApiError,
+  notBefore: number,
+): void {
+  if (
+    error.generation === undefined ||
+    !isCurrentTfSecurityGeneration(error.generation)
+  )
+    return;
+  if (
+    error.kind !== "unavailable" ||
+    !error.retryable ||
+    Number.isNaN(notBefore) ||
+    notBefore < Date.now()
+  )
+    return;
+  suspendTfProtectedActivity(error);
+  for (const listener of [...authSecurityListeners])
+    listener({ type: "ws-recovery", error, notBefore });
 }
 
 function toReportedTfApiError(error: unknown): TfApiError | null {

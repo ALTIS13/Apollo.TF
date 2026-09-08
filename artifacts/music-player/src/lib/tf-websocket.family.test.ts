@@ -4,6 +4,7 @@ import {
   clearTfSessionSecurityState,
   commitTfSessionSecurityState,
   createWebSocketTicket,
+  TfApiError,
 } from "./tf-session-client";
 const token = "a".repeat(42) + "A";
 class Socket {
@@ -48,11 +49,12 @@ async function flush() {
 }
 function fixture(
   createTicket: (signal?: AbortSignal) => Promise<string> = async () => token,
+  successor = true,
 ) {
   const sockets: Socket[] = [],
     terminal = vi.fn();
   const lifecycle = new TfWebSocketLifecycle({
-    successor: true,
+    successor,
     createTicket,
     buildUrl: (t) => `wss://tf.apollot.ru/api/ws?ticket=${t}`,
     createSocket: () => {
@@ -100,6 +102,47 @@ it("successor attempt timeout cancels held ticket without letting a late result 
   release(token);
   await flush();
   expect(f.sockets).toHaveLength(0);
+});
+it("SW1 healthy open beyond120s starts a fresh recovery window on close", async () => {
+  const f = fixture();
+  await flush();
+  f.sockets[0].open();
+  await vi.advanceTimersByTimeAsync(130_000);
+  f.sockets[0].end();
+  expect(f.terminal).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(2999);
+  expect(f.sockets).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(f.sockets).toHaveLength(2);
+  expect(f.terminal).not.toHaveBeenCalled();
+});
+it("SW2 preserves the legacy Retry-After-derived delay and explicit lifecycle restart", async () => {
+  let attempts = 0;
+  const f = fixture(async () => {
+    attempts++;
+    throw new TfApiError(
+      401,
+      "expired",
+      "expired",
+      true,
+      undefined,
+      undefined,
+      attempts === 1 ? 20 : 1,
+    );
+  }, false);
+  await flush();
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(attempts).toBe(2);
+  await vi.advanceTimersByTimeAsync(29_999);
+  expect(attempts).toBe(2);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(attempts).toBe(3);
+  f.lifecycle.stop();
+  f.lifecycle.start();
+  await flush();
+  expect(attempts).toBe(4);
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(attempts).toBe(5);
 });
 it.each([
   [4409, "access_revalidation_required", "expired"],

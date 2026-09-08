@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useState } from "react";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { TfAuthProvider, useTfAuth, type TfAuthContextValue } from "./tf-auth";
@@ -15,6 +16,8 @@ let auth: TfAuthContextValue,
 let heldRenew: (() => Promise<Response>) | null;
 let heldStream: (() => Promise<Response>) | null;
 let heldPlay: (() => Promise<void>) | null;
+let ticketReply: (() => Response) | null;
+let remountPlayer: () => void;
 class AudioDouble extends EventTarget {
   static all: AudioDouble[] = [];
   currentTime = 0;
@@ -76,6 +79,15 @@ function Probe() {
   player = usePlayer();
   return <span>{auth.status}</span>;
 }
+function PlayerHarness() {
+  const [version, setVersion] = useState(0);
+  remountPlayer = () => setVersion((v) => v + 1);
+  return (
+    <PlayerProvider key={version}>
+      <Probe />
+    </PlayerProvider>
+  );
+}
 beforeEach(() => {
   vi.useFakeTimers();
   clearTfSessionSecurityState();
@@ -84,6 +96,7 @@ beforeEach(() => {
   heldRenew = null;
   heldStream = null;
   heldPlay = null;
+  ticketReply = null;
   AudioDouble.all = [];
   SocketDouble.all = [];
   vi.stubGlobal("Audio", AudioDouble);
@@ -106,7 +119,8 @@ beforeEach(() => {
     if (path.endsWith("/renew-context")) return json({ csrf_token: token });
     if (path.endsWith("/auth/renew"))
       return heldRenew ? heldRenew() : new Response(null, { status: 204 });
-    if (path.endsWith("/ws/tickets")) return json({ ticket: token }, 201);
+    if (path.endsWith("/ws/tickets"))
+      return ticketReply ? ticketReply() : json({ ticket: token }, 201);
     if (path.endsWith("/stream"))
       return heldStream
         ? heldStream()
@@ -135,9 +149,7 @@ async function setup(enabled: boolean) {
     <QueryClientProvider client={cache}>
       <TfAuthProvider>
         <TfSessionBoundary>
-          <PlayerProvider>
-            <Probe />
-          </PlayerProvider>
+          <PlayerHarness />
         </TfSessionBoundary>
       </TfAuthProvider>
     </QueryClientProvider>,
@@ -357,4 +369,308 @@ it("a delayed old remote play promise cannot pause newer local playback", async 
   expect(player.currentTrack?.id).toBe("new-play");
   expect(audio.paused).toBe(false);
   expect(audio.currentTime).toBe(17);
+});
+it.each(["stream", "play"])(
+  "SW3 late remote X %s completion cannot seek/pause Y on the same live socket",
+  async (phase) => {
+    await setup(true);
+    const socket = SocketDouble.all[0];
+    socket.open();
+    let release!: () => void;
+    if (phase === "stream")
+      heldStream = () =>
+        new Promise((r) => {
+          release = () =>
+            r(
+              json({
+                streamUrl: "https://media.invalid/old-X",
+                expiresAt: null,
+              }),
+            );
+        });
+    else
+      heldPlay = () =>
+        new Promise((r) => {
+          release = r;
+        });
+    await act(async () => {
+      socket.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "player_state",
+            track: {
+              id: "X",
+              title: "X",
+              artist: "Artist",
+              duration: 500,
+              thumbnailUrl: null,
+              source: "youtube",
+            },
+            position: 91,
+            isPlaying: false,
+          }),
+        }),
+      );
+    });
+    await flush();
+    expect(release).toBeTypeOf("function");
+    heldStream = null;
+    heldPlay = null;
+    await act(async () => {
+      await player.playTrack({
+        id: "Y",
+        title: "Y",
+        artist: "Artist",
+        duration: 500,
+        thumbnailUrl: null,
+        source: "youtube",
+        type: "original",
+        quality: [],
+        score: 1,
+      });
+    });
+    const audio = AudioDouble.all[0];
+    audio.currentTime = 17;
+    await act(async () => {
+      release();
+    });
+    await flush();
+    expect(socket.readyState).toBe(1);
+    expect(SocketDouble.all).toHaveLength(1);
+    expect(player.currentTrack?.id).toBe("Y");
+    expect(audio.currentTime).toBe(17);
+    expect(audio.paused).toBe(false);
+  },
+);
+it("SW1 healthy130s socket close reconnects without suspending authenticated playback", async () => {
+  await setup(true);
+  SocketDouble.all[0].open();
+  await act(async () => {
+    await player.playTrack({
+      id: "healthy",
+      title: "Track",
+      artist: "Artist",
+      duration: 500,
+      thumbnailUrl: null,
+      source: "youtube",
+      type: "original",
+      quality: [],
+      score: 1,
+    });
+  });
+  const audio = AudioDouble.all[0];
+  audio.currentTime = 42;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(130_000);
+    SocketDouble.all[0].end(1000, "");
+  });
+  expect(auth.status).toBe("authenticated");
+  expect(audio.paused).toBe(false);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  await flush();
+  expect(SocketDouble.all).toHaveLength(2);
+  expect(audio.currentTime).toBe(42);
+  expect(AudioDouble.all).toEqual([audio]);
+});
+const limitedTicket = (retryAfter: number) =>
+  new Response(
+    JSON.stringify({ code: "TF_RENEWAL_RATE_LIMITED", retryable: true }),
+    {
+      status: 429,
+      headers: {
+        "Content-Type": "application/json",
+        "Retry-After": String(retryAfter),
+      },
+    },
+  );
+it("SW2 finite429 suspends and recovers after Retry-After without focus bypass or protected replay", async () => {
+  await setup(true);
+  SocketDouble.all[0].open();
+  await act(async () => {
+    await player.playTrack({
+      id: "playing",
+      title: "Track",
+      artist: "Artist",
+      duration: 500,
+      thumbnailUrl: null,
+      source: "youtube",
+      type: "original",
+      quality: [],
+      score: 1,
+    });
+  });
+  const audio = AudioDouble.all[0];
+  audio.currentTime = 41;
+  ticketReply = () => limitedTicket(30);
+  await act(async () => {
+    SocketDouble.all[0].end(1000, "");
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  await flush();
+  expect(auth.status).toBe("unavailable");
+  expect(audio.paused).toBe(true);
+  const before = [...paths];
+  ticketReply = null;
+  await act(async () => {
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(29_999);
+    window.dispatchEvent(new Event("focus"));
+  });
+  await flush();
+  expect(paths).toEqual(before);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  await flush();
+  expect(auth.status).toBe("authenticated");
+  expect(SocketDouble.all).toHaveLength(2);
+  expect(paths.filter((p) => p.endsWith("/auth/renew"))).toHaveLength(1);
+  expect(paths.filter((p) => p.endsWith("/stream"))).toHaveLength(1);
+  expect(audio.paused).toBe(true);
+  expect(AudioDouble.all).toEqual([audio]);
+});
+it("SW2 repeated retryable tickets exhaust the shared WS budget across successful auth renewals; manual recovery resets it", async () => {
+  ticketReply = () => limitedTicket(1);
+  await setup(true);
+  expect(auth.status).toBe("unavailable");
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  await flush();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(6000);
+  });
+  await flush();
+  expect(paths.filter((p) => p.endsWith("/ws/tickets"))).toHaveLength(3);
+  expect(auth.status).toBe("unavailable");
+  const before = [...paths];
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(61_000);
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await flush();
+  expect(paths).toEqual(before);
+  ticketReply = null;
+  await act(async () => {
+    await auth.refresh();
+  });
+  await flush();
+  expect(auth.status).toBe("authenticated");
+  expect(SocketDouble.all).toHaveLength(1);
+});
+it("SW2 player remount does not reset a recovering session's ticket budget", async () => {
+  ticketReply = () => limitedTicket(1);
+  await setup(true);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  await flush();
+  await act(async () => {
+    remountPlayer();
+  });
+  await flush();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(6000);
+  });
+  await flush();
+  const before = [...paths];
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30_000);
+    window.dispatchEvent(new Event("focus"));
+  });
+  await flush();
+  expect(paths).toEqual(before);
+  expect(paths.filter((p) => p.endsWith("/ws/tickets"))).toHaveLength(3);
+});
+it("SW2 Retry-After reaching the60s window exhausts without extra auth work or focus reset", async () => {
+  ticketReply = () => limitedTicket(30);
+  await setup(true);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  await flush();
+  const before = [...paths];
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(31_000);
+    window.dispatchEvent(new Event("focus"));
+  });
+  await flush();
+  expect(paths).toEqual(before);
+  expect(paths.filter((p) => p.endsWith("/ws/tickets"))).toHaveLength(2);
+});
+it("SW2 exhausted ordinary reconnects also block focus-driven auth/reset loops", async () => {
+  await setup(true);
+  SocketDouble.all[0].open();
+  await act(async () => {
+    SocketDouble.all[0].end(1000, "");
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  await flush();
+  SocketDouble.all[1].open();
+  await act(async () => {
+    SocketDouble.all[1].end(1000, "");
+    await vi.advanceTimersByTimeAsync(6000);
+  });
+  await flush();
+  SocketDouble.all[2].open();
+  await act(async () => {
+    SocketDouble.all[2].end(1000, "");
+  });
+  await flush();
+  const before = [...paths];
+  await act(async () => {
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(61_000);
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await flush();
+  expect(paths).toEqual(before);
+  expect(auth.status).toBe("unavailable");
+});
+it("SW2 manual account replacement cancels the old delayed recovery", async () => {
+  ticketReply = () => limitedTicket(30);
+  await setup(true);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000);
+  });
+  ticketReply = null;
+  identity = B;
+  await act(async () => {
+    await auth.refresh();
+  });
+  await flush();
+  SocketDouble.all[0].open();
+  const before = [...paths];
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30_000);
+    window.dispatchEvent(new Event("focus"));
+  });
+  await flush();
+  expect(paths).toEqual(before);
+  expect(auth.session?.accountId).toBe(B);
+  expect(auth.status).toBe("authenticated");
+});
+it("SW2 retryable ticket recovery retains BR1 three-timeout automatic cap", async () => {
+  ticketReply = () => limitedTicket(1);
+  await setup(true);
+  heldRenew = () => new Promise(() => {});
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  await flush();
+  for (let n = 0; n < 3; n++) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11_000);
+      window.dispatchEvent(new Event("focus"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await flush();
+  }
+  expect(paths.filter((p) => p.endsWith("/auth/renew"))).toHaveLength(3);
+  expect(paths.filter((p) => p.endsWith("/ws/tickets"))).toHaveLength(1);
+  expect(auth.status).toBe("unavailable");
 });

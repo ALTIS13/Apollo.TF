@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { TfWebSocketRecoveryBudget } from "@/lib/tf-websocket";
 import {
   clearTfSessionSecurityState,
   commitTfSessionSecurityState,
@@ -36,6 +37,7 @@ interface TfAuthState {
   error: TfApiError | null;
 }
 export interface TfAuthContextValue extends TfAuthState {
+  webSocketRecoveryBudget: TfWebSocketRecoveryBudget;
   refresh: () => Promise<void>;
   login: () => void;
   logout: () => Promise<void>;
@@ -67,6 +69,11 @@ export function TfAuthProvider({ children }: { children: ReactNode }) {
     retryAt = useRef(0),
     renewalDue = useRef(0);
   const cycleStarted = useRef<number | null>(null);
+  const recoveryEpoch = useRef(0);
+  const wsRecovery = useRef({
+    key: "",
+    budget: new TfWebSocketRecoveryBudget(),
+  });
   const runRef = useRef<(mode: Mode) => Promise<void>>(async () => {});
   const publish = useCallback((next: TfAuthState) => {
     current.current = next;
@@ -79,6 +86,7 @@ export function TfAuthProvider({ children }: { children: ReactNode }) {
     deadline.current = null;
   }, []);
   const discard = useCallback(() => {
+    recoveryEpoch.current += 1;
     clearTimers();
     generation.current += 1;
     active.current?.abort.abort();
@@ -259,6 +267,7 @@ export function TfAuthProvider({ children }: { children: ReactNode }) {
   runRef.current = run;
   const refresh = useCallback(() => {
     if (active.current) return active.current.promise;
+    recoveryEpoch.current += 1;
     failures.current = 0;
     cycleStarted.current = null;
     retryAt.current = 0;
@@ -268,7 +277,22 @@ export function TfAuthProvider({ children }: { children: ReactNode }) {
     mounted.current = true;
     const unsubscribe = subscribeTfAuthSecurityEvents((event) => {
       if (!mounted.current) return;
-      if (event.type === "invalidated") {
+      if (event.type === "ws-recovery") {
+        // Cancel older publication, not shared producer work, and retain BR1's counters.
+        generation.current += 1;
+        active.current?.abort.abort();
+        active.current = null;
+        clearTimers();
+        retryAt.current = Math.max(retryAt.current, event.notBefore);
+        suspend(event.error);
+        if (Number.isFinite(retryAt.current))
+          timer.current = setTimeout(
+            () => {
+              if (visibleOrPlaying()) void run("renew");
+            },
+            Math.max(0, retryAt.current - Date.now()),
+          );
+      } else if (event.type === "invalidated") {
         discard();
         publish({
           status: "unauthenticated",
@@ -309,7 +333,7 @@ export function TfAuthProvider({ children }: { children: ReactNode }) {
       document.removeEventListener("visibilitychange", wake);
       discard();
     };
-  }, [discard, publish, run, suspend]);
+  }, [clearTimers, discard, publish, run, suspend]);
   const login = useCallback(() => {
     discard();
     publish({ status: "unauthenticated", session: null, error: null });
@@ -328,10 +352,19 @@ export function TfAuthProvider({ children }: { children: ReactNode }) {
       (current.current.session?.entitlements.includes(capability) ?? false),
     [],
   );
-  const value = useMemo(
-    () => ({ ...state, refresh, login, logout, hasEntitlement }),
-    [state, refresh, login, logout, hasEntitlement],
-  );
+  const value = useMemo(() => {
+    const key = `${state.session ? tuple(state.session) : "none"}:${recoveryEpoch.current}`;
+    if (wsRecovery.current.key !== key)
+      wsRecovery.current = { key, budget: new TfWebSocketRecoveryBudget() };
+    return {
+      ...state,
+      webSocketRecoveryBudget: wsRecovery.current.budget,
+      refresh,
+      login,
+      logout,
+      hasEntitlement,
+    };
+  }, [state, refresh, login, logout, hasEntitlement]);
   return (
     <TfAuthContext.Provider value={value}>{children}</TfAuthContext.Provider>
   );

@@ -262,3 +262,45 @@ it("caps pending native upgrades at64 and shutdown aborts their held checks", as
     false,
   );
 });
+it("SW4 one failed final sender confirmation stops the whole relay without blaming either recipient", async () => {
+  const t = await fixture(),
+    a = await t.connect(),
+    b = await t.connect(),
+    c = await t.connect();
+  const transition = t.persistence.transition.bind(t.persistence);
+  let confirms = 0;
+  t.persistence.transition = async (...args) => {
+    // The first two confirmations belong to real sender/recipient validate; the third is final sender confirmation.
+    if (args[0] === "confirm" && ++confirms === 3)
+      throw new Error("one-shot Redis unavailable");
+    return transition(...args);
+  };
+  a.message(message("failed-source"));
+  await flush();
+  expect(a.text()).toContain("policy_unavailable");
+  expect(b.text()).not.toContain("policy_unavailable");
+  expect(c.text()).not.toContain("policy_unavailable");
+  expect(b.text()).not.toContain("failed-source");
+  expect(c.text()).not.toContain("failed-source");
+  // A later potential confirmation would succeed, but must not reattribute the original failure.
+  expect(confirms).toBe(3);
+});
+it("SW4 one failed recipient confirmation affects only that recipient", async () => {
+  const t = await fixture(),
+    a = await t.connect(),
+    b = await t.connect(),
+    c = await t.connect();
+  const transition = t.persistence.transition.bind(t.persistence);
+  let confirms = 0;
+  t.persistence.transition = async (...args) => {
+    if (args[0] === "confirm" && ++confirms === 4)
+      throw new Error("recipient Redis unavailable");
+    return transition(...args);
+  };
+  a.message(message("healthy-source"));
+  await flush();
+  expect(a.text()).not.toContain("policy_unavailable");
+  expect(b.text()).toContain("policy_unavailable");
+  expect(b.text()).not.toContain("healthy-source");
+  expect(c.text()).toContain("healthy-source");
+});
