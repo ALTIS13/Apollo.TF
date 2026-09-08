@@ -197,6 +197,7 @@ export function createApiApp(options: ApiAppOptions = {}): Express {
       },
       credentials: true,
       allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token"],
+      exposedHeaders: ["Apollo-TF-Session-Profile"],
     }),
   );
 

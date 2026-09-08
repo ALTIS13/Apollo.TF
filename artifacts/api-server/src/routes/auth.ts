@@ -505,6 +505,11 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
   });
 
   router.get("/me", async (request, response) => {
+    // Non-authorizing browser negotiation only; frozen success/error JSON stays unchanged.
+    response.setHeader(
+      "Apollo-TF-Session-Profile",
+      hasFamilyCookie(request) ? "renewal-v1" : "legacy-v1",
+    );
     if (hasFamilyCookie(request)) {
       try {
         if (!dependencies.renewal) throw unavailable();

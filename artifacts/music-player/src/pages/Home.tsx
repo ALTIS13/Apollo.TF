@@ -4,7 +4,7 @@ import { searchTracks } from "@workspace/api-client-react";
 import type { SearchRequest, TrackType, TrackResult } from "@workspace/api-client-react";
 import { TrackCard } from "@/components/TrackCard";
 import { SaveLikedTrackButton } from "@/components/LikedCollection";
-import { reportTfAuthError, tfRequestInit } from "@/lib/tf-session-client";
+import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, reportTfAuthError, TfApiError, tfRequestInit } from "@/lib/tf-session-client";
 import { Search, Music2, Loader2, Sparkles } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -66,10 +66,18 @@ export default function Home() {
   }, []);
 
   const searchMutation = useMutation({
-    mutationFn: (data: SearchRequest) =>
-      searchTracks(data, tfRequestInit({ method: "POST" })),
-    onError: (error) => {
-      reportTfAuthError(error);
+    mutationFn: async (data: SearchRequest) => {
+      const generation = captureTfSecurityGeneration();
+      try {
+        const result = await searchTracks(data, tfRequestInit({ method: "POST" }));
+        if (!isCurrentTfSecurityGeneration(generation)) {
+          throw new TfApiError(0, "stale_response", "invalid", false, generation);
+        }
+        return result;
+      } catch (error) {
+        if (isCurrentTfSecurityGeneration(generation)) reportTfAuthError(error);
+        throw error;
+      }
     },
   });
 
