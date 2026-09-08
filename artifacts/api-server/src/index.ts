@@ -2,7 +2,10 @@ import Redis from "ioredis";
 import { pool } from "@workspace/db";
 import { createTfMigrationReadinessProbe } from "@workspace/db/migrations";
 
-import { createApiApp } from "./app.js";
+import {
+  createTfApiRuntime,
+  createTfRuntimeResourceCloser,
+} from "./lib/tf-api-runtime.js";
 import {
   initBackgroundQueues,
   shutdownBackgroundQueues,
@@ -12,16 +15,10 @@ import {
   assertRequiredModuleHeartbeatKeys,
   parseModuleHeartbeatKeys,
 } from "./lib/module-heartbeat.js";
-import {
-  PlatformAuthClient,
-  parseTfAuthRuntimeConfig,
-} from "./lib/platform-auth-client.js";
+import { parseTfAuthRuntimeConfig } from "./lib/platform-auth-client.js";
 import { getRedis } from "./lib/redis.js";
 import { probeRedisHealth } from "./lib/redis-readiness.js";
-import {
-  TfSessionStore,
-  createStrictRedisClient,
-} from "./lib/tf-session-store.js";
+import { createStrictRedisClient } from "./lib/tf-session-store.js";
 import { createApiGatewayRuntime } from "./lib/api-gateway-runtime.js";
 import {
   initializeApiRuntime,
@@ -65,50 +62,50 @@ async function start(): Promise<void> {
   });
   let cacheRedis: Redis | null = null;
   let webSocketHandle: WebSocketServerHandle | null = null;
-  let redisClosed = false;
-  const closeRedisResources = async (): Promise<void> => {
-    if (redisClosed) return;
-    redisClosed = true;
-    cacheRedis?.disconnect(false);
-    authRedis.disconnect(false);
-  };
+  let apiRuntime: Awaited<ReturnType<typeof createTfApiRuntime>> | undefined;
+  const closeRedisResources = createTfRuntimeResourceCloser(
+    () => apiRuntime,
+    () => {
+      cacheRedis?.disconnect(false);
+      authRedis.disconnect(false);
+    },
+  );
 
   try {
     await authRedis.connect();
     await authRedis.ping();
-    const platform = new PlatformAuthClient({
-      issuer: authConfig.issuer,
-      apiOrigin: authConfig.apiOrigin,
-      allowPrivateHttpTransport: authConfig.allowPrivateHttpTransport,
-      clientId: authConfig.clientId,
-      redirectUri: authConfig.callbackUrl,
-      clientSecret: authConfig.clientSecret,
-    });
-    const sessionStore = new TfSessionStore(createStrictRedisClient(authRedis));
-    const app = createApiApp({
-      nodeEnv: authConfig.nodeEnv,
-      readiness: async () => {
-        try {
-          const [redisReady, databaseReady] = await Promise.all([
-            probeRedisHealth(authConfig.authRedisUrl, { timeoutMs: 1_200 }),
-            probeTfMigrationReadiness(),
-          ]);
-          return redisReady && databaseReady;
-        } catch {
-          return false;
-        }
+    apiRuntime = await createTfApiRuntime(
+      {
+        environment: process.env,
+        authConfig,
+        redis: createStrictRedisClient(authRedis),
+        appOptions: {
+          readiness: async () => {
+            try {
+              const [redisReady, databaseReady] = await Promise.all([
+                probeRedisHealth(authConfig.authRedisUrl, { timeoutMs: 1_200 }),
+                probeTfMigrationReadiness(),
+              ]);
+              return redisReady && databaseReady;
+            } catch {
+              return false;
+            }
+          },
+          ...gatewayRuntime,
+        },
       },
-      auth: {
-        platform,
-        sessionStore,
-        webOrigin: authConfig.webOrigin,
-        secureCookies: true,
-        ...(authConfig.bridgePkceVerifier === undefined
-          ? {}
-          : { pkceVerifier: () => authConfig.bridgePkceVerifier! }),
+      {
+        report: (status) =>
+          logger.info(
+            { component: "tf-revoke-outbox", status },
+            "TF revoke drain status",
+          ),
       },
-      ...gatewayRuntime,
-    });
+    );
+    const {
+      app,
+      auth: { platform, sessionStore },
+    } = apiRuntime;
 
     cacheRedis = getRedis();
     const server = await startApiListener({
@@ -120,7 +117,10 @@ async function start(): Promise<void> {
               platform,
               sessionStore,
             }),
-          initializeAfterAttach: initBackgroundQueues,
+          initializeAfterAttach: async () => {
+            await initBackgroundQueues();
+            apiRuntime!.start();
+          },
         });
       },
       closeQueues: shutdownBackgroundQueues,
@@ -132,11 +132,13 @@ async function start(): Promise<void> {
     const shutdown = (): void => {
       if (shuttingDown) return;
       shuttingDown = true;
+      const stopRenewal = apiRuntime!.stop();
       void (async () => {
         await webSocketHandle?.close();
         await new Promise<void>((resolve) => {
           server.close(() => resolve());
         });
+        await stopRenewal;
         await Promise.allSettled([
           shutdownBackgroundQueues(),
           closeRedisResources(),
