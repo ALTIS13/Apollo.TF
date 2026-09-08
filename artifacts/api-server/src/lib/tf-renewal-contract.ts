@@ -142,6 +142,25 @@ export class TfRenewalError extends Error {
 }
 export const unavailable = () => new TfRenewalError("AUTHORITY_UNAVAILABLE");
 
+/** Detach a read-only waiter without canceling shared JWKS or mutation work. */
+export async function awaitReadOnly<T>(
+  work: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return work;
+  let cancel!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    cancel = () => reject(unavailable());
+    signal.addEventListener("abort", cancel, { once: true });
+    if (signal.aborted) cancel();
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
 /** JSON.parse validates grammar; a structural token pass rejects duplicate decoded object keys. */
 export function parseRenewalJson(source: string): unknown {
   const value: unknown = JSON.parse(source);
@@ -188,6 +207,7 @@ export interface RenewalTransport {
     path: string,
     body: string,
     headers: Record<string, string>,
+    signal?: AbortSignal,
   ): Promise<Response>;
   read(response: Response, maxBytes: number): Promise<string>;
   verify(assertion: string, nonce?: string): Promise<PlatformAssertionClaims>;
@@ -198,8 +218,10 @@ export class TfRenewalClient {
     path: string,
     input: FamilyBinding,
     operation?: RenewalOperation,
+    signal?: AbortSignal,
   ): Promise<unknown> {
     try {
+      signal?.throwIfAborted();
       if (input.client_id !== this.transport.clientId) throw unavailable();
       const headers: Record<string, string> = {
         Accept: "application/json",
@@ -213,10 +235,14 @@ export class TfRenewalClient {
         headers["Idempotency-Key"] = uuid.parse(operation.idempotencyKey);
       const body = JSON.stringify(input);
       if (Buffer.byteLength(body) > 12 * 1024) throw unavailable();
-      const response = await this.transport.request(
-        `/v1/tf/session-renewals/${path}`,
-        body,
-        headers,
+      const response = await awaitReadOnly(
+        this.transport.request(
+          `/v1/tf/session-renewals/${path}`,
+          body,
+          headers,
+          signal,
+        ),
+        signal,
       );
       if (
         response.headers.get("x-request-id") !== headers["X-Request-ID"] ||
@@ -237,7 +263,7 @@ export class TfRenewalClient {
       )
         throw unavailable();
       const output = parseRenewalJson(
-        await this.transport.read(response, 16 * 1024),
+        await awaitReadOnly(this.transport.read(response, 16 * 1024), signal),
       );
       if (response.status !== 200) {
         const error = z
@@ -315,9 +341,16 @@ export class TfRenewalClient {
     return this.result(await this.call("renew", parsed, operation), parsed);
   }
   async check(input: CheckRequest) {
+    return (await this.checkWithEvidence(input)).decision;
+  }
+  async checkWithEvidence(input: CheckRequest, signal?: AbortSignal) {
     try {
+      signal?.throwIfAborted();
       const parsed = checkSchema.parse(input);
-      const claims = await this.transport.verify(parsed.access_assertion);
+      const claims = await awaitReadOnly(
+        this.transport.verify(parsed.access_assertion),
+        signal,
+      );
       const output = z
         .object({
           ...version,
@@ -326,7 +359,7 @@ export class TfRenewalClient {
           decision: policyIntrospectionResponseSchema,
         })
         .strict()
-        .parse(await this.call("check", parsed));
+        .parse(await this.call("check", parsed, undefined, signal));
       const d = output.decision;
       if (
         !d.active ||
@@ -343,7 +376,8 @@ export class TfRenewalClient {
         d.entitlements.some((key) => !claims.entitlements.includes(key))
       )
         throw unavailable();
-      return d;
+      signal?.throwIfAborted();
+      return { decision: d, assertionJti: claims.jti };
     } catch (error) {
       if (error instanceof TfRenewalError) throw error;
       throw unavailable();

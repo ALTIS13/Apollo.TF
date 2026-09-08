@@ -6,6 +6,11 @@ import {
 import { TfSessionStore, type StrictRedisClient } from "./tf-session-store.js";
 import { TfRenewalConsumer } from "./tf-renewal-consumer.js";
 import {
+  TfFamilyWebSocket,
+  redisFamilyWsPersistence,
+} from "./tf-family-websocket.js";
+import { successorWebSocketEnabled } from "./tf-successor-ws-config.js";
+import {
   configuredRevokeKeys,
   loadTfRenewalRuntimeConfig,
   type TfRenewalConfigDependencies,
@@ -19,7 +24,7 @@ interface Options {
   environment: NodeJS.ProcessEnv;
   authConfig: TfAuthRuntimeConfig;
   redis: StrictRedisClient;
-  appOptions?: Omit<ApiAppOptions, "auth" | "nodeEnv">;
+  appOptions?: Omit<ApiAppOptions, "auth" | "nodeEnv" | "familyWebSocket">;
 }
 interface Dependencies extends TfRenewalConfigDependencies {
   fetch?: typeof fetch;
@@ -35,6 +40,10 @@ export async function createTfApiRuntime(
     options.environment,
     config,
     dependencies,
+  );
+  const enableFamilyWs = successorWebSocketEnabled(
+    options.environment,
+    renewalConfig.enabled,
   );
   const transport = new AbortController();
   const fetchImplementation = dependencies.fetch ?? fetch;
@@ -76,10 +85,14 @@ export async function createTfApiRuntime(
       ? {}
       : { pkceVerifier: () => config.bridgePkceVerifier! }),
   };
+  const familyWebSocket = enableFamilyWs
+    ? new TfFamilyWebSocket(renewal!, redisFamilyWsPersistence(options.redis))
+    : undefined;
   const app = createApiApp({
     ...options.appOptions,
     nodeEnv: config.nodeEnv,
     auth,
+    familyWebSocket,
   });
   const scheduler = renewal
     ? createRevokeScheduler(
@@ -98,6 +111,7 @@ export async function createTfApiRuntime(
   return {
     app,
     auth,
+    familyWebSocket,
     start() {
       scheduler?.start();
     },

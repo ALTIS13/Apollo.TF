@@ -83,6 +83,12 @@ export interface FamilyObservation {
   raw: string;
   record: FamilyRecord;
 }
+export interface SelectedFamilyObservation extends FamilyObservation {
+  record: Extract<FamilyRecord, { phase: "ACTIVE" }>;
+  key: string;
+  lineageKey: string;
+  lineageRaw: string;
+}
 const lineageSchema = z
   .object({
     version: z.literal(1),
@@ -283,6 +289,24 @@ export class TfFamilyStore {
         ? lineage.record?.active
         : lineage.record?.pending;
     return selected === handle ? current : null;
+  }
+  /** Version guards only; authorization must precede the atomic WS transition. */
+  async observeSelectedForWebSocket(
+    handle: string,
+  ): Promise<SelectedFamilyObservation> {
+    const current = await this.readKey(key(handle));
+    if (!current || current.record.phase !== "ACTIVE")
+      throw new TfRenewalError("INVALID_REFERENCE");
+    const lineage = await this.lineage(current.record.lineageId);
+    if (!lineage.raw || lineage.record?.active !== handle)
+      throw new TfRenewalError("INVALID_REFERENCE");
+    return {
+      ...current,
+      record: current.record,
+      key: key(handle),
+      lineageKey: lineage.key,
+      lineageRaw: lineage.raw,
+    };
   }
   async activeForBrowser(binder: string) {
     const lineage = await this.lineage(binder);

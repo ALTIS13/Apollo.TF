@@ -342,7 +342,7 @@ export class PlatformAuthClient {
     });
     this.renewal = new TfRenewalClient({
       clientId: this.clientId,
-      request: async (path, body, headers) => {
+      request: async (path, body, headers, signal) => {
         if (new URL(this.apiOrigin).protocol !== "https:")
           throw new PlatformAuthUnavailableError();
         return this.fetchImplementation(new URL(path, this.apiOrigin), {
@@ -350,7 +350,9 @@ export class PlatformAuthClient {
           headers: { ...headers, Authorization: this.basicAuthorization() },
           body,
           redirect: "error",
-          signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+          signal: signal
+            ? AbortSignal.any([signal, AbortSignal.timeout(DEFAULT_TIMEOUT_MS)])
+            : AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
         });
       },
       read: readBoundedResponse,

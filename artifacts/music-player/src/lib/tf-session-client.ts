@@ -505,21 +505,69 @@ export async function logoutTfSession(): Promise<void> {
   });
 }
 
-export async function createWebSocketTicket(): Promise<string> {
-  const response = await tfFetch<unknown>("/ws/tickets", { method: "POST" });
-
-  if (
-    !isRecord(response) ||
-    typeof response.ticket !== "string" ||
-    !TICKET_PATTERN.test(response.ticket)
-  ) {
-    throw new TfApiError(201, "invalid_websocket_ticket", "invalid");
+export async function createWebSocketTicket(
+  signal?: AbortSignal,
+): Promise<string> {
+  const generation = captureTfSecurityGeneration();
+  try {
+    signal?.throwIfAborted();
+    const response = await fetch(
+      apiUrl("/ws/tickets"),
+      tfRequestInit({ method: "POST", signal }),
+    );
+    const body = await parseLocalRenewalBody(response);
+    if (!isCurrentTfSecurityGeneration(generation) || signal?.aborted)
+      throw new TfApiError(0, "stale_response", "invalid", false, generation);
+    if (!response.ok) {
+      if (isRecord(body) && "code" in body)
+        throw localRenewalError(response, body, generation);
+      throw new TfApiError(
+        response.status,
+        "websocket_unavailable",
+        response.status === 401
+          ? "unauthenticated"
+          : response.status === 403
+            ? "forbidden"
+            : "unavailable",
+        false,
+        generation,
+      );
+    }
+    if (
+      response.status !== 201 ||
+      !isRecord(body) ||
+      Object.keys(body).length !== 1 ||
+      typeof body.ticket !== "string" ||
+      !CANONICAL_32_BYTE_BASE64URL_PATTERN.test(body.ticket)
+    )
+      throw new TfApiError(
+        response.status,
+        "invalid_websocket_ticket",
+        "invalid",
+        false,
+        generation,
+      );
+    return body.ticket;
+  } catch (error) {
+    const e = normalizeTfApiError(error);
+    throw new TfApiError(
+      e.status,
+      e.code,
+      e.kind,
+      e.retryable,
+      generation,
+      e.renewalProfile,
+      e.retryAfter,
+    );
   }
-
-  return response.ticket;
 }
 
 export function buildTfWebSocketUrl(ticket: string): string {
+  if (
+    !TICKET_PATTERN.test(ticket) ||
+    !CANONICAL_32_BYTE_BASE64URL_PATTERN.test(ticket)
+  )
+    throw new TfApiError(0, "invalid_websocket_ticket", "invalid");
   const url = new URL(API_BASE, window.location.origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = `${url.pathname.replace(/\/+$/, "")}/ws`;

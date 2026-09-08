@@ -105,6 +105,7 @@ async function start(): Promise<void> {
     const {
       app,
       auth: { platform, sessionStore },
+      familyWebSocket,
     } = apiRuntime;
 
     cacheRedis = getRedis();
@@ -116,6 +117,8 @@ async function start(): Promise<void> {
             attachWebSocketServer(server, {
               platform,
               sessionStore,
+              familyWebSocket,
+              webOrigin: apiRuntime!.auth.webOrigin,
             }),
           initializeAfterAttach: async () => {
             await initBackgroundQueues();

@@ -18,6 +18,7 @@ import {
   revokeSchema,
   TfRenewalError,
   unavailable,
+  awaitReadOnly,
   type TfRenewalClient,
   type RenewalOperation,
   type RevokeRequest,
@@ -26,7 +27,8 @@ import type { TfSession } from "./tf-session-store.js";
 
 export interface TfRenewalOptions {
   store: TfFamilyStore;
-  client: Pick<TfRenewalClient, "enroll" | "renew" | "check" | "revoke">;
+  client: Pick<TfRenewalClient, "enroll" | "renew" | "check" | "revoke"> &
+    Partial<Pick<TfRenewalClient, "checkWithEvidence">>;
   clientId: string;
   revocationKeys: { active: string; keys: ReadonlyMap<string, Uint8Array> };
 }
@@ -154,8 +156,30 @@ export class TfRenewalConsumer {
     }
   }
   async authorize(handle: string): Promise<TfSession> {
+    return (await this.authorizeCore(handle)).session;
+  }
+  async authorizeWebSocket(handle: string, signal?: AbortSignal) {
+    const checked = await this.authorizeCore(handle, true, signal);
+    const selection = await awaitReadOnly(
+      this.store.observeSelectedForWebSocket(handle),
+      signal,
+    );
+    if (selection.raw !== checked.observation.raw || !checked.assertionJti)
+      throw unavailable();
+    return {
+      session: checked.session,
+      assertionJti: checked.assertionJti,
+      selection,
+    };
+  }
+  private async authorizeCore(
+    handle: string,
+    evidence = false,
+    signal?: AbortSignal,
+  ) {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const current = await this.store.read(handle);
+      if (signal?.aborted) throw unavailable();
+      const current = await awaitReadOnly(this.store.read(handle), signal);
       if (!current || current.record.phase === "CLOSED")
         throw new TfRenewalError("INVALID_REFERENCE");
       const record = current.record;
@@ -166,13 +190,25 @@ export class TfRenewalConsumer {
         throw new TfRenewalError("ACCESS_EXPIRED");
       const r = record.result;
       try {
-        const d = await this.options.client.check({
+        const input = {
           ...familyBinding(r),
           family_id: r.family_id,
           generation: r.generation,
           access_assertion: r.token.access_token,
-        });
-        const observed = await this.store.read(handle);
+        };
+        if (evidence && !this.options.client.checkWithEvidence)
+          throw unavailable();
+        const checked = evidence
+          ? await awaitReadOnly(
+              this.options.client.checkWithEvidence!(input, signal),
+              signal,
+            )
+          : {
+              decision: await this.options.client.check(input),
+              assertionJti: undefined,
+            };
+        const d = checked.decision;
+        const observed = await awaitReadOnly(this.store.read(handle), signal);
         if (!observed || observed.record.phase === "CLOSED")
           throw new TfRenewalError("INVALID_REFERENCE");
         if (
@@ -194,7 +230,7 @@ export class TfRenewalConsumer {
           expiry <= this.store.now()
         )
           throw unavailable();
-        return {
+        const session: TfSession = {
           id: record.id,
           accountId: r.account_id,
           platformSessionId: r.session_id,
@@ -203,7 +239,13 @@ export class TfRenewalConsumer {
           assertionExpiresAt: new Date(expiry).toISOString(),
           expiresAt: new Date(expiry).toISOString(),
         };
+        return {
+          session,
+          observation: current,
+          assertionJti: checked.assertionJti,
+        };
       } catch (error) {
+        if (signal?.aborted) throw unavailable();
         if (
           error instanceof TfRenewalError &&
           error.reason === "REFERENCE_SPENT" &&

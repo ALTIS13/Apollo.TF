@@ -10,14 +10,19 @@ import { adminRouter } from "./admin.js";
 import { createAuthRouter, type AuthRouteDependencies } from "./auth.js";
 import { requireTfCapability } from "../lib/tf-policy.js";
 import { hasFamilyCookie } from "../lib/tf-browser-session.js";
-import { createWebSocketTicketRouter } from "./websocket-tickets.js";
+import {
+  createFamilyWebSocketTicketRouter,
+  createWebSocketTicketRouter,
+} from "./websocket-tickets.js";
 import type { TfIntegrationsGateway } from "../lib/tf-integrations-client.js";
+import type { TfFamilyWebSocket } from "../lib/tf-family-websocket.js";
 import {
   createCollectionsRouter,
   type CollectionRouteDependencies,
 } from "./collections.js";
 
 export interface ApiRouterOptions {
+  readonly familyWebSocket?: TfFamilyWebSocket;
   readonly auth?: AuthRouteDependencies;
   readonly spotify?: Omit<
     Partial<SpotifyRouteDependencies>,
@@ -36,6 +41,13 @@ export function createApiRouter(options: ApiRouterOptions = {}): IRouter {
     router.use("/auth", createAuthRouter(options.auth));
   }
   router.use(createHealthRouter(options.readiness));
+  if (options.auth)
+    router.use(
+      createFamilyWebSocketTicketRouter({
+        webOrigin: options.auth.webOrigin,
+        service: options.familyWebSocket,
+      }),
+    );
   if (options.auth === undefined) {
     router.use(
       ["/tracks", "/collections", "/spotify", "/yandex", "/ws/tickets"],

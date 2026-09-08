@@ -17,6 +17,7 @@ import {
 } from "@/lib/tf-session-client";
 import { useTfAuth } from "@/auth/tf-auth";
 import { TfWebSocketLifecycle } from "@/lib/tf-websocket";
+import { successorWebSocketEnabled } from "@/lib/tf-successor-ws-config";
 
 interface PlayerContextType {
   currentTrack: TrackResult | null;
@@ -82,7 +83,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const queueRef = useRef<TrackResult[]>([]);
   const queueIndexRef = useRef(0);
 
-  const playTrackRef = useRef<(track: TrackResult) => Promise<void>>(async () => {});
+  const playTrackRef = useRef<(track: TrackResult, originLive?: () => boolean) => Promise<void>>(async () => {});
   const playNextRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
@@ -159,10 +160,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // ── Internal load helper (no toggle check, no queue reset) ────────────────
 
-  const _loadTrack = useCallback(async (track: TrackResult) => {
-    if (!audioRef.current || !canUseTfProtectedActivity()) return;
+  const _loadTrack = useCallback(async (track: TrackResult, originLive?: () => boolean) => {
+    if (!audioRef.current || !canUseTfProtectedActivity() || originLive?.() === false) return;
     const load = ++loadGeneration.current, security = captureTfSecurityGeneration();
-    const live = () => mountedRef.current && load === loadGeneration.current && isCurrentTfSecurityGeneration(security) && canUseTfProtectedActivity();
+    const live = () => mountedRef.current && load === loadGeneration.current && isCurrentTfSecurityGeneration(security) && canUseTfProtectedActivity() && originLive?.() !== false;
     const resumePosition = currentTrackRef.current?.id === track.id ? suspendedPosition.current : null;
     suspendedPosition.current = null;
     try {
@@ -181,7 +182,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audioRef.current.src = res.streamUrl;
       if (resumePosition !== null) { audioRef.current.currentTime = resumePosition; setProgress(resumePosition); }
       await audioRef.current.play();
-      if (!live()) { audioRef.current.pause(); return; }
+      if (!live()) return;
       setIsPlaying(true);
     } catch (err) {
       if (!live()) return;
@@ -199,8 +200,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // ── Public API ────────────────────────────────────────────────────────────
 
-  const playTrack = useCallback(async (track: TrackResult) => {
-    if (!audioRef.current || !canUseTfProtectedActivity()) return;
+  const playTrack = useCallback(async (track: TrackResult, originLive?: () => boolean) => {
+    if (!audioRef.current || !canUseTfProtectedActivity() || originLive?.() === false) return;
     if (currentTrack?.id === track.id) {
       togglePlayPause();
       return;
@@ -210,7 +211,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setQueueIndex(0);
     queueRef.current = [track];
     queueIndexRef.current = 0;
-    await _loadTrackRef.current(track);
+    await _loadTrackRef.current(track, originLive);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrack?.id]);
 
@@ -344,10 +345,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // ── WebSocket sync ────────────────────────────────────────────────────────
 
   const wsRef = useRef<WebSocket | null>(null);
+  const wsEpoch = useRef(0);
+  const wsSecurityGeneration = captureTfSecurityGeneration();
   const suppressSendUntilRef = useRef<number>(0);
 
-  const handleWsMessage = useCallback((event: MessageEvent) => {
-    if (!canUseTfProtectedActivity()) return;
+  const handleWsMessage = useCallback((event: MessageEvent, isCurrent: () => boolean) => {
+    if (!canUseTfProtectedActivity() || !isCurrent()) return;
+    const epoch = wsEpoch.current, security = captureTfSecurityGeneration();
+    const originLive = () => isCurrent() && epoch === wsEpoch.current && isCurrentTfSecurityGeneration(security) && canUseTfProtectedActivity();
     try {
       const msg = JSON.parse(event.data) as PlayerSyncState;
       if (msg.type !== "player_state") return;
@@ -371,8 +376,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         };
         const targetPosition = msg.position;
         const targetIsPlaying = msg.isPlaying;
-        playTrackRef.current(remoteTrack)
+        playTrackRef.current(remoteTrack, originLive)
           .then(() => {
+            if (!originLive()) return;
             if (targetPosition > 1 && audioRef.current) {
               audioRef.current.currentTime = targetPosition;
               setProgress(targetPosition);
@@ -402,9 +408,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    // The successor ticket/upgrade contract is not activated. Never try a legacy ticket for a family.
-    if (session?.renewalProfile || status !== "authenticated") return;
+    const successor = session?.renewalProfile === "renewal-v1";
+    if ((successor && !successorWebSocketEnabled()) || status !== "authenticated") return;
+    wsEpoch.current += 1;
     const lifecycle = new TfWebSocketLifecycle({
+      successor,
       createTicket: createWebSocketTicket,
       buildUrl: buildTfWebSocketUrl,
       createSocket: (url) => {
@@ -424,14 +432,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       },
     });
     lifecycle.start();
-    const unsubscribe = subscribeTfActivitySuspension(() => { lifecycle.stop(); wsRef.current = null; });
+    const unsubscribe = subscribeTfActivitySuspension(() => { wsEpoch.current += 1; lifecycle.stop(); wsRef.current = null; });
 
     return () => {
       unsubscribe();
+      wsEpoch.current += 1;
       lifecycle.stop();
       wsRef.current = null;
     };
-  }, [handleWsMessage, toast, session?.renewalProfile, status]);
+  }, [handleWsMessage, toast, session?.renewalProfile, status, wsSecurityGeneration]);
 
   const sendWsState = useCallback(() => {
     if (!canUseTfProtectedActivity()) return;
