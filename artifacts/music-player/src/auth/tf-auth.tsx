@@ -136,12 +136,15 @@ export function TfAuthProvider({ children }: { children: ReactNode }) {
       if (active.current && mode !== "policy") return active.current.promise;
       if (
         mode !== "policy" &&
-        cycleStarted.current !== null &&
-        Date.now() - cycleStarted.current >= 60_000
+        (failures.current >= 3 ||
+          (cycleStarted.current !== null &&
+            Date.now() - cycleStarted.current >= 60_000))
       ) {
         retryAt.current = Infinity;
         return Promise.resolve();
       }
+      if (mode !== "policy" && Date.now() < retryAt.current)
+        return Promise.resolve();
       cycleStarted.current ??= Date.now();
       if (mode === "policy") {
         active.current?.abort.abort();
@@ -154,12 +157,29 @@ export function TfAuthProvider({ children }: { children: ReactNode }) {
         generation.current === version &&
         !abort.signal.aborted;
       const prior = current.current.session;
+      const fail = (e: TfApiError) => {
+        if (e.kind === "unauthenticated") {
+          discard();
+          publish({ status: "unauthenticated", session: null, error: e });
+        } else {
+          suspend(e);
+          if (timer.current) clearTimeout(timer.current);
+          failures.current += 1;
+          if ((e.retryable || e.kind === "transport") && failures.current < 3) {
+            retryAt.current = Date.now() + Math.max(1000, e.retryAfter * 1000);
+            timer.current = setTimeout(() => {
+              if (visibleOrPlaying())
+                void runRef.current(
+                  prior?.renewalProfile ? "renew" : "standard",
+                );
+            }, retryAt.current - Date.now());
+          } else retryAt.current = Infinity;
+        }
+      };
       const timeout = setTimeout(() => {
         abort.abort();
         if (mounted.current && generation.current === version)
-          suspend(
-            new TfApiError(0, "transport_unavailable", "transport", true),
-          );
+          fail(new TfApiError(0, "transport_unavailable", "transport", true));
       }, 10_000);
       const work = (async () => {
         try {
@@ -211,28 +231,7 @@ export function TfAuthProvider({ children }: { children: ReactNode }) {
           schedule(session);
         } catch (error) {
           if (!live()) return;
-          const e = normalizeTfApiError(error);
-          if (e.kind === "unauthenticated") {
-            discard();
-            publish({ status: "unauthenticated", session: null, error: e });
-          } else {
-            suspend(e);
-            if (timer.current) clearTimeout(timer.current);
-            failures.current += 1;
-            if (
-              (e.retryable || e.kind === "transport") &&
-              failures.current < 3
-            ) {
-              retryAt.current =
-                Date.now() + Math.max(1000, e.retryAfter * 1000);
-              timer.current = setTimeout(() => {
-                if (visibleOrPlaying())
-                  void runRef.current(
-                    prior?.renewalProfile ? "renew" : "standard",
-                  );
-              }, retryAt.current - Date.now());
-            } else retryAt.current = Infinity;
-          }
+          fail(normalizeTfApiError(error));
         } finally {
           clearTimeout(timeout);
         }
