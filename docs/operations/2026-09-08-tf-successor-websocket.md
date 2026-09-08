@@ -1,5 +1,14 @@
 # Task3 successor WebSocket — coherent source candidate
 
+## Correction round 2 — SW2-R1 / SW3-R1 source checkpoint (2026-09-08 20:51 MSK)
+
+Owner: original TF owner, same `tf-product-finish` worktree. BASE `1bbe97548ad062917572f6807b843727c51c7b4f`. Read updated global/project AGENTS, original source brief plus ruling and full fix1 review. Only two named remaining P2 paths changed; no renewed whole audit. Existing AGENTS/CODEX_REFERENCE docs-only edits remain outside the source commit and byte-preserved.
+
+- SW2-R1: persist absolute ordinary reconnect not-before in the shared budget; recreated lifecycle waits only the remaining time before counting/starting its ticket attempt. Existing attempts,60s horizon, next delay, stable/manual/session boundaries and BR1 remain unchanged.
+- SW3-R1: synchronous applied-load generation replaces passive currentTrackRef as completion evidence; assigned only after current stream/play succeeds. Failed/cancelled/superseded loads have no receipt. Existing socket/security/load/activity fences remain.
+- RED20:49:44: composed normal renewal at t=240 bypassed pending3s and6s waits; fast successful remote load before passive ref publication left position0 instead of91. GREEN20:50:03: these three and both stale X/new Y controls. Final filtered command20:50:32:10 passed/19 intentionally filtered,2 files,2.41s; added failed stream/play controls and retained originating-socket/auth-generation cancellation + legacy restart control. Music-player typecheck and diff-check exit0; no other suites/runtime run.
+- Source candidate complete; exact resulting HEAD/commands/inventory are in TOP correction round2 section of root `task-3-tf-successor-ws-source-report.md`. Next: scoped re-review by `runtime_composition_review`; no runtime activation or additional stage. One scoped local commit follows; instruction edits must not be staged with it.
+
 ## Correction round1 — SW1–SW4 source candidate (20:17 MSK)
 
 Current authority is root's complete four-finding successor-WS review SHA256 `4a82b21bb953e6427df6158bad5fe1ef62aa628007152bd77928a52838feeab2`. Clean frozen correction BASE `53728340ba7033a9cbf9bf65d49cd0930ac1fbe3`; no historical consumer/browser/BR1 tasks reopened. Receiving-code-review and TDD skills used. All source remains local/default-off.

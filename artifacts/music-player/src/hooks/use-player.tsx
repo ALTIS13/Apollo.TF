@@ -72,6 +72,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const loadGeneration = useRef(0);
+  const appliedLoadGeneration = useRef<number | null>(null);
   const mountedRef = useRef(false);
   const suspendedPosition = useRef<number | null>(null);
   const queryClient = useQueryClient();
@@ -164,6 +165,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const _loadTrack = useCallback(async (track: TrackResult, originLive?: () => boolean) => {
     if (!audioRef.current || !canUseTfProtectedActivity() || originLive?.() === false) return;
     const load = ++loadGeneration.current, security = captureTfSecurityGeneration();
+    appliedLoadGeneration.current = null;
     const live = () => mountedRef.current && load === loadGeneration.current && isCurrentTfSecurityGeneration(security) && canUseTfProtectedActivity() && originLive?.() !== false;
     const resumePosition = currentTrackRef.current?.id === track.id ? suspendedPosition.current : null;
     suspendedPosition.current = null;
@@ -184,6 +186,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (resumePosition !== null) { audioRef.current.currentTime = resumePosition; setProgress(resumePosition); }
       await audioRef.current.play();
       if (!live()) return;
+      appliedLoadGeneration.current = load;
       setIsPlaying(true);
     } catch (err) {
       if (!live()) return;
@@ -380,7 +383,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         const work = playTrackRef.current(remoteTrack, originLive);
         const load = loadGeneration.current;
         work.then(() => {
-            if (!originLive() || load !== loadGeneration.current || currentTrackRef.current?.id !== remoteTrack.id) return;
+            if (!originLive() || load !== loadGeneration.current || appliedLoadGeneration.current !== load) return;
             if (targetPosition > 1 && audioRef.current) {
               audioRef.current.currentTime = targetPosition;
               setProgress(targetPosition);

@@ -87,6 +87,11 @@ export class TfWebSocketLifecycle {
       this.exhaust(attempt);
       return;
     }
+    if (this.options.successor && this.budget.retryAt > Date.now()) {
+      this.armReconnect(attempt, this.budget.retryAt - Date.now());
+      return;
+    }
+    if (this.options.successor) this.budget.retryAt = 0;
     this.budget.attempts += 1;
     this.abort = new AbortController();
     if (this.options.successor)
@@ -296,6 +301,12 @@ export class TfWebSocketLifecycle {
       (this.options.successor ? this.budget.delayMs : delay) * 2,
       MAX_RECONNECT_DELAY_MS,
     );
+    if (this.options.successor) this.budget.retryAt = Date.now() + delay;
+    this.armReconnect(attempt, delay);
+  }
+
+  private armReconnect(attempt: number, delay: number): void {
+    if (!this.live(attempt) || this.timer !== null) return;
     this.timer = (this.options.schedule ?? window.setTimeout)(() => {
       this.timer = null;
       if (!this.running || attempt !== this.attempt) return;

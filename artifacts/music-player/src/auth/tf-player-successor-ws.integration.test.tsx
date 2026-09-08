@@ -674,3 +674,163 @@ it("SW2 retryable ticket recovery retains BR1 three-timeout automatic cap", asyn
   expect(paths.filter((p) => p.endsWith("/ws/tickets"))).toHaveLength(1);
   expect(auth.status).toBe("unavailable");
 });
+it.each([3000, 6000])(
+  "SW2-R1 renewal inside pending%s reconnect keeps the original not-before",
+  async (delay) => {
+    const cache = await setup(true);
+    SocketDouble.all[0].open();
+    await act(async () => {
+      await player.playTrack({
+        id: "continuous",
+        title: "Track",
+        artist: "Artist",
+        duration: 500,
+        thumbnailUrl: null,
+        source: "youtube",
+        type: "original",
+        quality: [],
+        score: 1,
+      });
+    });
+    const audio = AudioDouble.all[0],
+      queue = player.queue,
+      saved = { liked: ["continuous"] };
+    audio.currentTime = 76;
+    cache.setQueryData(["saved"], saved);
+    if (delay === 6000) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(235_000);
+        SocketDouble.all[0].end(1000, "");
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      await flush();
+      SocketDouble.all[1].open();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        SocketDouble.all[1].end(1000, "");
+      });
+    } else
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(239_000);
+        SocketDouble.all[0].end(1000, "");
+      });
+    const tickets = paths.filter((p) => p.endsWith("/ws/tickets")).length;
+    const budget = auth.webSocketRecoveryBudget,
+      attempts = budget.attempts,
+      startedAt = budget.startedAt;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    await flush();
+    expect(paths.filter((p) => p.endsWith("/auth/renew"))).toHaveLength(1);
+    expect(paths.filter((p) => p.endsWith("/ws/tickets"))).toHaveLength(
+      tickets,
+    );
+    expect(auth.webSocketRecoveryBudget).toBe(budget);
+    expect(budget.attempts).toBe(attempts);
+    expect(budget.startedAt).toBe(startedAt);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(delay - 1001);
+    });
+    await flush();
+    expect(paths.filter((p) => p.endsWith("/ws/tickets"))).toHaveLength(
+      tickets,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await flush();
+    expect(paths.filter((p) => p.endsWith("/ws/tickets"))).toHaveLength(
+      tickets + 1,
+    );
+    expect(budget.attempts).toBe(attempts + 1);
+    expect(budget.startedAt).toBe(startedAt);
+    expect(AudioDouble.all).toEqual([audio]);
+    expect(audio.currentTime).toBe(76);
+    expect(audio.paused).toBe(false);
+    expect(player.queue).toBe(queue);
+    expect(cache.getQueryData(["saved"])).toBe(saved);
+  },
+);
+it("SW3-R1 current fast remote load applies seek/pause before passive state-ref publication", async () => {
+  await setup(true);
+  const socket = SocketDouble.all[0];
+  socket.open();
+  await act(async () => {
+    socket.onmessage?.(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "player_state",
+          track: {
+            id: "fast-current",
+            title: "Track",
+            artist: "Artist",
+            duration: 500,
+            thumbnailUrl: null,
+            source: "youtube",
+          },
+          position: 91,
+          isPlaying: false,
+        }),
+      }),
+    );
+    // Resolve actual fetch/query/play continuations inside the React batch, before passive effects flush.
+    for (let n = 0; n < 80; n++) await Promise.resolve();
+    expect(player.currentTrack).toBeNull();
+    const audio = AudioDouble.all[0];
+    expect(audio.src).toBe("https://media.invalid/test");
+    expect(audio.currentTime).toBe(91);
+    expect(audio.paused).toBe(true);
+  });
+  expect(player.currentTrack?.id).toBe("fast-current");
+});
+it.each(["stream", "play"])(
+  "SW3-R1 failed current%s has no applied receipt for remote seek/pause",
+  async (phase) => {
+    await setup(true);
+    const socket = SocketDouble.all[0];
+    socket.open();
+    let reject!: (e: Error) => void;
+    if (phase === "stream")
+      heldStream = () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        });
+    else
+      heldPlay = () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        });
+    await act(async () => {
+      socket.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "player_state",
+            track: {
+              id: "failed-current",
+              title: "Track",
+              artist: "Artist",
+              duration: 500,
+              thumbnailUrl: null,
+              source: "youtube",
+            },
+            position: 91,
+            isPlaying: false,
+          }),
+        }),
+      );
+    });
+    await flush();
+    expect(player.currentTrack?.id).toBe("failed-current");
+    const audio = AudioDouble.all[0];
+    audio.currentTime = 7;
+    const pause = vi.spyOn(audio, "pause");
+    await act(async () => {
+      reject(new Error("controlled media failure"));
+    });
+    await flush();
+    expect(player.currentTrack).toBeNull();
+    expect(audio.currentTime).toBe(7);
+    expect(pause).not.toHaveBeenCalled();
+  },
+);
