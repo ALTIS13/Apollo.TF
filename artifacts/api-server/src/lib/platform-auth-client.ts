@@ -25,6 +25,10 @@ import {
   TfRenewalError,
   parseRenewalJson,
 } from "./tf-renewal-contract.js";
+import {
+  resolveAuthRedisUrl,
+  type RedisUrlDependencies,
+} from "./redis-url-config.js";
 
 const AUTHORIZATION_PATH = "/v1/oauth/authorize";
 const TOKEN_PATH = "/v1/oauth/token";
@@ -557,7 +561,7 @@ interface SecretFileHandle {
   close(): Promise<void>;
 }
 
-export interface TfAuthRuntimeDependencies {
+export interface TfAuthRuntimeDependencies extends RedisUrlDependencies {
   readonly openSecretFile?: (
     path: string,
     flags: "r",
@@ -623,18 +627,6 @@ async function readClientSecret(
   }
 }
 
-function parseRedisUrl(value: string): string {
-  const url = new URL(value);
-  if (
-    !["redis:", "rediss:"].includes(url.protocol) ||
-    url.hostname.length === 0 ||
-    url.hash.length !== 0
-  ) {
-    throw new Error("invalid Redis URL");
-  }
-  return value;
-}
-
 export async function parseTfAuthRuntimeConfig(
   environment: NodeJS.ProcessEnv,
   dependencies: TfAuthRuntimeDependencies = {},
@@ -674,9 +666,7 @@ export async function parseTfAuthRuntimeConfig(
     if (!/^[A-Za-z0-9._~-]{1,128}$/.test(clientId)) {
       throw new Error("invalid client");
     }
-    const authRedisUrl = parseRedisUrl(
-      requiredEnvironment(environment, "APOLLO_TF_AUTH_REDIS_URL"),
-    );
+    const authRedisUrl = await resolveAuthRedisUrl(environment, dependencies);
     const clientSecret = await readClientSecret(
       requiredEnvironment(environment, "APOLLO_TF_CLIENT_SECRET_FILE"),
       dependencies.openSecretFile ?? open,

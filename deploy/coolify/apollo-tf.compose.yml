@@ -176,7 +176,23 @@ services:
     image: ${TF_REDIS_IMAGE:?}
     user: "999:999"
     read_only: true
-    command: ["redis-server", "--appendonly", "yes"]
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --aclfile
+      - /run/secrets/tf_redis_acl
+    secrets:
+      - source: tf_redis_acl
+        target: tf_redis_acl
+        uid: "999"
+        gid: "999"
+        mode: "0400"
+      - source: tf_redis_health_password
+        target: tf_redis_health_password
+        uid: "999"
+        gid: "999"
+        mode: "0400"
     volumes:
       - tf-redis-data:/data
     tmpfs:
@@ -188,7 +204,11 @@ services:
     cap_drop:
       - ALL
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD-SHELL
+        - >-
+          REDISCLI_AUTH="$$(cat /run/secrets/tf_redis_health_password)"
+          redis-cli --user tf-health ping | grep -qx PONG
       interval: 5s
       timeout: 3s
       retries: 20
@@ -503,7 +523,7 @@ services:
       APOLLO_PLATFORM_API_ORIGIN: http://platform-api:8080
       APOLLO_PLATFORM_ISSUER: ${PLATFORM_PUBLIC_ORIGIN:?}
       APOLLO_TF_BRIDGE_ALLOW_INTERNAL_HTTP: "true"
-      APOLLO_TF_AUTH_REDIS_URL: redis://tf-redis:6379/1
+      APOLLO_TF_AUTH_REDIS_URL_FILE: /run/secrets/tf_auth_redis_url
       APOLLO_TF_CALLBACK_URL: ${TF_API_PUBLIC_ORIGIN:?}/api/auth/callback
       APOLLO_TF_CLIENT_ID: apollo-tf-api
       APOLLO_TF_CLIENT_SECRET_FILE: /run/secrets/tf_client_secret
@@ -515,7 +535,7 @@ services:
       DATABASE_URL_FILE: /run/secrets/tf_runtime_database_url
       NODE_ENV: production
       PORT: "8080"
-      REDIS_URL: redis://tf-redis:6379/0
+      REDIS_URL_FILE: /run/secrets/tf_cache_redis_url
       SERVER_URL: ${TF_API_PUBLIC_ORIGIN:?}
       TF_DOWNLOAD_QUEUE_ALLOW_INSECURE_REDIS: "true"
       TF_DOWNLOAD_QUEUE_REDIS_URL_FILE: /run/secrets/tf_download_queue_redis_url
@@ -537,6 +557,16 @@ services:
         mode: "0400"
       - source: tf_client_secret
         target: tf_client_secret
+        uid: "10001"
+        gid: "10001"
+        mode: "0400"
+      - source: tf_auth_redis_url
+        target: tf_auth_redis_url
+        uid: "10001"
+        gid: "10001"
+        mode: "0400"
+      - source: tf_cache_redis_url
+        target: tf_cache_redis_url
         uid: "10001"
         gid: "10001"
         mode: "0400"
@@ -672,6 +702,14 @@ secrets:
     file: ${TF_SECRET_DIRECTORY:?}/tf_admin_database_url
   tf_client_secret:
     file: ${TF_SECRET_DIRECTORY:?}/tf_client_secret
+  tf_auth_redis_url:
+    file: ${TF_SECRET_DIRECTORY:?}/tf_auth_redis_url
+  tf_cache_redis_url:
+    file: ${TF_SECRET_DIRECTORY:?}/tf_cache_redis_url
+  tf_redis_acl:
+    file: ${TF_SECRET_DIRECTORY:?}/tf_redis_acl
+  tf_redis_health_password:
+    file: ${TF_SECRET_DIRECTORY:?}/tf_redis_health_password
   # Owner-only activation override supplies this separate read-only secret:
   # tf_revoke_keyring:
   #   file: ${TF_SECRET_DIRECTORY:?}/tf_revoke_keyring

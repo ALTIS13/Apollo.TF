@@ -25,6 +25,7 @@ import {
 } from "./coolify-release.js";
 import {
   operatorReleaseImageTargets,
+  operatorReleaseBuildArguments,
   operatorReleaseOutputDirectory,
   parseOperatorReleaseArguments,
   pinnedRedisReference as operatorPinnedRedisReference,
@@ -324,7 +325,11 @@ async function prepareHarness(
 
 function publicationOptions(
   harness: Awaited<ReturnType<typeof publisherHarness>>,
-  overrides?: { signal?: AbortSignal; sourceCommit?: string },
+  overrides?: {
+    signal?: AbortSignal;
+    sourceCommit?: string;
+    tfSuccessorWsEnabled?: boolean;
+  },
 ) {
   return {
     mode: "production" as const,
@@ -333,6 +338,7 @@ function publicationOptions(
     repositoryRoot: harness.repositoryRoot,
     signal: overrides?.signal,
     sourceCommit: overrides?.sourceCommit ?? sourceCommit,
+    tfSuccessorWsEnabled: overrides?.tfSuccessorWsEnabled,
   };
 }
 
@@ -353,7 +359,25 @@ describe("operator release arguments", () => {
       mode: "production",
       releaseId: "v0.1.0-rc.1",
       sourceCommit: "a".repeat(40),
+      tfSuccessorWsEnabled: false,
     });
+  });
+
+  it("accepts only an explicit Boolean successor WebSocket release selection", () => {
+    expect(
+      parseOperatorReleaseArguments([
+        ...validArguments,
+        "--tf-successor-ws-enabled",
+        "true",
+      ]),
+    ).toMatchObject({ tfSuccessorWsEnabled: true });
+    expect(() =>
+      parseOperatorReleaseArguments([
+        ...validArguments,
+        "--tf-successor-ws-enabled",
+        "yes",
+      ]),
+    ).toThrowError(/^invalid_arguments$/);
   });
 
   it.each(["--registry", "--token", "--password"])(
@@ -647,6 +671,26 @@ describe("operator release inventory", () => {
         target: "queue-redis",
       },
     ]);
+  });
+
+  it("allowlists both immutable TF Web inputs and no other image build args", () => {
+    expect(operatorReleaseBuildArguments("tf-web", false)).toEqual([
+      "--build-arg",
+      "VITE_API_URL=https://api.tf.apollot.ru",
+      "--build-arg",
+      "VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED=false",
+    ]);
+    expect(operatorReleaseBuildArguments("tf-web", true)).toEqual([
+      "--build-arg",
+      "VITE_API_URL=https://api.tf.apollot.ru",
+      "--build-arg",
+      "VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED=true",
+    ]);
+    for (const target of operatorReleaseImageTargets) {
+      if (target.name !== "tf-web") {
+        expect(operatorReleaseBuildArguments(target.name, true)).toEqual([]);
+      }
+    }
   });
 
   it("resolves release evidence under the fixed ignored directory", () => {
@@ -1055,6 +1099,19 @@ describe("operator release publication", () => {
           )?.imageDigest,
         ).toBe(digestFor(index));
       }
+      const webBuild = builds.find(
+        (_build, index) =>
+          operatorReleaseImageTargets[index]!.name === "tf-web",
+      )!;
+      expect(webBuild.args).toContain("VITE_API_URL=https://api.tf.apollot.ru");
+      expect(webBuild.args).toContain(
+        "VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED=false",
+      );
+      for (const [index, build] of builds.entries()) {
+        if (operatorReleaseImageTargets[index]!.name !== "tf-web") {
+          expect(build.args.join("\n")).not.toContain("VITE_");
+        }
+      }
       expect(
         harness.commands.filter(
           ({ args, executable }) =>
@@ -1064,6 +1121,33 @@ describe("operator release publication", () => {
             args[2] === "inspect",
         ),
       ).toHaveLength(operatorReleaseImageTargets.length * 2);
+    } finally {
+      await rm(harness.root, { force: true, recursive: true });
+    }
+  });
+
+  it("publishes the selected successor WS value into both Web build and release environment", async () => {
+    const harness = await publisherHarness();
+    try {
+      await prepareHarness(harness);
+      const output = await publishOperatorRelease(
+        publicationOptions(harness, { tfSuccessorWsEnabled: true }),
+        harness.dependencies,
+      );
+      const webBuild = harness.commands.find(
+        ({ args, executable }) =>
+          executable === "docker" &&
+          args[0] === "buildx" &&
+          args[1] === "build" &&
+          args.includes("VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED=true"),
+      );
+      expect(webBuild).toBeDefined();
+      expect(await readFile(output.envFragmentPath, "utf8")).toContain(
+        "TF_SUCCESSOR_WS_ENABLED=true\n",
+      );
+      expect(() =>
+        verifyOperatorReleaseEvidence(output.manifestPath),
+      ).not.toThrow();
     } finally {
       await rm(harness.root, { force: true, recursive: true });
     }
@@ -2009,6 +2093,7 @@ describe("operator release publication", () => {
           "mode=max",
           "--sbom",
           "true",
+          ...operatorReleaseBuildArguments(target!.name, false),
           "--label",
           "org.opencontainers.image.source=https://github.com/ALTIS13/Apollo.TF",
           "--label",
@@ -2071,6 +2156,7 @@ describe("operator release publication", () => {
       });
       const environmentContents = [
         `RELEASE_SOURCE_COMMIT=${sourceCommit}`,
+        "TF_SUCCESSOR_WS_ENABLED=false",
         `PLATFORM_POSTGRES_IMAGE=ghcr.io/altis13/apollo-platform-postgres@${digestFor(1)}`,
         "PLATFORM_REDIS_IMAGE=docker.io/library/redis@sha256:595cc6f2bb3af6e03347b90deb6123c6aa2c81dea05ce08128de8a174b6ac67b",
         `PLATFORM_API_IMAGE=ghcr.io/altis13/apollo-platform-api@${digestFor(0)}`,

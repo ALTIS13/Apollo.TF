@@ -9,6 +9,10 @@ const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const releaseDirectory = join(repositoryRoot, "deploy", "coolify");
 const platformPath = join(releaseDirectory, "apollo-platform.compose.yml");
 const tfPath = join(releaseDirectory, "apollo-tf.compose.yml");
+const tfProductionBindingPath = join(
+  releaseDirectory,
+  "apollo-tf.production-binding.compose.yml",
+);
 const releaseEnvironmentPath = join(releaseDirectory, "release.env.example");
 const operatorReleasePath = join(
   repositoryRoot,
@@ -186,8 +190,89 @@ describe("Coolify production release manifests", () => {
     expect((await readdir(releaseDirectory)).sort()).toEqual([
       "apollo-platform.compose.yml",
       "apollo-tf.compose.yml",
+      "apollo-tf.production-binding.compose.yml",
       "release.env.example",
+      "tf-liked-proof.compose.yml",
+      "tf-liked-proof.env.example",
     ]);
+  });
+
+  it("packages private authenticated TF Redis through mounted files", async () => {
+    const tf = await load(tfPath);
+    const redis = tf.compose.services["tf-redis"];
+    const api = tf.compose.services["tf-api"];
+
+    expect(redis.ports).toBeUndefined();
+    expect(redis.volumes).toContain("tf-redis-data:/data");
+    expect(redis.command).toEqual([
+      "redis-server",
+      "--appendonly",
+      "yes",
+      "--aclfile",
+      "/run/secrets/tf_redis_acl",
+    ]);
+    expect(redis.secrets?.map(({ source }) => source).sort()).toEqual([
+      "tf_redis_acl",
+      "tf_redis_health_password",
+    ]);
+    expect(JSON.stringify(redis.healthcheck)).toContain(
+      "/run/secrets/tf_redis_health_password",
+    );
+    expect(JSON.stringify(redis.healthcheck)).toContain("--user tf-health");
+    expect(api.environment).toMatchObject({
+      APOLLO_TF_AUTH_REDIS_URL_FILE: "/run/secrets/tf_auth_redis_url",
+      REDIS_URL_FILE: "/run/secrets/tf_cache_redis_url",
+    });
+    expect(api.environment).not.toHaveProperty("APOLLO_TF_AUTH_REDIS_URL");
+    expect(api.environment).not.toHaveProperty("REDIS_URL");
+    expect(api.secrets?.map(({ source }) => source)).toEqual(
+      expect.arrayContaining(["tf_auth_redis_url", "tf_cache_redis_url"]),
+    );
+  });
+
+  it("defines one complete renewal profile and one shared successor WS selection", async () => {
+    const [{ compose }, dockerfile, releaseEnvironment] = await Promise.all([
+      load(tfProductionBindingPath),
+      readFile(
+        join(repositoryRoot, "artifacts/music-player/Dockerfile"),
+        "utf8",
+      ),
+      readFile(releaseEnvironmentPath, "utf8"),
+    ]);
+    const api = compose.services["tf-api"];
+    expect(Object.keys(compose.services)).toEqual(["tf-api"]);
+    expect(api.environment).toEqual({
+      APOLLO_PLATFORM_API_ORIGIN: "https://api.apollot.ru",
+      APOLLO_PLATFORM_ISSUER: "https://api.apollot.ru",
+      APOLLO_TF_BRIDGE_ALLOW_INTERNAL_HTTP: "false",
+      APOLLO_TF_CALLBACK_URL: "https://api.tf.apollot.ru/api/auth/callback",
+      APOLLO_TF_CLIENT_ID: "apollo-tf-api",
+      APOLLO_TF_RENEWAL_ENABLED: "true",
+      APOLLO_TF_REVOKE_KEYRING_FILE: "/run/secrets/tf_revoke_keyring",
+      APOLLO_TF_SUCCESSOR_WS_ENABLED: "${TF_SUCCESSOR_WS_ENABLED:-false}",
+      APOLLO_TF_WEB_ORIGIN: "https://tf.apollot.ru",
+    });
+    expect(JSON.stringify(api.environment)).not.toContain("PKCE");
+    expect(api.secrets).toEqual([
+      {
+        source: "tf_revoke_keyring",
+        target: "tf_revoke_keyring",
+        uid: "10001",
+        gid: "10001",
+        mode: "0400",
+      },
+    ]);
+    expect(compose.secrets?.["tf_revoke_keyring"]?.file).toBe(
+      "${TF_SECRET_DIRECTORY:?}/tf_revoke_keyring",
+    );
+    expect(dockerfile).toContain("ARG VITE_API_URL=https://api.tf.apollot.ru");
+    expect(dockerfile).toContain(
+      "ARG VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED=false",
+    );
+    expect(dockerfile).toContain(
+      "ENV VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED=${VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED}",
+    );
+    expect(releaseEnvironment).toContain("TF_SUCCESSOR_WS_ENABLED=false");
   });
 
   it("defines the exact Platform and TF service sets", async () => {

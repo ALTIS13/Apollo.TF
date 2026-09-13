@@ -57,6 +57,7 @@ export type OperatorReleaseOptions = {
   releaseId: string;
   sourceCommit: string;
   repositoryRoot: string;
+  tfSuccessorWsEnabled?: boolean;
 };
 
 export type OperatorReleasePublicationOptions = OperatorReleaseOptions & {
@@ -120,9 +121,25 @@ const zeroSourceCommit = "0".repeat(40);
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const zeroDigest = `sha256:${"0".repeat(64)}`;
 const sha256Pattern = /^[a-f0-9]{64}$/;
-const argumentFlags = new Set(["--mode", "--release-id", "--source-commit"]);
-const publicationArgumentFlags = new Set([...argumentFlags, "--receipt"]);
+const requiredArgumentFlags = new Set([
+  "--mode",
+  "--release-id",
+  "--source-commit",
+]);
+const argumentFlags = new Set([
+  ...requiredArgumentFlags,
+  "--tf-successor-ws-enabled",
+]);
+const publicationRequiredArgumentFlags = new Set([
+  ...requiredArgumentFlags,
+  "--receipt",
+]);
+const publicationArgumentFlags = new Set([
+  ...publicationRequiredArgumentFlags,
+  "--tf-successor-ws-enabled",
+]);
 const sourceRepository = "https://github.com/ALTIS13/Apollo.TF";
+const tfWebApiOrigin = "https://api.tf.apollot.ru";
 const builderIdPattern = /^[a-z0-9][a-z0-9-]{0,47}$/;
 const absentManifestPattern = /(?:manifest unknown|not found)/i;
 const absentBuilderPattern = /(?:no builder|not found)/i;
@@ -561,14 +578,23 @@ export function parseOperatorReleaseArguments(argv: readonly string[]): {
   mode: OperatorReleaseMode;
   releaseId: string;
   sourceCommit: string;
+  tfSuccessorWsEnabled: boolean;
 } {
-  const values = parsePairwiseArguments(argv, argumentFlags);
-  return parseReleaseIdentity(values);
+  const values = parsePairwiseArguments(
+    argv,
+    argumentFlags,
+    requiredArgumentFlags,
+  );
+  return {
+    ...parseReleaseIdentity(values),
+    tfSuccessorWsEnabled: parseSuccessorWebSocketSelection(values),
+  };
 }
 
 function parsePairwiseArguments(
   argv: readonly string[],
   allowedFlags: ReadonlySet<string>,
+  requiredFlags: ReadonlySet<string>,
 ): Map<string, string> {
   const values = new Map<string, string>();
   for (let index = 0; index < argv.length; index += 2) {
@@ -585,10 +611,20 @@ function parsePairwiseArguments(
     }
     values.set(flag, value);
   }
-  if (values.size !== allowedFlags.size) {
+  if ([...requiredFlags].some((flag) => !values.has(flag))) {
     throw new Error("invalid_arguments");
   }
   return values;
+}
+
+function parseSuccessorWebSocketSelection(
+  values: ReadonlyMap<string, string>,
+): boolean {
+  const value = values.get("--tf-successor-ws-enabled") ?? "false";
+  if (value !== "false" && value !== "true") {
+    throw operatorError("invalid_arguments");
+  }
+  return value === "true";
 }
 
 function parseReleaseIdentity(values: ReadonlyMap<string, string>): {
@@ -624,14 +660,23 @@ export function parseOperatorReleasePublicationArguments(
   receiptPath: string;
   releaseId: string;
   sourceCommit: string;
+  tfSuccessorWsEnabled: boolean;
 } {
-  const values = parsePairwiseArguments(argv, publicationArgumentFlags);
+  const values = parsePairwiseArguments(
+    argv,
+    publicationArgumentFlags,
+    publicationRequiredArgumentFlags,
+  );
   const identity = parseReleaseIdentity(values);
   const receiptPath = values.get("--receipt");
   if (receiptPath === undefined || receiptPath.trim() === "") {
     throw operatorError("invalid_arguments");
   }
-  return { ...identity, receiptPath };
+  return {
+    ...identity,
+    receiptPath,
+    tfSuccessorWsEnabled: parseSuccessorWebSocketSelection(values),
+  };
 }
 
 export function operatorReleaseOutputDirectory(
@@ -727,6 +772,19 @@ function isolatedOperatorEnvironment(
 
 function throwIfCancelled(signal: AbortSignal | undefined): void {
   if (signal?.aborted === true) throw operatorError("publication_cancelled");
+}
+
+export function operatorReleaseBuildArguments(
+  targetName: string,
+  tfSuccessorWsEnabled = false,
+): readonly string[] {
+  if (targetName !== "tf-web") return [];
+  return [
+    "--build-arg",
+    `VITE_API_URL=${tfWebApiOrigin}`,
+    "--build-arg",
+    `VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED=${String(tfSuccessorWsEnabled)}`,
+  ];
 }
 
 async function checkedCommand(
@@ -845,11 +903,17 @@ function hasExactKeys(
   );
 }
 
-function renderReleaseEnvironment(artifact: ReleaseArtifact): string {
+function renderReleaseEnvironment(
+  artifact: ReleaseArtifact,
+  tfSuccessorWsEnabled: boolean,
+): string {
   const references = new Map(
     artifact.images.map(({ imageReference, name }) => [name, imageReference]),
   );
-  const lines = [`RELEASE_SOURCE_COMMIT=${artifact.sourceCommit}`];
+  const lines = [
+    `RELEASE_SOURCE_COMMIT=${artifact.sourceCommit}`,
+    `TF_SUCCESSOR_WS_ENABLED=${String(tfSuccessorWsEnabled)}`,
+  ];
   for (const environmentName of releaseEnvironmentOrder) {
     const imageName = releaseImageEnvironmentNames[environmentName];
     const reference = references.get(imageName);
@@ -859,6 +923,14 @@ function renderReleaseEnvironment(artifact: ReleaseArtifact): string {
     lines.push(`${environmentName}=${reference}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function releaseSuccessorSelection(environmentContents: string): boolean {
+  const matches = environmentContents.match(
+    /^TF_SUCCESSOR_WS_ENABLED=(false|true)$/gm,
+  );
+  if (matches?.length !== 1) throw operatorError("invalid_release_manifest");
+  return matches[0] === "TF_SUCCESSOR_WS_ENABLED=true";
 }
 
 async function writeDurableExclusive(
@@ -963,7 +1035,11 @@ export function verifyOperatorReleaseEvidence(
     validateReleaseArtifact(artifact);
     if (
       artifact.sourceCommit !== completionValue.sourceCommit ||
-      environmentContents !== renderReleaseEnvironment(artifact)
+      environmentContents !==
+        renderReleaseEnvironment(
+          artifact,
+          releaseSuccessorSelection(environmentContents),
+        )
     ) {
       throw operatorError("invalid_release_manifest");
     }
@@ -1018,6 +1094,7 @@ async function writeReleaseOutput(
   releaseDirectory: string,
   releaseId: string,
   releaseArtifact: ReleaseArtifact,
+  tfSuccessorWsEnabled: boolean,
   dependencies: OperatorReleaseDependencies,
 ): Promise<OperatorReleaseOutput> {
   const stagedManifestPath = join(
@@ -1030,7 +1107,10 @@ async function writeReleaseOutput(
     "apollo-release-complete.json",
   );
   const manifestContents = `${JSON.stringify(releaseArtifact, null, 2)}\n`;
-  const renderedEnvironment = renderReleaseEnvironment(releaseArtifact);
+  const renderedEnvironment = renderReleaseEnvironment(
+    releaseArtifact,
+    tfSuccessorWsEnabled,
+  );
   const completionContents = `${JSON.stringify(
     {
       environmentSha256: sha256(renderedEnvironment),
@@ -1441,6 +1521,10 @@ export async function publishOperatorRelease(
           "mode=max",
           "--sbom",
           "true",
+          ...operatorReleaseBuildArguments(
+            target.name,
+            options.tfSuccessorWsEnabled,
+          ),
           "--label",
           `org.opencontainers.image.source=${sourceRepository}`,
           "--label",
@@ -1555,6 +1639,7 @@ export async function publishOperatorRelease(
       releaseDirectory,
       options.releaseId,
       releaseArtifact,
+      options.tfSuccessorWsEnabled === true,
       dependencies,
     );
   } catch (error) {

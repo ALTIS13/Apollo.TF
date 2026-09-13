@@ -20,6 +20,7 @@ import {
   type ReleaseImageCatalogEntry,
 } from "./release-images.js";
 import { verifyOperatorReleaseEvidence } from "./operator-release.js";
+import { validateTfProductionBinding } from "./tf-production-binding.js";
 
 export {
   approvedImageRepositories,
@@ -169,11 +170,7 @@ const allowedReleaseSecretLikeNames = new Set([
   "PLATFORM_SECRET_DIRECTORY",
   "TF_SECRET_DIRECTORY",
 ]);
-const allowedPlainRedisUrlNames = new Set([
-  "APOLLO_REDIS_URL",
-  "APOLLO_TF_AUTH_REDIS_URL",
-  "REDIS_URL",
-]);
+const allowedPlainRedisUrlNames = new Set(["APOLLO_REDIS_URL"]);
 const allowedSensitiveLookingControls: Readonly<Record<string, string>> = {
   APOLLO_DEVELOPMENT_TOKEN_ECHO: "false",
 };
@@ -190,10 +187,11 @@ const sensitiveEnvironmentAllowlist: Readonly<Record<string, Set<string>>> = {
   "tf-admin": new Set(["ADMIN_DASHBOARD_TOKEN_FILE"]),
   "tf-api": new Set([
     "ADMIN_DASHBOARD_TOKEN_FILE",
-    "APOLLO_TF_AUTH_REDIS_URL",
+    "APOLLO_TF_AUTH_REDIS_URL_FILE",
     "APOLLO_TF_CLIENT_SECRET_FILE",
+    "APOLLO_TF_REVOKE_KEYRING_FILE",
     "DATABASE_URL_FILE",
-    "REDIS_URL",
+    "REDIS_URL_FILE",
     "TF_DOWNLOAD_QUEUE_REDIS_URL_FILE",
     "TF_DOWNLOAD_WORKER_INTERNAL_AUTH_SECRET_FILE",
     "TF_INTEGRATIONS_INTERNAL_AUTH_SECRET_FILE",
@@ -297,10 +295,12 @@ const expectedReleaseEnvironmentNames = [
   "TF_POSTGRES_IMAGE",
   "TF_PUBLIC_ORIGIN",
   "TF_REDIS_IMAGE",
+  "TF_RENEWAL_ENABLED",
   "TF_SEARCH_DEPLOYED_AT",
   "TF_SEARCH_IMAGE",
   "TF_SEARCH_VERSION",
   "TF_SECRET_DIRECTORY",
+  "TF_SUCCESSOR_WS_ENABLED",
   "TF_WEB_IMAGE",
   "TF_WEB_PORT",
 ] as const;
@@ -313,6 +313,7 @@ const expectedReleaseValues: Readonly<Record<string, string>> = {
   TF_API_PORT: "18201",
   TF_API_PUBLIC_ORIGIN: "https://api.tf.apollot.ru",
   TF_PUBLIC_ORIGIN: "https://tf.apollot.ru",
+  TF_RENEWAL_ENABLED: "false",
   TF_WEB_PORT: "18202",
 };
 const publicOriginEnvironmentNames = new Set([
@@ -744,6 +745,9 @@ const expectedSecretMounts: Readonly<
   "tf-api": [
     secretMountContract("admin_dashboard_token"),
     secretMountContract("tf_client_secret"),
+    secretMountContract("tf_auth_redis_url"),
+    secretMountContract("tf_cache_redis_url"),
+    secretMountContract("tf_revoke_keyring"),
     secretMountContract("tf_runtime_database_url"),
     secretMountContract("tf_integrations_internal_auth_secret"),
     secretMountContract("tf_download_queue_redis_url"),
@@ -784,7 +788,10 @@ const expectedSecretMounts: Readonly<
     secretMountContract("tf_migrator_password", "999"),
     secretMountContract("tf_runtime_password", "999"),
   ],
-  "tf-redis": [],
+  "tf-redis": [
+    secretMountContract("tf_redis_acl", "999"),
+    secretMountContract("tf_redis_health_password", "999"),
+  ],
   "tf-role-bootstrap": [
     secretMountContract("tf_admin_database_url", "0", "10002", "0440"),
     secretMountContract("tf_migrator_password", "999"),
@@ -823,7 +830,10 @@ const expectedSecretFileEnvironment: Readonly<
     ADMIN_DASHBOARD_TOKEN_FILE: "/run/secrets/admin_dashboard_token",
     APOLLO_MODULE_HEARTBEAT_KEYS_FILE: "/run/secrets/tf_module_heartbeat_keys",
     APOLLO_TF_CLIENT_SECRET_FILE: "/run/secrets/tf_client_secret",
+    APOLLO_TF_AUTH_REDIS_URL_FILE: "/run/secrets/tf_auth_redis_url",
     DATABASE_URL_FILE: "/run/secrets/tf_runtime_database_url",
+    REDIS_URL_FILE: "/run/secrets/tf_cache_redis_url",
+    APOLLO_TF_REVOKE_KEYRING_FILE: "/run/secrets/tf_revoke_keyring",
     TF_DOWNLOAD_QUEUE_REDIS_URL_FILE:
       "/run/secrets/tf_download_queue_redis_url",
     TF_DOWNLOAD_WORKER_INTERNAL_AUTH_SECRET_FILE:
@@ -915,16 +925,17 @@ const expectedPlainEnvironment: Readonly<
   "tf-api": (releaseEnvironment) => ({
     APOLLO_API_VERSION: releaseEnvironment["TF_API_VERSION"],
     APOLLO_DEPLOYED_AT: releaseEnvironment["TF_DEPLOYED_AT"],
-    APOLLO_PLATFORM_API_ORIGIN: "http://platform-api:8080",
-    APOLLO_PLATFORM_ISSUER: releaseEnvironment["PLATFORM_PUBLIC_ORIGIN"],
-    APOLLO_TF_AUTH_REDIS_URL: "redis://tf-redis:6379/1",
-    APOLLO_TF_BRIDGE_ALLOW_INTERNAL_HTTP: "true",
-    APOLLO_TF_CALLBACK_URL: `${releaseEnvironment["TF_API_PUBLIC_ORIGIN"]}/api/auth/callback`,
+    APOLLO_PLATFORM_API_ORIGIN: "https://api.apollot.ru",
+    APOLLO_PLATFORM_ISSUER: "https://api.apollot.ru",
+    APOLLO_TF_BRIDGE_ALLOW_INTERNAL_HTTP: "false",
+    APOLLO_TF_CALLBACK_URL: "https://api.tf.apollot.ru/api/auth/callback",
     APOLLO_TF_CLIENT_ID: "apollo-tf-api",
-    APOLLO_TF_WEB_ORIGIN: releaseEnvironment["TF_PUBLIC_ORIGIN"],
+    APOLLO_TF_RENEWAL_ENABLED: "true",
+    APOLLO_TF_SUCCESSOR_WS_ENABLED:
+      releaseEnvironment["TF_SUCCESSOR_WS_ENABLED"],
+    APOLLO_TF_WEB_ORIGIN: "https://tf.apollot.ru",
     NODE_ENV: "production",
     PORT: "8080",
-    REDIS_URL: "redis://tf-redis:6379/0",
     SERVER_URL: releaseEnvironment["TF_API_PUBLIC_ORIGIN"],
     TF_DOWNLOAD_QUEUE_ALLOW_INSECURE_REDIS: "true",
     TF_DOWNLOAD_WORKER_ALLOW_INSECURE_HTTP: "true",
@@ -1122,6 +1133,12 @@ function validateReleaseEnvironment(
         : "release_environment_value",
       { field: "environment" },
     );
+  }
+  if (
+    input.environment.TF_SUCCESSOR_WS_ENABLED !== "false" &&
+    input.environment.TF_SUCCESSOR_WS_ENABLED !== "true"
+  ) {
+    addError(errors, "release_environment_value", { field: "environment" });
   }
   for (const name of versionEnvironmentNames) {
     if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(input.environment[name] ?? "")) {
@@ -1823,6 +1840,28 @@ export function validateCoolifyRelease(
   for (const stackName of expectedStackNames) {
     const stack = stacksByName.get(stackName);
     if (stack === undefined) continue;
+    if (stackName === "apollo-tf") {
+      const api = stack.compose.services["tf-api"];
+      try {
+        validateTfProductionBinding({
+          apiEnvironment: api?.environment ?? {},
+          apiSecretTargets: (api?.secrets ?? []).map(
+            ({ target, source }) => target ?? source ?? "",
+          ),
+          releaseSelection: input.environment.TF_SUCCESSOR_WS_ENABLED ?? "",
+          webBuildArguments: {
+            VITE_API_URL: "https://api.tf.apollot.ru",
+            VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED:
+              input.environment.TF_SUCCESSOR_WS_ENABLED,
+          },
+        });
+      } catch {
+        addError(errors, "tf_production_binding", {
+          stack: stackName,
+          service: "tf-api",
+        });
+      }
+    }
     if (stack.compose.name !== stack.name) {
       addError(errors, "stack_name", { stack: stack.name });
     }
@@ -2118,7 +2157,7 @@ function renderCompose(
   repositoryRoot: string,
   envFile: string,
   stack: ReleaseStackInput["name"],
-  composeFile: string,
+  composeFiles: readonly string[],
   environment: Record<string, string>,
   profiles: readonly string[] = [],
 ): ReleaseStackInput {
@@ -2129,8 +2168,7 @@ function renderCompose(
       ...profiles.flatMap((profile) => ["--profile", profile]),
       "--env-file",
       envFile,
-      "-f",
-      composeFile,
+      ...composeFiles.flatMap((composeFile) => ["-f", composeFile]),
       "config",
       "--format",
       "json",
@@ -2233,14 +2271,20 @@ export function runCoolifyReleaseCli(argv: string[]): number {
         repositoryRoot,
         envFile,
         "apollo-platform",
-        resolve(repositoryRoot, "deploy/coolify/apollo-platform.compose.yml"),
+        [resolve(repositoryRoot, "deploy/coolify/apollo-platform.compose.yml")],
         environment,
       ),
       renderCompose(
         repositoryRoot,
         envFile,
         "apollo-tf",
-        resolve(repositoryRoot, "deploy/coolify/apollo-tf.compose.yml"),
+        [
+          resolve(repositoryRoot, "deploy/coolify/apollo-tf.compose.yml"),
+          resolve(
+            repositoryRoot,
+            "deploy/coolify/apollo-tf.production-binding.compose.yml",
+          ),
+        ],
         environment,
         ["baseline"],
       ),

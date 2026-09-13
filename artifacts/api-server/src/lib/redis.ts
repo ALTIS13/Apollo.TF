@@ -4,10 +4,10 @@ import { logger } from "./logger.js";
 let _redis: Redis | null = null;
 let _available = false;
 
-export function getRedis(): Redis | null {
+export function getRedis(resolvedUrl?: string): Redis | null {
   if (_redis) return _redis;
 
-  const url = process.env["REDIS_URL"];
+  const url = resolvedUrl ?? process.env["REDIS_URL"];
   if (!url) return null;
 
   try {
@@ -25,7 +25,10 @@ export function getRedis(): Redis | null {
 
     _redis.on("error", (err) => {
       if (_available) {
-        logger.warn({ err: (err as Error).message }, "Redis error — falling back to PostgreSQL cache");
+        logger.warn(
+          { err: (err as Error).message },
+          "Redis error — falling back to PostgreSQL cache",
+        );
       }
       _available = false;
     });
@@ -37,7 +40,9 @@ export function getRedis(): Redis | null {
     _redis.connect().catch(() => {});
     return _redis;
   } catch {
-    logger.warn("Failed to initialize Redis client — using PostgreSQL cache only");
+    logger.warn(
+      "Failed to initialize Redis client — using PostgreSQL cache only",
+    );
     return null;
   }
 }
@@ -56,13 +61,16 @@ export async function redisGet(key: string): Promise<string | null> {
   }
 }
 
-export async function redisSet(key: string, value: string, ttlSeconds: number): Promise<void> {
+export async function redisSet(
+  key: string,
+  value: string,
+  ttlSeconds: number,
+): Promise<void> {
   const r = getRedis();
   if (!r || !_available) return;
   try {
     await r.set(key, value, "EX", ttlSeconds);
-  } catch {
-  }
+  } catch {}
 }
 
 export async function redisDel(key: string): Promise<void> {
@@ -70,6 +78,5 @@ export async function redisDel(key: string): Promise<void> {
   if (!r || !_available) return;
   try {
     await r.del(key);
-  } catch {
-  }
+  } catch {}
 }
