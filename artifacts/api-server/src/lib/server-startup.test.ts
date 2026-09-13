@@ -21,6 +21,37 @@ afterEach(async () => {
 });
 
 describe("API listener startup", () => {
+  it("rejects a private cache preflight before opening the listener", async () => {
+    const secret = "redis://tf-cache:private-password@tf-redis:6379/0";
+    const listen = vi.fn(() => {
+      throw new Error("listener must remain closed");
+    });
+    const closeQueues = vi.fn(async () => {});
+    const closeRedis = vi.fn(async () => {});
+    let failure: unknown;
+
+    try {
+      await startApiListener({
+        beforeListen: async () => {
+          throw new Error(secret);
+        },
+        listen,
+        initialize: async () => {},
+        closeQueues,
+        closeRedis,
+      } as Parameters<typeof startApiListener>[0]);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toEqual(new Error("TF API startup failed"));
+    expect(String(failure)).not.toContain(secret);
+    expect(JSON.stringify(failure)).not.toContain(secret);
+    expect(listen).not.toHaveBeenCalled();
+    expect(closeQueues).toHaveBeenCalledOnce();
+    expect(closeRedis).toHaveBeenCalledOnce();
+  });
+
   it("closes queue and Redis resources when post-listen initialization rejects", async () => {
     const app = express();
     const closeQueues = vi.fn(async () => {});

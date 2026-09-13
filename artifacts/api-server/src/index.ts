@@ -16,7 +16,7 @@ import {
   parseModuleHeartbeatKeys,
 } from "./lib/module-heartbeat.js";
 import { parseTfAuthRuntimeConfig } from "./lib/platform-auth-client.js";
-import { getRedis } from "./lib/redis.js";
+import { getRedisForStartup } from "./lib/redis.js";
 import { probeRedisHealth } from "./lib/redis-readiness.js";
 import { resolveCacheRedisUrl } from "./lib/redis-url-config.js";
 import { createStrictRedisClient } from "./lib/tf-session-store.js";
@@ -31,6 +31,7 @@ import type { WebSocketServerHandle } from "./ws.js";
 const probeTfMigrationReadiness = createTfMigrationReadinessProbe(pool);
 
 async function start(): Promise<void> {
+  const cacheRedisFileSelected = process.env["REDIS_URL_FILE"] !== undefined;
   assertRequiredModuleHeartbeatKeys(
     parseModuleHeartbeatKeys(process.env["APOLLO_MODULE_HEARTBEAT_KEYS"]),
   );
@@ -110,8 +111,13 @@ async function start(): Promise<void> {
       familyWebSocket,
     } = apiRuntime;
 
-    cacheRedis = getRedis(cacheRedisUrl);
     const server = await startApiListener({
+      beforeListen: async () => {
+        cacheRedis = await getRedisForStartup(
+          cacheRedisUrl,
+          cacheRedisFileSelected,
+        );
+      },
       listen: () => app.listen(port),
       initialize: async (listeningServer) => {
         webSocketHandle = await initializeApiRuntime(listeningServer, {
