@@ -205,6 +205,12 @@ acceptance is established by this source procedure. A partial push burns the
 release ID and produces no complete artifact; investigate it and prepare a new
 ID instead of retrying the consumed receipt.
 
+TF-only packages remain private. Provision a separately authorized, read-only
+Coolify pull principal for those packages; the legacy public/anonymous-pull
+procedure below does not apply to the TF-only profile.
+
+### Legacy complete-release visibility and proof (not TF-only)
+
 Set `RELEASE_SOURCE_COMMIT` in the completed private release env to the same
 commit and validate it with the generated manifest. After the first package is
 published, the owner must explicitly change its visibility to public before an
