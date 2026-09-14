@@ -161,6 +161,50 @@ pnpm --silent release:validate -- --env-file '<PRIVATE_RELEASE_ENV>' --mode prod
 if ($LASTEXITCODE -ne 0) { throw 'Release validation failed' }
 ```
 
+### TF-only publication profile
+
+The separate TF-only profile is for publishing the nine TF-owned custom images
+plus the catalog-pinned Redis image without rebuilding or publishing the two
+vendored Platform images. It keeps the complete publisher above unchanged and
+uses disjoint ignored paths:
+
+- claims: `.ops-private/tf-only-release-claims/<releaseId>/`
+- final evidence: `.ops-private/tf-only-releases/<releaseId>/`
+- manifest: `apollo-tf-release-manifest.json`
+- environment: `tf-release-images.env`
+- completion marker: `apollo-tf-release-complete.json`
+
+The owner chooses a fresh release ID and binds `$approvedSourceCommit` to the
+accepted commit that contains the TF-only publisher implementation and the
+image sources being built. Do not reuse the implementation base commit merely
+because it was used to design this profile. Offline preparation remains before
+credential introduction:
+
+```powershell
+$approvedSourceCommit = '<ACCEPTED_TF_SOURCE_COMMIT>'
+$releaseId = '<NEW_UNIQUE_RELEASE_ID>'
+$preparation = pnpm --silent release:prepare:tf-only -- --mode production --release-id $releaseId --source-commit $approvedSourceCommit | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'TF-only release preparation failed' }
+
+# Only after preparation: authenticate Docker's external credential store with
+# an authorized principal that can read and write all nine private TF packages.
+pnpm --silent release:publish:tf-only -- --mode production --release-id $releaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath
+if ($LASTEXITCODE -ne 0) { throw 'TF-only release publication failed' }
+```
+
+The operation accepts no image subset and no successor-WebSocket override; the
+TF Web build and emitted environment both fix that selection to `false`.
+`verifyTfOnlyOperatorReleaseEvidence` is the strict consumer for this artifact.
+The complete `release:validate` command intentionally rejects TF-only evidence,
+which is not a complete Platform/TF Coolify release environment.
+
+GHCR repository existence, private read/write access, package visibility, tag
+absence, post-push digest/revision inventory, and a Coolify pull remain runtime
+prerequisites. No registry access, publication, visibility change, or runtime
+acceptance is established by this source procedure. A partial push burns the
+release ID and produces no complete artifact; investigate it and prepare a new
+ID instead of retrying the consumed receipt.
+
 Set `RELEASE_SOURCE_COMMIT` in the completed private release env to the same
 commit and validate it with the generated manifest. After the first package is
 published, the owner must explicitly change its visibility to public before an

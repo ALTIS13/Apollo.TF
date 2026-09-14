@@ -34,6 +34,12 @@ import {
   releaseImageCatalog as operatorReleaseImageCatalog,
   runOperatorReleaseCommand,
   runOperatorReleaseCli,
+  tfOnlyOperatorReleaseClaimDirectory,
+  tfOnlyOperatorReleaseImageTargets,
+  tfOnlyOperatorReleaseOutputDirectory,
+  prepareTfOnlyOperatorRelease,
+  publishTfOnlyOperatorRelease,
+  verifyTfOnlyOperatorReleaseEvidence,
   verifyOperatorReleaseEvidence,
   type OperatorReleaseCommandResult,
   type OperatorReleaseDependencies,
@@ -43,6 +49,8 @@ import {
   artifactImageNames,
   pinnedRedisReference,
   releaseImageCatalog,
+  tfOnlyArtifactImageNames,
+  tfOnlyReleaseImageCatalog,
 } from "./release-images.js";
 
 const validArguments = [
@@ -112,6 +120,7 @@ async function publisherHarness(options?: {
   randomId?: () => string;
   sleep?: (milliseconds: number) => Promise<void>;
   temporaryRoot?: () => string;
+  targets?: typeof operatorReleaseImageTargets;
 }) {
   const root = await mkdtemp(join(tmpdir(), "apollo-operator-release-test-"));
   const repositoryRoot = join(root, "repository");
@@ -120,6 +129,7 @@ async function publisherHarness(options?: {
   const builders = new Set<string>();
   const commands: RecordedCommand[] = [];
   const publishedTags = new Set<string>();
+  const targets = options?.targets ?? operatorReleaseImageTargets;
   const sleeps: number[] = [];
   await mkdir(repositoryRoot);
 
@@ -180,8 +190,8 @@ async function publisherHarness(options?: {
           args[2] === "inspect"
         ) {
           const reference = args[3] ?? "";
-          const targetIndex = operatorReleaseImageTargets.findIndex(
-            ({ repository }) => reference.startsWith(`${repository}:`),
+          const targetIndex = targets.findIndex(({ repository }) =>
+            reference.startsWith(`${repository}:`),
           );
           return publishedTags.has(reference)
             ? {
@@ -198,8 +208,8 @@ async function publisherHarness(options?: {
         ) {
           const tag = args[args.indexOf("--tag") + 1] ?? "";
           publishedTags.add(tag);
-          const targetIndex = operatorReleaseImageTargets.findIndex(
-            ({ repository }) => tag.startsWith(`${repository}:`),
+          const targetIndex = targets.findIndex(({ repository }) =>
+            tag.startsWith(`${repository}:`),
           );
           const metadataIndex = args.indexOf("--metadata-file");
           if (metadataIndex >= 0) {
@@ -263,6 +273,38 @@ async function publisherHarness(options?: {
       repositoryRoot,
       ".ops-private",
       "releases",
+      `.${releaseId}.staging-task-2-owned`,
+    ),
+    tfOnlyReleaseClaim: join(
+      repositoryRoot,
+      ".ops-private",
+      "tf-only-release-claims",
+      releaseId,
+    ),
+    tfOnlyReleaseCompletion: join(
+      repositoryRoot,
+      ".ops-private",
+      "tf-only-releases",
+      releaseId,
+      "apollo-tf-release-complete.json",
+    ),
+    tfOnlyReleaseOutput: join(
+      repositoryRoot,
+      ".ops-private",
+      "tf-only-releases",
+      releaseId,
+    ),
+    tfOnlyReleaseReceipt: join(
+      repositoryRoot,
+      ".ops-private",
+      "tf-only-release-claims",
+      releaseId,
+      "prepare-receipt.json",
+    ),
+    tfOnlyReleaseStaging: join(
+      repositoryRoot,
+      ".ops-private",
+      "tf-only-releases",
       `.${releaseId}.staging-task-2-owned`,
     ),
     repositoryRoot,
@@ -339,6 +381,33 @@ function publicationOptions(
     signal: overrides?.signal,
     sourceCommit: overrides?.sourceCommit ?? sourceCommit,
     tfSuccessorWsEnabled: overrides?.tfSuccessorWsEnabled,
+  };
+}
+
+async function prepareTfOnlyHarness(
+  harness: Awaited<ReturnType<typeof publisherHarness>>,
+): Promise<void> {
+  await prepareTfOnlyOperatorRelease(
+    {
+      mode: "production",
+      releaseId,
+      repositoryRoot: harness.repositoryRoot,
+      sourceCommit,
+    },
+    harness.dependencies,
+  );
+  harness.commands.length = 0;
+}
+
+function tfOnlyPublicationOptions(
+  harness: Awaited<ReturnType<typeof publisherHarness>>,
+) {
+  return {
+    mode: "production" as const,
+    receiptPath: harness.tfOnlyReleaseReceipt,
+    releaseId,
+    repositoryRoot: harness.repositoryRoot,
+    sourceCommit,
   };
 }
 
@@ -2720,7 +2789,7 @@ describe("operator release CLI", () => {
       "utf8",
     );
     expect(source).toContain(
-      'const cancellation =\n      operation === "publish" ? new AbortController() : undefined;',
+      'operation === "publish" || operation === "publish-tf-only"',
     );
     expect(source).toContain("cancellation?.signal");
   });
@@ -2916,6 +2985,12 @@ describe("operator release CLI", () => {
     expect(packageJson.scripts?.["release:publish"]).toBe(
       "pnpm --filter @workspace/scripts exec tsx src/operator-release.ts publish",
     );
+    expect(packageJson.scripts?.["release:prepare:tf-only"]).toBe(
+      "pnpm --filter @workspace/scripts exec tsx src/operator-release.ts prepare-tf-only",
+    );
+    expect(packageJson.scripts?.["release:publish:tf-only"]).toBe(
+      "pnpm --filter @workspace/scripts exec tsx src/operator-release.ts publish-tf-only",
+    );
     expect(packageJson.scripts?.["release:validate"]).toBe(
       "pnpm --filter @workspace/scripts exec tsx src/coolify-release.ts",
     );
@@ -3042,5 +3117,353 @@ describe("operator release CLI", () => {
     expect(guidanceSources.join("\n")).not.toMatch(/workflow-produced/i);
     expect(musicPlayerDockerfile).toContain("RUN npm install -g pnpm@10.33.2");
     expect(musicPlayerDockerfile).not.toContain("RUN npm install -g pnpm\n");
+  });
+
+  describe("TF-only operator release", () => {
+    it("defines the exact closed TF image profile without Platform authority", () => {
+      expect(tfOnlyReleaseImageCatalog).toEqual([
+        ...releaseImageCatalog.slice(2, 11),
+        {
+          ...releaseImageCatalog[11],
+          environmentNames: ["TF_REDIS_IMAGE"],
+        },
+      ]);
+      expect(tfOnlyOperatorReleaseImageTargets).toHaveLength(9);
+      expect(tfOnlyArtifactImageNames).toEqual([
+        "tf-api",
+        "tf-postgres",
+        "tf-web",
+        "tf-admin",
+        "tf-search",
+        "tf-integrations",
+        "tf-integrations-postgres",
+        "tf-download-worker",
+        "tf-download-redis",
+        "redis",
+      ]);
+      expect(JSON.stringify(tfOnlyReleaseImageCatalog)).not.toMatch(
+        /PLATFORM_|apollo-platform-/,
+      );
+    });
+
+    it("uses disjoint claim/output paths and rejects a legacy mixed receipt before Docker", async () => {
+      const harness = await publisherHarness({
+        targets: tfOnlyOperatorReleaseImageTargets,
+      });
+      try {
+        expect(
+          tfOnlyOperatorReleaseClaimDirectory(
+            harness.repositoryRoot,
+            releaseId,
+          ),
+        ).toBe(harness.tfOnlyReleaseClaim);
+        expect(
+          tfOnlyOperatorReleaseOutputDirectory(
+            harness.repositoryRoot,
+            releaseId,
+          ),
+        ).toBe(harness.tfOnlyReleaseOutput);
+
+        await prepareTfOnlyHarness(harness);
+        const receipt = JSON.parse(
+          await readFile(harness.tfOnlyReleaseReceipt, "utf8"),
+        ) as Record<string, unknown>;
+        expect(receipt).toMatchObject({
+          artifactSet: "tf-only",
+          imageCatalog: tfOnlyReleaseImageCatalog,
+          protocolVersion: 2,
+        });
+        await writeFile(
+          harness.tfOnlyReleaseReceipt,
+          `${JSON.stringify({ ...receipt, imageCatalog: releaseImageCatalog }, null, 2)}\n`,
+          "utf8",
+        );
+
+        await expect(
+          publishTfOnlyOperatorRelease(
+            tfOnlyPublicationOptions(harness),
+            harness.dependencies,
+          ),
+        ).rejects.toThrowError(/^invalid_release_receipt$/);
+        expect(
+          await pathExists(
+            join(harness.tfOnlyReleaseClaim, "publication-started.json"),
+          ),
+        ).toBe(false);
+        expect(
+          harness.commands.filter(({ executable }) => executable === "docker"),
+        ).toHaveLength(0);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    });
+
+    it("publishes exactly nine TF builds and one pinned Redis artifact", async () => {
+      const harness = await publisherHarness({
+        targets: tfOnlyOperatorReleaseImageTargets,
+      });
+      try {
+        await prepareTfOnlyHarness(harness);
+        const output = await publishTfOnlyOperatorRelease(
+          tfOnlyPublicationOptions(harness),
+          harness.dependencies,
+        );
+        const builds = harness.commands.filter(
+          ({ args, executable }) =>
+            executable === "docker" &&
+            args[0] === "buildx" &&
+            args[1] === "build",
+        );
+        const imageInspections = harness.commands.filter(
+          ({ args, executable }) =>
+            executable === "docker" &&
+            args[0] === "buildx" &&
+            args[1] === "imagetools" &&
+            args[2] === "inspect",
+        );
+        expect(builds).toHaveLength(9);
+        expect(imageInspections).toHaveLength(18);
+        expect(
+          builds.map(({ args }) => args[args.indexOf("--tag") + 1]),
+        ).toEqual(
+          tfOnlyOperatorReleaseImageTargets.map(
+            ({ repository }) => `${repository}:${releaseId}`,
+          ),
+        );
+        const webBuild = builds.find(({ args }) =>
+          args.includes(`ghcr.io/altis13/apollo-tf-web:${releaseId}`),
+        );
+        expect(webBuild?.args).toEqual(
+          expect.arrayContaining([
+            "VITE_API_URL=https://api.tf.apollot.ru",
+            "VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED=false",
+          ]),
+        );
+        expect(output.manifestPath).toBe(
+          join(harness.tfOnlyReleaseOutput, "apollo-tf-release-manifest.json"),
+        );
+        expect(output.releaseArtifact).toMatchObject({
+          artifactSet: "tf-only",
+          sourceCommit,
+        });
+        expect(output.releaseArtifact.images.map(({ name }) => name)).toEqual(
+          [...tfOnlyArtifactImageNames].sort(),
+        );
+        const environment = await readFile(output.envFragmentPath, "utf8");
+        expect(environment).toMatch(/^RELEASE_SOURCE_COMMIT=/);
+        expect(environment).toContain("TF_SUCCESSOR_WS_ENABLED=false\n");
+        expect(environment).not.toMatch(/^PLATFORM_/m);
+        expect(
+          verifyTfOnlyOperatorReleaseEvidence(output.manifestPath),
+        ).toEqual(output.releaseArtifact);
+        expect(() =>
+          verifyOperatorReleaseEvidence(output.manifestPath),
+        ).toThrow(/^invalid_release_manifest$/);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    });
+
+    it("retains the burned claim and publishes no artifact after a middle TF build fails", async () => {
+      let buildCount = 0;
+      const harness = await publisherHarness({
+        targets: tfOnlyOperatorReleaseImageTargets,
+        command(command, defaultResult) {
+          if (
+            command.executable === "docker" &&
+            command.args[0] === "buildx" &&
+            command.args[1] === "build"
+          ) {
+            buildCount += 1;
+            if (buildCount === 6) {
+              return { status: 1, stderr: "private-build-error", stdout: "" };
+            }
+          }
+          return defaultResult();
+        },
+      });
+      try {
+        await prepareTfOnlyHarness(harness);
+        const publish = () =>
+          publishTfOnlyOperatorRelease(
+            tfOnlyPublicationOptions(harness),
+            harness.dependencies,
+          );
+        await expect(publish()).rejects.toThrowError(/^image_build_failed$/);
+        expect(buildCount).toBe(6);
+        expect(await pathExists(harness.tfOnlyReleaseOutput)).toBe(false);
+        expect(await pathExists(harness.tfOnlyReleaseClaim)).toBe(true);
+        const dockerCommandCount = harness.commands.filter(
+          ({ executable }) => executable === "docker",
+        ).length;
+        await expect(publish()).rejects.toThrowError(
+          /^release_receipt_reused$/,
+        );
+        expect(
+          harness.commands.filter(({ executable }) => executable === "docker"),
+        ).toHaveLength(dockerCommandCount);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    });
+
+    it.each([
+      "staged_manifest_written",
+      "staged_environment_written",
+      "staged_completion_written",
+    ] as const)(
+      "removes TF-only evidence after handled %s failure and refuses receipt reuse",
+      async (failedCheckpoint) => {
+        const harness = await publisherHarness({
+          targets: tfOnlyOperatorReleaseImageTargets,
+          async publicationCheckpoint(checkpoint) {
+            if (checkpoint === failedCheckpoint) {
+              throw new Error("sentinel-tf-only-stage-failure");
+            }
+          },
+        });
+        try {
+          await prepareTfOnlyHarness(harness);
+          const publish = () =>
+            publishTfOnlyOperatorRelease(
+              tfOnlyPublicationOptions(harness),
+              harness.dependencies,
+            );
+          await expect(publish()).rejects.toThrowError(
+            /^artifact_validation_failed$/,
+          );
+          expect(await pathExists(harness.tfOnlyReleaseOutput)).toBe(false);
+          expect(await pathExists(harness.tfOnlyReleaseStaging)).toBe(false);
+          expect(await pathExists(harness.tfOnlyReleaseClaim)).toBe(true);
+          const dockerCommandCount = harness.commands.filter(
+            ({ executable }) => executable === "docker",
+          ).length;
+          await expect(publish()).rejects.toThrowError(
+            /^release_receipt_reused$/,
+          );
+          expect(
+            harness.commands.filter(
+              ({ executable }) => executable === "docker",
+            ),
+          ).toHaveLength(dockerCommandCount);
+        } finally {
+          await rm(harness.root, { force: true, recursive: true });
+        }
+      },
+    );
+
+    it("rejects rehashed mixed manifests and reordered environments", async () => {
+      const harness = await publisherHarness({
+        targets: tfOnlyOperatorReleaseImageTargets,
+      });
+      try {
+        await prepareTfOnlyHarness(harness);
+        const output = await publishTfOnlyOperatorRelease(
+          tfOnlyPublicationOptions(harness),
+          harness.dependencies,
+        );
+        const manifestContents = await readFile(output.manifestPath, "utf8");
+        const environmentContents = await readFile(
+          output.envFragmentPath,
+          "utf8",
+        );
+        const completion = JSON.parse(
+          await readFile(harness.tfOnlyReleaseCompletion, "utf8"),
+        ) as Record<string, unknown>;
+        expect(completion).toEqual({
+          artifactSet: "tf-only",
+          environmentSha256: sha256(environmentContents),
+          formatVersion: 1,
+          manifestSha256: sha256(manifestContents),
+          releaseId,
+          sourceCommit,
+        });
+
+        const mixedManifest = JSON.parse(manifestContents) as {
+          images: unknown[];
+        };
+        mixedManifest.images[0] = {
+          imageDigest: digestFor(20),
+          imageReference: `ghcr.io/altis13/apollo-platform-api@${digestFor(20)}`,
+          name: "platform-api",
+          repository: "ghcr.io/altis13/apollo-platform-api",
+        };
+        const mixedManifestContents = `${JSON.stringify(mixedManifest, null, 2)}\n`;
+        await writeFile(output.manifestPath, mixedManifestContents, "utf8");
+        await writeFile(
+          harness.tfOnlyReleaseCompletion,
+          `${JSON.stringify({ ...completion, manifestSha256: sha256(mixedManifestContents) }, null, 2)}\n`,
+          "utf8",
+        );
+        expect(() =>
+          verifyTfOnlyOperatorReleaseEvidence(output.manifestPath),
+        ).toThrowError(/^invalid_release_manifest$/);
+
+        await writeFile(output.manifestPath, manifestContents, "utf8");
+        const reordered = environmentContents.split("\n");
+        [reordered[2], reordered[3]] = [reordered[3]!, reordered[2]!];
+        const reorderedContents = reordered.join("\n");
+        await writeFile(output.envFragmentPath, reorderedContents, "utf8");
+        await writeFile(
+          harness.tfOnlyReleaseCompletion,
+          `${JSON.stringify(
+            {
+              ...completion,
+              environmentSha256: sha256(reorderedContents),
+              manifestSha256: sha256(manifestContents),
+            },
+            null,
+            2,
+          )}\n`,
+          "utf8",
+        );
+        expect(() =>
+          verifyTfOnlyOperatorReleaseEvidence(output.manifestPath),
+        ).toThrowError(/^invalid_release_manifest$/);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    });
+
+    it("rejects successor-WS and arbitrary-subset flags for TF-only operations", async () => {
+      const harness = await publisherHarness({
+        targets: tfOnlyOperatorReleaseImageTargets,
+      });
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      try {
+        await expect(
+          runOperatorReleaseCli(
+            "prepare-tf-only",
+            [...validArguments, "--tf-successor-ws-enabled", "false"],
+            harness.dependencies,
+            {
+              repositoryRoot: harness.repositoryRoot,
+              stderr: (value) => stderr.push(value),
+              stdout: (value) => stdout.push(value),
+            },
+          ),
+        ).resolves.toBe(1);
+        await expect(
+          runOperatorReleaseCli(
+            "prepare-tf-only",
+            [...validArguments, "--include", "tf-api"],
+            harness.dependencies,
+            {
+              repositoryRoot: harness.repositoryRoot,
+              stderr: (value) => stderr.push(value),
+              stdout: (value) => stdout.push(value),
+            },
+          ),
+        ).resolves.toBe(1);
+        expect(stdout).toEqual([]);
+        expect(stderr).toEqual([
+          `${JSON.stringify({ error: "invalid_arguments" })}\n`,
+          `${JSON.stringify({ error: "invalid_arguments" })}\n`,
+        ]);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    });
   });
 });
