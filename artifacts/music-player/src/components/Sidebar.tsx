@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Music2, Search, Heart, ListMusic, X, Sparkles, LogOut } from "lucide-react";
+import { Music2, Search, Heart, ListMusic, Plug, Sparkles, LogOut } from "lucide-react";
 import { useTfAuth } from "@/auth/tf-auth";
 
 interface SidebarProps {
@@ -15,6 +15,7 @@ export function Sidebar({ onClose }: SidebarProps) {
     { to: "/discover", label: "Рекомендации", icon: <Sparkles className="w-4 h-4" />, exact: false },
     { to: "/queue", label: "Очередь", icon: <ListMusic className="w-4 h-4" />, exact: false },
     { to: "/favorites", label: "Избранное", icon: <Heart className="w-4 h-4" />, exact: false },
+    { to: "/integrations", label: "Подключения", icon: <Plug className="w-4 h-4" />, exact: false },
   ];
 
   return (
@@ -22,16 +23,11 @@ export function Sidebar({ onClose }: SidebarProps) {
       {/* Logo */}
       <div className="px-4 pb-6 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center shadow-lg">
+          <div className="w-8 h-8 rounded-lg border border-white/15 bg-white/5 flex items-center justify-center">
             <Music2 className="w-4 h-4 text-white" />
           </div>
-          <span className="font-bold text-white tracking-wide text-sm">Apollo</span>
+          <span className="font-bold text-white tracking-normal text-sm">Apollo TF</span>
         </div>
-        {onClose && (
-          <button onClick={onClose} className="text-white/40 hover:text-white transition-colors md:hidden">
-            <X className="w-5 h-5" />
-          </button>
-        )}
       </div>
 
       {/* Nav */}
@@ -43,7 +39,8 @@ export function Sidebar({ onClose }: SidebarProps) {
               key={item.to}
               href={item.to}
               onClick={onClose}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              aria-current={isActive ? "page" : undefined}
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-white ${
                 isActive
                   ? "bg-white/10 text-white"
                   : "text-white/50 hover:text-white hover:bg-white/5"
