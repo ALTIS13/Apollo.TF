@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
 const worktree = resolve(import.meta.dirname, "../..");
-const bash = "C:/Program Files/Git/bin/bash.exe";
+const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
 const backupScript = join(worktree, "deploy/ops/backup-postgres.sh");
 const verifyScript = join(worktree, "deploy/ops/verify-backup.sh");
 const restoreScript = join(worktree, "deploy/ops/restore-postgres.sh");
@@ -176,6 +176,27 @@ afterEach(() => {
 });
 
 describe("encrypted PostgreSQL backup contract", () => {
+  it("launches Bash on the host platform for synchronous and asynchronous fixtures", async () => {
+    const root = temporaryRoot();
+    const script = join(root, "bash fixture with spaces.sh");
+    writeFileSync(script, "items=(one two)\nprintf '%s:%s\\n' \"${#items[@]}\" \"$APOLLO_TEST_VALUE\"\nprintf 'fixture-stderr\\n' >&2\nexit 7\n");
+    const env = {
+      ...process.env,
+      BASH_ENV: "",
+      APOLLO_TEST_VALUE: "value with spaces & shell | metacharacters",
+    };
+    const expected = {
+      status: 7,
+      stdout: "2:value with spaces & shell | metacharacters\n",
+      stderr: "fixture-stderr\n",
+    };
+
+    const synchronous = runScript(script, env);
+    expect(synchronous.error).toBeUndefined();
+    expect(synchronous).toMatchObject(expected);
+    await expect(runScriptAsync(script, env)).resolves.toEqual(expected);
+  });
+
   it("rejects password and database URL arguments without printing them", () => {
     if (!requireScript(backupScript)) return;
     const root = temporaryRoot();
