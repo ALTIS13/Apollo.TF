@@ -334,6 +334,39 @@ describe("PostgresProviderAccountRepository", () => {
     });
   });
 
+  it.each([0, 1])(
+    "conditionally deletes only invalid_grant credentials matching both generation and envelope (%s rows)",
+    async (rowCount) => {
+      const pool = new RepositoryPoolDouble();
+      pool.rowCount = rowCount;
+      const expected = {
+        generation: firstGeneration,
+        tokenEnvelope: envelope(),
+      };
+      await expect(
+        repository(pool).delete(
+          accountId,
+          "spotify",
+          commandContext(),
+          expected,
+        ),
+      ).resolves.toBe(rowCount === 1);
+      const query = findQuery(
+        pool,
+        /delete from apollo_tf_integrations\.provider_accounts/i,
+      );
+      expect(query.text).toMatch(
+        /where account_id = \$1 and provider = \$2\s+and generation = \$3::uuid and token_envelope = \$4::jsonb/i,
+      );
+      expect(query.values).toEqual([
+        accountId,
+        "spotify",
+        firstGeneration,
+        JSON.stringify(expected.tokenEnvelope),
+      ]);
+    },
+  );
+
   it("looks up at most one hundred canonical account connection summaries", async () => {
     const pool = new RepositoryPoolDouble();
     const secondAccountId = "7a28499b-9603-489a-89b0-e57d72ccaf23";

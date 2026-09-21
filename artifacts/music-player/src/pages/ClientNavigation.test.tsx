@@ -19,6 +19,7 @@ let capabilities: string[];
 let spotifyConnected: boolean;
 let spotifyUnavailable: boolean;
 let spotifyNetworkError: boolean;
+let spotifyGrantExpired: boolean;
 let calls: { path: string; init?: RequestInit }[];
 class FixtureAudio extends EventTarget {
   currentTime = 0;
@@ -39,6 +40,7 @@ beforeEach(() => {
   spotifyConnected = true;
   spotifyUnavailable = false;
   spotifyNetworkError = false;
+  spotifyGrantExpired = false;
   calls = [];
   vi.stubGlobal("Audio", FixtureAudio);
   vi.stubGlobal(
@@ -73,6 +75,10 @@ beforeEach(() => {
       }
       if (path.endsWith("/collections/liked"))
         return json({ items: [], nextCursor: null });
+      if (path.endsWith("/spotify/liked") && spotifyGrantExpired) {
+        spotifyConnected = false;
+        return json({ error: "not_connected" }, 401);
+      }
       if (path.endsWith("/spotify/liked"))
         return json({
           tracks: [
@@ -137,6 +143,30 @@ it("navigates from Favorites to provider controls without putting disconnect con
   expect(new Headers(logout?.init?.headers).get("X-CSRF-Token")).toBe(
     "a".repeat(42) + "A",
   );
+});
+
+it("rechecks Spotify after invalid_grant without repeating the library request or losing the Apollo session", async () => {
+  spotifyGrantExpired = true;
+  const user = userEvent.setup();
+  await open("/favorites");
+  await user.click(screen.getByRole("button", { name: "Spotify" }));
+  await waitFor(() =>
+    expect(
+      calls.filter(({ path }) => path.endsWith("/spotify/status")).length,
+    ).toBeGreaterThanOrEqual(2),
+  );
+  expect(screen.getByRole("link", { name: "Подключения" })).toBeInTheDocument();
+  await user.click(screen.getByRole("link", { name: "Подключения" }));
+  const spotify = await screen.findByRole("region", { name: "Spotify" });
+  expect(
+    await within(spotify).findByRole("link", { name: "Подключить Spotify" }),
+  ).toHaveAttribute("href", "/api/spotify/login");
+  expect(within(spotify).queryByText("Fixture Listener")).toBeNull();
+  expect(
+    calls.filter(({ path }) => path.endsWith("/spotify/liked")),
+  ).toHaveLength(1);
+  expect(calls.filter(({ path }) => path.endsWith("/auth/me"))).toHaveLength(1);
+  expect(calls.some(({ path }) => path.endsWith("/auth/logout"))).toBe(false);
 });
 
 it("keeps direct Integrations access locked without provider requests when capability is absent", async () => {

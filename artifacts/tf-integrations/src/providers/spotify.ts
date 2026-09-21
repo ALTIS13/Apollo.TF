@@ -66,6 +66,14 @@ export class ProviderError extends Error {
   }
 }
 
+// Internal classification only; provider bodies and descriptions never leave here.
+export class SpotifyRefreshInvalidGrantError extends ProviderError {
+  constructor() {
+    super("provider_rejected");
+    this.name = "SpotifyRefreshInvalidGrantError";
+  }
+}
+
 export interface SpotifyProviderOptions {
   readonly clientId: string;
   readonly clientSecret: string;
@@ -691,7 +699,25 @@ export class SpotifyProvider {
       throw new ProviderError("provider_unavailable");
     }
     if (!response.ok) {
-      cancelProviderResponseBody(response);
+      if (operation === "oauth.refresh" && response.status === 400) {
+        let failure: unknown;
+        try {
+          failure = await readBoundedProviderJson(response, signal);
+        } catch (error) {
+          if (
+            error instanceof ProviderHttpFailure &&
+            error.kind === "aborted"
+          ) {
+            throw new ProviderError("provider_unavailable");
+          }
+        }
+        if (isObject(failure) && failure.error === "invalid_grant") {
+          this.#log("provider_rejected", operation);
+          throw new SpotifyRefreshInvalidGrantError();
+        }
+      } else {
+        cancelProviderResponseBody(response);
+      }
       const code =
         response.status >= 400 && response.status < 500
           ? "provider_rejected"

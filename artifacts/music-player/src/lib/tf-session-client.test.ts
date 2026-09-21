@@ -152,6 +152,17 @@ describe("TF browser session client", () => {
     });
   });
 
+  it.each([
+    ["/spotify/liked", "unauthorized"],
+    ["/spotify/status", "not_connected"],
+    ["/tracks/recommendations", "not_connected"],
+  ])("does not treat %s %s as a Spotify library disconnection", async (path, code) => {
+    commitTfSessionSecurityState(session);
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ error: code }), { status: 401 }));
+    await expect(tfFetch(path)).rejects.toMatchObject({ kind: "unauthenticated" });
+    expect(() => tfRequestInit()).toThrow();
+  });
+
   it("blocks further protected requests after a confirmed 401", async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(new Response(JSON.stringify(session), {

@@ -67,6 +67,7 @@ export interface ProviderAccountRepository {
     accountId: string,
     provider: Provider,
     context: TfIntegrationsCommandContext,
+    expected?: Pick<ProviderAccountRecord, "generation" | "tokenEnvelope">,
   ): Promise<boolean>;
   isMigrationCurrent(): Promise<boolean>;
 }
@@ -575,16 +576,25 @@ export class PostgresProviderAccountRepository
     accountId: string,
     provider: Provider,
     context: TfIntegrationsCommandContext,
+    expected?: Pick<ProviderAccountRecord, "generation" | "tokenEnvelope">,
   ): Promise<boolean> {
     const validatedAccountId = validateAccountId(accountId);
     const validatedProvider = validateProvider(provider);
+    const expectedValues =
+      expected === undefined
+        ? []
+        : [
+            validateGeneration(expected.generation),
+            JSON.stringify(validateEnvelope(expected.tokenEnvelope)),
+          ];
     return this.#mutate(context, async (client) => {
       const result = await client.query(
         `
           delete from apollo_tf_integrations.provider_accounts
           where account_id = $1 and provider = $2
+          ${expected === undefined ? "" : "and generation = $3::uuid and token_envelope = $4::jsonb"}
         `,
-        [validatedAccountId, validatedProvider],
+        [validatedAccountId, validatedProvider, ...expectedValues],
       );
       return result.rowCount === 1;
     });

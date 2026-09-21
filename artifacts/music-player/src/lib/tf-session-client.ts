@@ -57,6 +57,7 @@ export interface TfBrowserSession {
 }
 
 export type TfApiErrorKind =
+  | "provider"
   | "unauthenticated"
   | "forbidden"
   | "unavailable"
@@ -260,13 +261,16 @@ export async function tfFetch<T>(path: string, init?: RequestInit): Promise<T> {
         ? body.error
         : "invalid_response";
     const kind =
-      response.status === 401
-        ? "unauthenticated"
-        : response.status === 403
-          ? "forbidden"
-          : response.status === 503
-            ? "unavailable"
-            : "invalid";
+      response.status === 401 && code === "not_connected" &&
+      /^\/spotify\/(?:liked(?:-all)?|playlists(?:\/[^/?]+\/tracks)?|top-tracks)(?:\?|$)/.test(path)
+        ? "provider"
+        : response.status === 401
+          ? "unauthenticated"
+          : response.status === 403
+            ? "forbidden"
+            : response.status === 503
+              ? "unavailable"
+              : "invalid";
     const apiError =
       isRecord(body) && "code" in body
         ? localRenewalError(response, body, generation)
