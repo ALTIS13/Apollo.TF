@@ -474,13 +474,15 @@ export class SpotifyProvider {
         headers: {
           Accept: "application/json",
           "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Basic ${Buffer.from(
+            `${this.#clientId}:${this.#clientSecret}`,
+            "utf8",
+          ).toString("base64")}`,
         },
         body: new URLSearchParams({
           grant_type: "authorization_code",
           code: input.code,
           redirect_uri: this.#callbackUri,
-          client_id: this.#clientId,
-          client_secret: this.#clientSecret,
         }),
       },
       input.signal,
@@ -528,12 +530,14 @@ export class SpotifyProvider {
         headers: {
           Accept: "application/json",
           "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Basic ${Buffer.from(
+            `${this.#clientId}:${this.#clientSecret}`,
+            "utf8",
+          ).toString("base64")}`,
         },
         body: new URLSearchParams({
           grant_type: "refresh_token",
           refresh_token: secret.refreshToken,
-          client_id: this.#clientId,
-          client_secret: this.#clientSecret,
         }),
       },
       context.signal,
