@@ -99,3 +99,78 @@ publisher lanes are untouched. No full suite/build/release prepare replay.
 Next/root blocker: independent review and explicit successor selection; no
 publication, F replacement or live Spotify acceptance is implied. Candidate
 commit identity is reported in the root handoff; this journal is in that commit.
+
+## Review Follow-Up: Filtered Page Termination
+
+Owner TF; stage SOURCE_VERIFIED, independent scoped re-review pending. Follow-up base:
+`094448eb4f92973402af4482bc7dd3a5aab64ec7`. Root included the pre-existing
+filtered-page defect in this successor's no-false-partial-library scope.
+Independent review SHA256:
+`fe1ea61a86699b73988298dc7e4e64bda0a7aeb4d71563bcc0270c5c184013ff`.
+Read-only review path:
+`D:/CodexProjects/Apollo.Platform/.superpowers/sdd/2026-09-05-apollo-unified-production-plan/tf-spotify-successor-review-20260921.md`.
+
+Confirmed trace: provider `trackPage` drops raw `track:null` but retains the raw
+offset/total. With total=100, a normalized page of 49 (or zero) cannot terminate
+the scan before offset50. New cases require that next page, for success,
+provider rejection and unknown exception. Only API route/test and this journal
+are assigned; Basic-auth evidence is reused without rerun.
+
+Fix commit: `7df3dda88087ecd88b3c6cc1b11e5e8a5ea87adc`, direct child of
+`094448eb4f92973402af4482bc7dd3a5aab64ec7`. Two-file source/test commit; this
+report append is committed separately to record that immutable fix identity.
+
+Source change: remove `tracks.length < MAX_PAGE_SIZE` termination. The existing
+monotonically advancing offset/validated provider total now determines completion.
+The 49-row first page followed by 50 rows returns 99 available tracks, with the
+same public `total=99` shape; an empty normalized first page still reaches the
+remaining 50. A failed/throwing next page returns safe 502 without partial data.
+No new retry, schema, SDK, scope, UI, quota or public response contract.
+
+Exact commands from the same worktree root:
+
+```powershell
+# RED against 094448e source, after adding/formatting six new cases:
+pnpm --filter @workspace/api-server exec vitest run src/routes/spotify.test.ts -t "liked-all normalized first page" --maxWorkers=2
+# GREEN after the one-branch source correction:
+pnpm --filter @workspace/api-server exec vitest run src/routes/spotify.test.ts -t "liked-all" --maxWorkers=2
+git diff --check
+```
+
+RED exit1, Vitest4.1.10 summary (2026-09-21):
+
+```text
+Test Files  1 failed (1)
+Tests       6 failed | 18 skipped (24)
+Duration    408ms
+49-row success: expected 99, received 49.
+0-row success: expected 50, received 0.
+Both page sizes x rejection/exception: expected status 502, received 200.
+```
+
+GREEN exit0 summary:
+
+```text
+Test Files  1 passed (1)
+Tests       18 passed | 6 skipped (24)
+Duration    461ms
+```
+
+The GREEN selection includes all six new cases, earlier reached-page failure
+mappings, 0/100/120 complete pagination, and the existing 257-call capacity
+refusal. Each new case requires exactly offsets `[0,50]`, no retry/following
+call. No Basic-auth tests or unrelated suites rerun.
+
+Scoped TypeScript invocation uses the earlier `node -e` program/options, now
+with only API `src/routes/spotify.ts`, `src/routes/spotify.test.ts` and existing
+`src/types/session.d.ts` as roots (plus imported dependencies). Exit0, output:
+
+```text
+Scoped TypeScript check PASS: API Spotify route/test plus existing Express augmentation and imported dependencies; no emit
+```
+
+Diff/whitespace and three-file scope checks PASS. Publisher/capture refs remain
+at d14e; no frozen F report/source edits or runtime/native/external requests.
+This is deterministic normalized-page source proof, not a live Spotify library
+snapshot guarantee under concurrent remote edits. Root next action: independent
+scoped re-review of the fix, then separately decide successor admission.
