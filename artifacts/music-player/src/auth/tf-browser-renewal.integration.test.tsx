@@ -414,21 +414,20 @@ describe("rendered browser renewal and actual player continuity", () => {
     const pending = deferred<Response>();
     nextRenew = () => pending.promise;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(251_000);
+      // Stop at the 10-second timeout, before the automatic retry at 251s.
+      await vi.advanceTimersByTimeAsync(250_000);
     });
     expect(auth.status).toBe("unavailable");
     nextRenew = null;
-    let done = false;
-    act(() => {
-      void auth.refresh().then(() => {
-        done = true;
-      });
+    await act(async () => {
+      await auth.refresh();
     });
-    await flush();
-    expect(done).toBe(true);
     expect(auth.status).toBe("authenticated");
+    const recoveredRequests = paths.length;
     pending.resolve(new Response(null, { status: 204 }));
     await flush();
+    expect(paths).toHaveLength(recoveredRequests);
+    expect(auth.status).toBe("authenticated");
   });
   it("renew capability403 is not presented as a dependency outage", async () => {
     await setup();

@@ -13,6 +13,7 @@ import { TrackCard } from "@/components/TrackCard";
 import { PlayerProvider, usePlayer } from "@/hooks/use-player";
 import {
   TfApiError,
+  canUseTfProtectedActivity,
   clearTfSessionSecurityState,
 } from "@/lib/tf-session-client";
 import { TfSessionBoundary } from "./TfSessionBoundary";
@@ -62,17 +63,23 @@ vi.mock("@/hooks/use-toast", () => ({
   useToast: () => ({ toast: runtime.toast }),
 }));
 
-vi.mock("@/lib/tf-websocket", () => ({
+vi.mock("@/lib/tf-websocket", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tf-websocket")>()),
   TfWebSocketLifecycle: class {
+    private running = false;
     constructor(options: { onTerminalError: (error: unknown) => void }) {
       runtime.lifecycleOptions.push(options);
     }
 
     start() {
+      if (this.running) return;
+      this.running = true;
       runtime.lifecycleStarts += 1;
     }
 
     stop() {
+      if (!this.running) return;
+      this.running = false;
       runtime.lifecycleStops += 1;
     }
   },
@@ -82,7 +89,7 @@ const session = {
   accountId: "10000000-0000-4000-8000-000000000001",
   installationId: "20000000-0000-4000-8000-000000000002",
   entitlements: ["tf.search", "tf.downloads"],
-  expiresAt: "2099-01-01T00:00:00.000Z",
+  expiresAt: new Date(Date.now() + 300_000).toISOString(),
   csrfToken: "c".repeat(42) + "A",
 };
 
@@ -99,6 +106,7 @@ const track: TrackResult = {
 };
 
 class FakeAudio {
+  static instances: FakeAudio[] = [];
   currentTime = 0;
   duration = 0;
   volume = 0.8;
@@ -107,6 +115,11 @@ class FakeAudio {
   readonly removeEventListener = vi.fn();
   readonly pause = vi.fn();
   readonly play = vi.fn().mockResolvedValue(undefined);
+  readonly load = vi.fn();
+
+  constructor() {
+    FakeAudio.instances.push(this);
+  }
 }
 
 function PlayerActions({
@@ -161,8 +174,8 @@ beforeEach(() => {
   runtime.lifecycleOptions.length = 0;
   runtime.lifecycleStarts = 0;
   runtime.lifecycleStops = 0;
+  FakeAudio.instances = [];
   vi.stubGlobal("Audio", FakeAudio);
-  vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -215,7 +228,7 @@ describe("protected generated API auth failures", () => {
       "Сервис временно недоступен",
     ],
   ])(
-    "revalidates generated stream policy failures before protected content can remain mounted",
+    "blocks generated stream policy failures and rechecks policy before recovery",
     async (error, refreshResult, heading) => {
       runtime.fetchSession.mockResolvedValueOnce(session);
       if (refreshResult instanceof Error) {
@@ -230,15 +243,18 @@ describe("protected generated API auth failures", () => {
         await screen.findByRole("button", { name: "Play generated stream" }),
       );
 
-      await waitFor(() => {
-        expect(
-          screen.queryByTestId("protected-runtime"),
-        ).not.toBeInTheDocument();
-      });
+      if (refreshResult instanceof Error) {
+        fireEvent.click(await screen.findByRole("button", { name: "Повторить" }));
+      }
       expect(
         await screen.findByRole("heading", { name: heading }),
       ).toBeInTheDocument();
       expect(runtime.fetchSession).toHaveBeenCalledTimes(2);
+      // A valid session can retain downloads while the search/player gate is closed.
+      expect(canUseTfProtectedActivity()).toBe(!(refreshResult instanceof Error));
+      expect(screen.queryByRole("button", { name: "Play generated stream" })).not.toBeInTheDocument();
+      expect(FakeAudio.instances[0].src).toBe("");
+      expect(FakeAudio.instances[0].load).toHaveBeenCalled();
       expect(runtime.toast).toHaveBeenCalledWith(
         expect.objectContaining({
           title: "Ошибка воспроизведения",
@@ -276,7 +292,7 @@ describe("protected generated API auth failures", () => {
 });
 
 describe("pre-open WebSocket auth integration", () => {
-  it("revalidates websocket_unavailable and remounts one fresh player lifecycle after success", async () => {
+  it("suspends websocket_unavailable until deliberate retry starts one fresh lifecycle", async () => {
     runtime.fetchSession
       .mockResolvedValueOnce(session)
       .mockResolvedValueOnce(session);
@@ -291,9 +307,13 @@ describe("pre-open WebSocket auth integration", () => {
       );
     });
 
-    expect(screen.queryByTestId("protected-runtime")).not.toBeInTheDocument();
+    expect(screen.getByTestId("protected-runtime")).not.toBeVisible();
+    expect(canUseTfProtectedActivity()).toBe(false);
+    expect(FakeAudio.instances[0].load).toHaveBeenCalled();
+    expect(runtime.fetchSession).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
     await waitFor(() => expect(runtime.fetchSession).toHaveBeenCalledTimes(2));
-    expect(await screen.findByTestId("protected-runtime")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("protected-runtime")).toBeVisible());
     expect(runtime.lifecycleStarts).toBe(2);
     expect(runtime.lifecycleStops).toBe(1);
   });
@@ -305,7 +325,7 @@ describe("pre-open WebSocket auth integration", () => {
       "Сервис временно недоступен",
     ],
   ])(
-    "keeps the player unmounted when websocket_unavailable refresh remains denied",
+    "keeps the player inaccessible when websocket_unavailable retry remains denied",
     async (refreshResult, heading) => {
       runtime.fetchSession.mockResolvedValueOnce(session);
       if (refreshResult instanceof Error) {
@@ -324,10 +344,19 @@ describe("pre-open WebSocket auth integration", () => {
         );
       });
 
+      expect(screen.getByTestId("protected-runtime")).not.toBeVisible();
+      expect(canUseTfProtectedActivity()).toBe(false);
+      expect(runtime.fetchSession).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+
       expect(
         await screen.findByRole("heading", { name: heading }),
       ).toBeInTheDocument();
-      expect(screen.queryByTestId("protected-runtime")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Play generated stream" })).not.toBeInTheDocument();
+      expect(canUseTfProtectedActivity()).toBe(!(refreshResult instanceof Error));
+      expect(runtime.fetchSession).toHaveBeenCalledTimes(2);
+      expect(FakeAudio.instances[0].src).toBe("");
+      expect(FakeAudio.instances[0].load).toHaveBeenCalled();
       expect(runtime.lifecycleStarts).toBe(1);
       expect(runtime.lifecycleStops).toBe(1);
     },

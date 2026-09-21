@@ -42,7 +42,7 @@ function fixture() {
           accountId: account,
           installationId: "20000000-0000-4000-8000-000000000001",
           entitlements: ["tf.collections"],
-          expiresAt: "2099-01-01T00:00:00.000Z",
+          expiresAt: new Date(Date.now() + 300_000).toISOString(),
           csrfToken: "c".repeat(42) + "A",
         });
       if (path.endsWith("/auth/logout"))
