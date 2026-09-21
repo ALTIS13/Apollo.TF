@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import {
+  chmod,
   copyFile,
   lstat,
   mkdtemp,
@@ -18,7 +21,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   pinnedRedisReference as validatorPinnedRedisReference,
@@ -2760,6 +2763,436 @@ describe("operator release publication", () => {
           )
           .map(({ args }) => args),
       ).toEqual([["buildx", "rm", "apollo-release-task-2-owned"]]);
+    } finally {
+      await rm(harness.root, { force: true, recursive: true });
+    }
+  });
+});
+
+describe("private source failure capture", () => {
+  const captureName = "source-validation-failure.json";
+  const captureFlag = "--capture-source-failure";
+  const failureResponse = `${JSON.stringify({
+    error: "source_validation_failed",
+    validationStage: "tf_web_tests",
+    commandFailure: { reason: "child_exit", exitCode: 1, signalClass: "none" },
+  })}\n`;
+  const hostileScript =
+    "process.stdout.write('x'.repeat(70000) + 'OUT\\u001b[0m'); process.stderr.write('\\ud83c\\udfb5'.repeat(35000) + 'ERR'); process.exitCode = 1";
+
+  const realFailure = (command: RecordedCommand) =>
+    runOperatorReleaseCommand(process.execPath, ["-e", hostileScript], {
+      cwd: command.cwd,
+      env: command.env,
+      timeoutMs: 2_000,
+    });
+  async function runCapture(
+    harness: Awaited<ReturnType<typeof publisherHarness>>,
+    enabled = true,
+    argv: readonly string[] = validArguments,
+  ) {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const status = await runOperatorReleaseCli(
+      "prepare-tf-only",
+      [...argv, ...(enabled ? [captureFlag] : [])],
+      harness.dependencies,
+      {
+        repositoryRoot: harness.repositoryRoot,
+        stdout: (s) => stdout.push(s),
+        stderr: (s) => stderr.push(s),
+      },
+    );
+    return { status, stdout, stderr };
+  }
+
+  it.each([false, true])(
+    "captures bounded private tails only with opt-in=%s",
+    async (enabled) => {
+      const harness = await publisherHarness({
+        command: (command, fallback) =>
+          command.args.includes("@workspace/music-player")
+            ? realFailure(command)
+            : fallback(),
+      });
+      try {
+        expect(await runCapture(harness, enabled)).toEqual({
+          status: 1,
+          stdout: [],
+          stderr: [failureResponse],
+        });
+        const files = await readdir(harness.tfOnlyReleaseClaim);
+        expect(files.sort()).toEqual(
+          enabled ? ["claim.json", captureName].sort() : ["claim.json"],
+        );
+        if (enabled) {
+          const path = join(harness.tfOnlyReleaseClaim, captureName);
+          const bytes = await readFile(path);
+          expect(bytes.byteLength).toBeLessThanOrEqual(176_000);
+          const capture = JSON.parse(bytes.toString("utf8"));
+          expect(Object.keys(capture).sort()).toEqual(
+            [
+              "formatVersion",
+              "validationStage",
+              "commandFailure",
+              "stdoutTailBase64",
+              "stderrTailBase64",
+              "stdoutTruncated",
+              "stderrTruncated",
+            ].sort(),
+          );
+          expect(capture).toMatchObject({
+            formatVersion: 1,
+            validationStage: "tf_web_tests",
+            stdoutTruncated: true,
+            stderrTruncated: true,
+          });
+          expect(Buffer.from(capture.stdoutTailBase64, "base64")).toEqual(
+            Buffer.from("x".repeat(65529) + "OUT\u001b[0m"),
+          );
+          expect(Buffer.from(capture.stderrTailBase64, "base64")).toEqual(
+            Buffer.concat([
+              Buffer.from([0xb5]),
+              Buffer.from("\ud83c\udfb5".repeat(16383) + "ERR"),
+            ]),
+          );
+          expect(bytes.includes(0x1b)).toBe(false);
+          const stat = await lstat(path);
+          expect(stat.isFile()).toBe(true);
+          expect(stat.nlink).toBe(1);
+          if (process.platform !== "win32")
+            expect(stat.mode & 0o777).toBe(0o600);
+        }
+        expect(harness.commands.at(-1)?.args).toContain(
+          "@workspace/music-player",
+        );
+        expect(
+          harness.commands.some(
+            (c) => c.executable === "docker" || c.args.includes(captureFlag),
+          ),
+        ).toBe(false);
+        expect(await pathExists(harness.tfOnlyReleaseReceipt)).toBe(false);
+        expect(await pathExists(harness.tfOnlyReleaseOutput)).toBe(false);
+        expect(await pathExists(harness.temporaryRoot)).toBe(false);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it.each(["forged", "exit17", "success", "archive"] as const)(
+    "does not capture %s",
+    async (kind) => {
+      const harness = await publisherHarness({
+        command: (command, fallback) => {
+          if (
+            kind === "archive" &&
+            command.executable === "git" &&
+            command.args[0] === "archive"
+          )
+            return realFailure(command);
+          if (!command.args.includes("@workspace/music-player"))
+            return fallback();
+          if (kind === "forged")
+            return {
+              status: 1,
+              stdout: "forged",
+              stderr: "forged",
+              commandFailure: {
+                reason: "child_exit",
+                exitCode: 1,
+                signalClass: "none",
+              },
+            };
+          return runOperatorReleaseCommand(
+            process.execPath,
+            ["-e", `process.exitCode = ${kind === "success" ? 0 : 17}`],
+            { cwd: command.cwd, timeoutMs: 2_000 },
+          );
+        },
+      });
+      try {
+        const result = await runCapture(harness);
+        expect(result.status).toBe(kind === "success" ? 0 : 1);
+        if (kind !== "success") {
+          expect(JSON.parse(result.stderr[0]!)).toMatchObject({
+            error: "source_validation_failed",
+            validationStage:
+              kind === "archive" ? "source_archive" : "tf_web_tests",
+          });
+        }
+        expect(
+          await pathExists(join(harness.tfOnlyReleaseClaim, captureName)),
+        ).toBe(false);
+        expect(JSON.stringify(result)).not.toContain("capture");
+        if (kind === "success") {
+          expect(
+            await readFile(harness.tfOnlyReleaseReceipt, "utf8"),
+          ).not.toContain("capture");
+        } else {
+          expect(await pathExists(harness.tfOnlyReleaseReceipt)).toBe(false);
+        }
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it.for([
+    "existing",
+    "directory",
+    "replacement",
+    "redirect",
+    "permissions",
+  ] as const)(
+    "rejects %s custody without replacing the primary failure",
+    async (kind, context) => {
+      if (kind === "permissions" && process.platform === "win32")
+        context.skip();
+      let harness: Awaited<ReturnType<typeof publisherHarness>>;
+      harness = await publisherHarness({
+        command: async (command, fallback) => {
+          if (!command.args.includes("@workspace/music-player"))
+            return fallback();
+          const target = join(harness.tfOnlyReleaseClaim, captureName);
+          if (kind === "existing")
+            await writeFile(target, "existing-sentinel", { mode: 0o600 });
+          if (kind === "directory") await mkdir(target);
+          if (kind === "permissions")
+            await chmod(harness.tfOnlyReleaseClaim, 0o755);
+          if (kind === "replacement" || kind === "redirect") {
+            const displaced = join(harness.root, "displaced-claim");
+            await rename(harness.tfOnlyReleaseClaim, displaced);
+            if (kind === "replacement")
+              await mkdir(harness.tfOnlyReleaseClaim, { mode: 0o700 });
+            else
+              await symlink(
+                displaced,
+                harness.tfOnlyReleaseClaim,
+                process.platform === "win32" ? "junction" : "dir",
+              );
+          }
+          return realFailure(command);
+        },
+      });
+      try {
+        expect(await runCapture(harness)).toEqual({
+          status: 1,
+          stdout: [],
+          stderr: [failureResponse],
+        });
+        const target = join(harness.tfOnlyReleaseClaim, captureName);
+        if (kind === "existing")
+          expect(await readFile(target, "utf8")).toBe("existing-sentinel");
+        else if (kind === "directory")
+          expect((await lstat(target)).isDirectory()).toBe(true);
+        else expect(await pathExists(target)).toBe(false);
+        expect(await pathExists(harness.tfOnlyReleaseReceipt)).toBe(false);
+        expect(harness.commands.at(-1)?.args).toContain(
+          "@workspace/music-player",
+        );
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it("retains uncertain partial writes and the original terminal error", async () => {
+    const realOpen = fsPromises.open;
+    const openSpy = vi
+      .spyOn(fsPromises, "open")
+      .mockImplementation(async (...args) => {
+        const handle = await realOpen(...args);
+        if (String(args[0]).endsWith(captureName)) {
+          const write = handle.writeFile.bind(handle);
+          handle.writeFile = async () => {
+            await write("partial-sentinel");
+            throw new Error("synthetic write failure");
+          };
+        }
+        return handle;
+      });
+    syncBuiltinESMExports();
+    const harness = await publisherHarness({
+      command: (command, fallback) =>
+        command.args.includes("@workspace/music-player")
+          ? realFailure(command)
+          : fallback(),
+    });
+    try {
+      expect(await runCapture(harness)).toEqual({
+        status: 1,
+        stdout: [],
+        stderr: [failureResponse],
+      });
+      expect(
+        await readFile(join(harness.tfOnlyReleaseClaim, captureName), "utf8"),
+      ).toBe("partial-sentinel");
+      expect(await pathExists(harness.tfOnlyReleaseReceipt)).toBe(false);
+    } finally {
+      openSpy.mockRestore();
+      syncBuiltinESMExports();
+      await rm(harness.root, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps synthetic captures out of real Git archives and extracted build contexts", async () => {
+    let harness: Awaited<ReturnType<typeof publisherHarness>>;
+    harness = await publisherHarness({
+      command: async (command, fallback) => {
+        if (command.executable === "git" || command.executable === "tar") {
+          return runOperatorReleaseCommand(command.executable, command.args, {
+            cwd: command.cwd,
+            env: command.env,
+            timeoutMs: 2_000,
+          });
+        }
+        if (command.args.includes("@workspace/music-player")) {
+          await copyFile(
+            join(harness.temporaryRoot, "source.tar"),
+            join(harness.root, "before.tar"),
+          );
+          return runOperatorReleaseCommand(
+            process.execPath,
+            [
+              "-e",
+              "process.stdout.write('synthetic-capture-only'); process.exitCode = 1",
+            ],
+            { cwd: command.cwd, timeoutMs: 2_000 },
+          );
+        }
+        return fallback();
+      },
+    });
+    const run = async (executable: string, args: string[]) => {
+      const result = await runOperatorReleaseCommand(executable, args, {
+        cwd: harness.repositoryRoot,
+        timeoutMs: 2_000,
+      });
+      expect(result.status).toBe(0);
+      return result.stdout;
+    };
+    try {
+      await copyFile(
+        join(workspaceRoot, ".gitignore"),
+        join(harness.repositoryRoot, ".gitignore"),
+      );
+      await copyFile(
+        join(workspaceRoot, ".dockerignore"),
+        join(harness.repositoryRoot, ".dockerignore"),
+      );
+      await writeFile(
+        join(harness.repositoryRoot, "source.txt"),
+        "public-fixture",
+      );
+      await run("git", ["init", "--quiet"]);
+      await run("git", ["add", ".gitignore", ".dockerignore", "source.txt"]);
+      await run("git", [
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        "synthetic source",
+      ]);
+      const head = (await run("git", ["rev-parse", "HEAD"])).trim();
+      expect(
+        await runCapture(
+          harness,
+          true,
+          validArguments.map((s) => (s === sourceCommit ? head : s)),
+        ),
+      ).toEqual({ status: 1, stdout: [], stderr: [failureResponse] });
+      const capturePath = join(harness.tfOnlyReleaseClaim, captureName);
+      const capture = JSON.parse(await readFile(capturePath, "utf8"));
+      expect(capture.stdoutTruncated).toBe(false);
+      expect(capture.stderrTruncated).toBe(false);
+      expect(Buffer.from(capture.stdoutTailBase64, "base64").toString()).toBe(
+        "synthetic-capture-only",
+      );
+      expect(capture.stderrTailBase64).toBe("");
+      await run("git", ["check-ignore", "--quiet", capturePath]);
+      const after = join(harness.root, "after.tar");
+      await run("git", ["archive", "--format=tar", "--output", after, "HEAD"]);
+      expect(await readFile(after)).toEqual(
+        await readFile(join(harness.root, "before.tar")),
+      );
+      const context = join(harness.root, "build-context");
+      await mkdir(context);
+      await run("tar", ["-xf", after, "-C", context]);
+      expect((await readdir(context)).sort()).toEqual([
+        ".dockerignore",
+        ".gitignore",
+        "source.txt",
+      ]);
+      expect(await readFile(join(context, "source.txt"), "utf8")).toBe(
+        "public-fixture",
+      );
+      expect(await pathExists(harness.tfOnlyReleaseReceipt)).toBe(false);
+      expect(harness.commands.some((c) => c.executable === "docker")).toBe(
+        false,
+      );
+    } finally {
+      await rm(harness.root, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    ["prepare", [captureFlag]],
+    ["publish", [captureFlag]],
+    ["publish-tf-only", [captureFlag]],
+    ["prepare-tf-only", [captureFlag, captureFlag]],
+    ["prepare-tf-only", [captureFlag, "true"]],
+    ["prepare-tf-only", ["--capture-source-failures"]],
+  ] as const)(
+    "rejects capture option misuse in %s: %j",
+    async (operation, extra) => {
+      const harness = await publisherHarness();
+      const stderr: string[] = [];
+      try {
+        expect(
+          await runOperatorReleaseCli(
+            operation,
+            [...validArguments, ...extra],
+            harness.dependencies,
+            {
+              repositoryRoot: harness.repositoryRoot,
+              stdout: () => {
+                throw new Error("unexpected success");
+              },
+              stderr: (s) => stderr.push(s),
+            },
+          ),
+        ).toBe(1);
+        expect(stderr).toEqual(['{"error":"invalid_arguments"}\n']);
+        expect(harness.commands).toEqual([]);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it("rejects capture in a non-production mode before any command", async () => {
+    const harness = await publisherHarness();
+    try {
+      expect(
+        await runCapture(
+          harness,
+          true,
+          validArguments.map((s) =>
+            s === "production" ? "loopback-local-smoke" : s,
+          ),
+        ),
+      ).toEqual({
+        status: 1,
+        stdout: [],
+        stderr: ['{"error":"invalid_release_mode"}\n'],
+      });
+      expect(harness.commands).toEqual([]);
     } finally {
       await rm(harness.root, { force: true, recursive: true });
     }

@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants, createReadStream, readFileSync } from "node:fs";
+import { constants, createReadStream, readFileSync, type Stats } from "node:fs";
 import {
   copyFile,
   lstat,
@@ -77,6 +77,10 @@ export type OperatorReleaseOptions = {
 export type OperatorReleasePublicationOptions = OperatorReleaseOptions & {
   receiptPath: string;
   signal?: AbortSignal;
+};
+
+export type TfOnlyOperatorReleasePreparationOptions = OperatorReleaseOptions & {
+  captureSourceFailure?: boolean;
 };
 
 export type OperatorReleaseOutput = {
@@ -159,6 +163,14 @@ const publicationArgumentFlags = new Set([
   "--tf-successor-ws-enabled",
 ]);
 const tfOnlyArgumentFlags = new Set(requiredArgumentFlags);
+const captureSourceFailureFlag = "--capture-source-failure";
+const tfOnlyPreparationArgumentFlags = new Set([
+  ...tfOnlyArgumentFlags,
+  captureSourceFailureFlag,
+]);
+const privateFailureFileName = "source-validation-failure.json";
+const privateFailureStreamBytes = 65_536;
+const privateFailureFileBytes = 176_000;
 const tfOnlyPublicationArgumentFlags = new Set(
   publicationRequiredArgumentFlags,
 );
@@ -582,6 +594,8 @@ export async function prepareOperatorRelease(
   options: OperatorReleaseOptions,
   dependencies: OperatorReleaseDependencies = defaultOperatorReleaseDependencies,
 ): Promise<OperatorReleasePreparationOutput> {
+  if ("captureSourceFailure" in options)
+    throw operatorError("invalid_arguments");
   return prepareOperatorReleaseForProfile(
     legacyReleaseProfile,
     options,
@@ -590,10 +604,14 @@ export async function prepareOperatorRelease(
 }
 
 export async function prepareTfOnlyOperatorRelease(
-  options: OperatorReleaseOptions,
+  options: TfOnlyOperatorReleasePreparationOptions,
   dependencies: OperatorReleaseDependencies = defaultOperatorReleaseDependencies,
 ): Promise<OperatorReleasePreparationOutput> {
-  if (options.tfSuccessorWsEnabled !== undefined) {
+  if (
+    options.tfSuccessorWsEnabled !== undefined ||
+    (options.captureSourceFailure !== undefined &&
+      typeof options.captureSourceFailure !== "boolean")
+  ) {
     throw operatorError("invalid_arguments");
   }
   return prepareOperatorReleaseForProfile(
@@ -605,7 +623,7 @@ export async function prepareTfOnlyOperatorRelease(
 
 async function prepareOperatorReleaseForProfile(
   profile: ReleaseProfile,
-  options: OperatorReleaseOptions,
+  options: TfOnlyOperatorReleasePreparationOptions,
   dependencies: OperatorReleaseDependencies,
 ): Promise<OperatorReleasePreparationOutput> {
   if (options.mode !== "production") {
@@ -698,6 +716,19 @@ async function prepareOperatorReleaseForProfile(
       )}\n`,
     );
 
+    let captureCustody: readonly Stats[] | undefined;
+    if (options.captureSourceFailure === true) {
+      try {
+        captureCustody = await readPrivateCaptureCustody(
+          profile,
+          options.repositoryRoot,
+          claimDirectory,
+        );
+      } catch {
+        // Optional diagnostics never replace the source gate's terminal outcome.
+      }
+    }
+
     temporaryRoot = dependencies.temporaryRoot();
     const validationRoot = join(temporaryRoot, "validation-source");
     const temporaryArchivePath = join(temporaryRoot, "source.tar");
@@ -749,6 +780,19 @@ async function prepareOperatorReleaseForProfile(
           timeoutMs: validation.timeoutMs,
         },
         validation.stage,
+        captureCustody === undefined
+          ? undefined
+          : async (result, observation) => {
+              await writePrivateSourceFailure(
+                profile,
+                options.repositoryRoot,
+                claimDirectory,
+                captureCustody,
+                validation.stage,
+                result,
+                observation,
+              );
+            },
       );
     }
     if ((await sha256File(temporaryArchivePath)) !== archiveSha256) {
@@ -851,10 +895,18 @@ function parsePairwiseArguments(
   argv: readonly string[],
   allowedFlags: ReadonlySet<string>,
   requiredFlags: ReadonlySet<string>,
+  valuelessFlag?: string,
 ): Map<string, string> {
   const values = new Map<string, string>();
-  for (let index = 0; index < argv.length; index += 2) {
+  for (let index = 0; index < argv.length; ) {
     const flag = argv[index];
+    if (flag === valuelessFlag && flag !== undefined) {
+      if (!allowedFlags.has(flag) || values.has(flag))
+        throw operatorError("invalid_arguments");
+      values.set(flag, "true");
+      index += 1;
+      continue;
+    }
     const value = argv[index + 1];
     if (
       flag === undefined ||
@@ -866,6 +918,7 @@ function parsePairwiseArguments(
       throw new Error("invalid_arguments");
     }
     values.set(flag, value);
+    index += 2;
   }
   if ([...requiredFlags].some((flag) => !values.has(flag))) {
     throw new Error("invalid_arguments");
@@ -939,10 +992,18 @@ function parseTfOnlyOperatorReleaseArguments(argv: readonly string[]): {
   mode: OperatorReleaseMode;
   releaseId: string;
   sourceCommit: string;
+  captureSourceFailure: boolean;
 } {
-  return parseReleaseIdentity(
-    parsePairwiseArguments(argv, tfOnlyArgumentFlags, requiredArgumentFlags),
+  const values = parsePairwiseArguments(
+    argv,
+    tfOnlyPreparationArgumentFlags,
+    requiredArgumentFlags,
+    captureSourceFailureFlag,
   );
+  return {
+    ...parseReleaseIdentity(values),
+    captureSourceFailure: values.has(captureSourceFailureFlag),
+  };
 }
 
 function parseTfOnlyOperatorReleasePublicationArguments(
@@ -1114,6 +1175,115 @@ function isolatedOperatorEnvironment(
   return environment;
 }
 
+async function readPrivateCaptureCustody(
+  profile: ReleaseProfile,
+  repositoryRoot: string,
+  claimDirectory: string,
+  expected?: readonly Stats[],
+): Promise<readonly Stats[]> {
+  await assertUnredirectedPrivateClaim(profile, repositoryRoot, claimDirectory);
+  const paths = [
+    resolve(repositoryRoot),
+    resolve(repositoryRoot, ".ops-private"),
+    resolve(repositoryRoot, ".ops-private", profile.claimRootName),
+    resolve(claimDirectory),
+  ];
+  const stats: Stats[] = [];
+  for (const [index, path] of paths.entries()) {
+    const stat = await lstat(path);
+    if (
+      !stat.isDirectory() ||
+      stat.isSymbolicLink() ||
+      (expected !== undefined &&
+        (stat.dev !== expected[index]?.dev ||
+          stat.ino !== expected[index]?.ino))
+    ) {
+      throw operatorError("invalid_release_receipt");
+    }
+    if (
+      process.platform !== "win32" &&
+      ((stat.uid !== 0 && stat.uid !== process.geteuid!()) ||
+        (index === 0
+          ? (stat.mode & 0o022) !== 0
+          : (stat.mode & 0o7777) !== 0o700))
+    ) {
+      throw operatorError("invalid_release_receipt");
+    }
+    stats.push(stat);
+  }
+  return stats;
+}
+
+async function writePrivateSourceFailure(
+  profile: ReleaseProfile,
+  repositoryRoot: string,
+  claimDirectory: string,
+  custody: readonly Stats[],
+  stage: (typeof sourceValidationCommands)[number]["stage"],
+  result: OperatorReleaseCommandResult,
+  observation: CommandFailure,
+): Promise<void> {
+  // One extra code unit keeps a sliced surrogate at the front outside the byte tail.
+  const stdout = Buffer.from(
+    result.stdout.slice(-privateFailureStreamBytes - 1),
+    "utf8",
+  );
+  const stderr = Buffer.from(
+    result.stderr.slice(-privateFailureStreamBytes - 1),
+    "utf8",
+  );
+  const contents = `${JSON.stringify({
+    formatVersion: 1,
+    validationStage: stage,
+    commandFailure: observation,
+    stdoutTailBase64: stdout
+      .subarray(-privateFailureStreamBytes)
+      .toString("base64"),
+    stderrTailBase64: stderr
+      .subarray(-privateFailureStreamBytes)
+      .toString("base64"),
+    stdoutTruncated:
+      Buffer.byteLength(result.stdout, "utf8") > privateFailureStreamBytes,
+    stderrTruncated:
+      Buffer.byteLength(result.stderr, "utf8") > privateFailureStreamBytes,
+  })}\n`;
+  if (Buffer.byteLength(contents) > privateFailureFileBytes)
+    throw operatorError("release_error");
+  await readPrivateCaptureCustody(
+    profile,
+    repositoryRoot,
+    claimDirectory,
+    custody,
+  );
+  const path = join(claimDirectory, privateFailureFileName);
+  const handle = await open(path, "wx", 0o600);
+  try {
+    await readPrivateCaptureCustody(
+      profile,
+      repositoryRoot,
+      claimDirectory,
+      custody,
+    );
+    const stat = await handle.stat();
+    const named = await lstat(path);
+    if (
+      !stat.isFile() ||
+      stat.nlink !== 1 ||
+      named.isSymbolicLink() ||
+      stat.dev !== named.dev ||
+      stat.ino !== named.ino ||
+      (process.platform !== "win32" &&
+        ((stat.mode & 0o7777) !== 0o600 || stat.uid !== process.geteuid!()))
+    ) {
+      throw operatorError("invalid_release_receipt");
+    }
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 function throwIfCancelled(signal: AbortSignal | undefined): void {
   if (signal?.aborted === true) throw operatorError("publication_cancelled");
 }
@@ -1143,6 +1313,10 @@ async function checkedCommand(
     timeoutMs?: number;
   },
   validationStage?: SourceValidationStage,
+  captureFailure?: (
+    result: OperatorReleaseCommandResult,
+    observation: CommandFailure,
+  ) => Promise<void>,
 ): Promise<OperatorReleaseCommandResult> {
   throwIfCancelled(options.signal);
   let result: OperatorReleaseCommandResult;
@@ -1162,7 +1336,20 @@ async function checkedCommand(
   }
   throwIfCancelled(options.signal);
   if (result.status !== 0) {
-    throw operatorError(code, validationStage, commandObservations.get(result));
+    const observation = commandObservations.get(result);
+    if (
+      code === "source_validation_failed" &&
+      result.status === 1 &&
+      observation?.reason === "child_exit" &&
+      observation.exitCode === 1
+    ) {
+      try {
+        await captureFailure?.(result, observation);
+      } catch {
+        // Leave uncertain partial private output in root custody; never retry or expose it.
+      }
+    }
+    throw operatorError(code, validationStage, observation);
   }
   return result;
 }
@@ -1723,6 +1910,8 @@ async function publishOperatorReleaseForProfile(
   options: OperatorReleasePublicationOptions,
   dependencies: OperatorReleaseDependencies,
 ): Promise<OperatorReleaseOutput | TfOnlyOperatorReleaseOutput> {
+  if ("captureSourceFailure" in options)
+    throw operatorError("invalid_arguments");
   if (options.mode !== "production") {
     throw operatorError("invalid_release_mode");
   }
