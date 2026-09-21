@@ -5,7 +5,8 @@ import type { AddressInfo } from "node:net";
 import { PassThrough } from "node:stream";
 
 import express from "express";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import pino from "pino";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TfSearchGateway } from "../lib/tf-search-client.js";
 import {
@@ -28,6 +29,13 @@ vi.mock("../lib/ytdlp.js", () => ({
   spawnAudioDownload: ytdlpMocks.spawnAudioDownload,
 }));
 
+const streamCacheMocks = vi.hoisted(() => ({
+  getCachedStreamUrl: vi.fn(),
+  setCachedStreamUrl: vi.fn(),
+}));
+
+vi.mock("../lib/stream-cache.js", () => streamCacheMocks);
+
 vi.hoisted(() => {
   process.env["DATABASE_URL"] ??= "postgres://unused:unused@127.0.0.1:1/unused";
 });
@@ -49,6 +57,7 @@ const principal = {
   policyFreshUntil: "2026-07-24T03:05:00.000Z",
 } as const;
 const servers: Server[] = [];
+const testLogger = pino({ enabled: false });
 
 function trackIdFor(
   source: "yt" | "sc" | "bc" | "dz",
@@ -203,6 +212,7 @@ async function startTracksServer(
   app.use(express.json());
   app.use((request, _response, next) => {
     request.tfPrincipal = currentPrincipal;
+    request.log = testLogger;
     next();
   });
   app.use("/api", createTracksRouter(dependencies));
@@ -212,6 +222,12 @@ async function startTracksServer(
   const address = server.address() as AddressInfo;
   return `http://127.0.0.1:${address.port}/api`;
 }
+
+beforeEach(() => {
+  streamCacheMocks.getCachedStreamUrl.mockReset().mockResolvedValue(null);
+  streamCacheMocks.setCachedStreamUrl.mockReset().mockResolvedValue(undefined);
+  ytdlpMocks.getStreamUrl.mockReset();
+});
 
 afterEach(async () => {
   vi.clearAllMocks();
@@ -586,6 +602,8 @@ describe("TF search module routing", () => {
     const query = "artist=Artist&title=Track";
 
     const stream = await fetch(`${baseUrl}/tracks/${trackId}/stream?${query}`);
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+    expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
     const download = await fetch(
       `${baseUrl}/tracks/${trackId}/download?${query}`,
     );
@@ -610,6 +628,134 @@ describe("TF search module routing", () => {
       sourceUrl,
       "128",
     );
+  });
+});
+
+describe("stream preview boundary", () => {
+  const previewUrl = "https://cdns-preview-e.dzcdn.net/stream/c-test-preview";
+  const deezerId = trackIdFor("dz", previewUrl);
+
+  it.each([
+    ["ID only", ""],
+    ["artist only", "?artist=Artist"],
+    ["title only", "?title=Track"],
+  ])(
+    "refuses legacy Deezer %s without using an opaque cache hit",
+    async (_name, query) => {
+      streamCacheMocks.getCachedStreamUrl.mockResolvedValue({
+        url: previewUrl,
+        mimeType: "audio/mpeg",
+      });
+      const gateway = searchGateway();
+      const baseUrl = await startTracksServer(
+        routeDependencies({ searchGateway: gateway }),
+      );
+
+      const response = await fetch(
+        `${baseUrl}/tracks/${deezerId}/stream${query}`,
+      );
+
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual({
+        error: "stream_error",
+        message: "Could not resolve stream URL",
+      });
+      expect(gateway.search).not.toHaveBeenCalled();
+      expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+      expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+      expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["no candidate", "search rejection", "resolver rejection"])(
+    "refuses preview substitution after %s",
+    async (failure) => {
+      const gateway = searchGateway();
+      if (failure === "no candidate") {
+        gateway.search.mockResolvedValue(searchResponse({ results: [] }));
+      } else if (failure === "search rejection") {
+        gateway.search.mockRejectedValue(new Error("search unavailable"));
+      } else {
+        ytdlpMocks.getStreamUrl.mockRejectedValueOnce(
+          new Error("resolver unavailable"),
+        );
+      }
+      const baseUrl = await startTracksServer(
+        routeDependencies({ searchGateway: gateway }),
+      );
+
+      const response = await fetch(
+        `${baseUrl}/tracks/${deezerId}/stream?artist=Artist&title=Track`,
+      );
+
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual({
+        error: "stream_error",
+        message: "Could not resolve stream URL",
+      });
+      expect(gateway.search).toHaveBeenCalledTimes(1);
+      expect(gateway.search).toHaveBeenCalledWith({
+        artist: "Artist",
+        title: "Track",
+        mode: "manual",
+        sources: ["yt"],
+        maxResults: 3,
+      });
+      expect(ytdlpMocks.getStreamUrl).toHaveBeenCalledTimes(
+        failure === "resolver rejection" ? 1 : 0,
+      );
+      expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+      expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps Deezer private resolution behind tf.search even with a cache hit", async () => {
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({
+      url: "https://media.example.test/previous-resolution",
+      mimeType: "audio/mpeg",
+    });
+    const gateway = searchGateway();
+    const baseUrl = await startTracksServer(
+      routeDependencies({ searchGateway: gateway }),
+      { ...principal, entitlements: ["tf.downloads"] },
+    );
+
+    const response = await fetch(
+      `${baseUrl}/tracks/${deezerId}/stream?artist=Artist&title=Track`,
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "module_access_denied",
+    });
+    expect(gateway.search).not.toHaveBeenCalled();
+    expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+    expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+  });
+
+  it("preserves a non-Deezer cache hit without resolving again", async () => {
+    const id = trackIdFor("yt", "https://www.youtube.com/watch?v=cached");
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({
+      url: "https://media.example.test/cached-audio",
+      mimeType: "audio/webm",
+    });
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream`);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      id,
+      streamUrl: "https://media.example.test/cached-audio",
+      mimeType: "audio/webm",
+      cached: true,
+    });
+    expect(streamCacheMocks.getCachedStreamUrl).toHaveBeenCalledExactlyOnceWith(
+      id,
+    );
+    expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+    expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
   });
 });
 

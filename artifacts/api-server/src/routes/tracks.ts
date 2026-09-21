@@ -423,6 +423,33 @@ export function createTracksRouter(
     }
 
     try {
+      if (decoded.source === "dz") {
+        // Legacy Deezer URLs may be previews; neither they nor opaque cache hits prove a full source.
+        const dzArtist = String(req.query["artist"] ?? "").trim();
+        const dzTitle = String(req.query["title"] ?? "").trim();
+        if (!dzArtist || !dzTitle) {
+          throw new Error("Deezer full-source metadata is required");
+        }
+        if (!hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
+          res.status(403).json({ error: "module_access_denied" });
+          return;
+        }
+        const candidates = await routeDependencies.searchGateway.search({
+          artist: dzArtist,
+          title: dzTitle,
+          mode: "manual",
+          sources: ["yt"],
+          maxResults: 3,
+        });
+        const sourceUrl = preferredSourceUrl(candidates.results, ["youtube"]);
+        if (sourceUrl === null) {
+          throw new Error("Deezer full-source candidate is unavailable");
+        }
+        const { url, mimeType } = await getStreamUrl(sourceUrl);
+        res.json({ id, streamUrl: url, mimeType: mimeType ?? "audio/mpeg" });
+        return;
+      }
+
       const cached = await getCachedStreamUrl(id);
       if (cached) {
         res.json({
@@ -434,44 +461,6 @@ export function createTracksRouter(
         return;
       }
 
-      if (decoded.source === "dz") {
-        const dzArtist = String(req.query["artist"] ?? "").trim();
-        const dzTitle = String(req.query["title"] ?? "").trim();
-
-        if (dzArtist && dzTitle) {
-          try {
-            if (!hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
-              res.status(403).json({ error: "module_access_denied" });
-              return;
-            }
-            const candidates = await routeDependencies.searchGateway.search({
-              artist: dzArtist,
-              title: dzTitle,
-              mode: "manual",
-              sources: ["yt"],
-              maxResults: 3,
-            });
-            const sourceUrl = preferredSourceUrl(candidates.results, [
-              "youtube",
-            ]);
-            if (sourceUrl !== null) {
-              const { url, mimeType } = await getStreamUrl(sourceUrl);
-              await setCachedStreamUrl(id, url, mimeType ?? "audio/mpeg");
-              res.json({
-                id,
-                streamUrl: url,
-                mimeType: mimeType ?? "audio/mpeg",
-              });
-              return;
-            }
-          } catch {
-            req.log?.warn("Deezer stream fallback unavailable; using preview");
-          }
-        }
-
-        res.json({ id, streamUrl: decoded.url, mimeType: "audio/mpeg" });
-        return;
-      }
       const { url, mimeType } = await getStreamUrl(decoded.url);
       await setCachedStreamUrl(id, url, mimeType ?? "audio/mpeg");
       res.json({ id, streamUrl: url, mimeType: mimeType ?? null });

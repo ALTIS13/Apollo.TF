@@ -127,10 +127,16 @@ function PlayerActions({
 }: {
   includeDownload?: boolean;
 }) {
-  const { playTrack } = usePlayer();
+  const { playTrack, currentTrack, isPlaying, isLoading } = usePlayer();
 
   return (
     <div data-testid="protected-runtime">
+      <output
+        data-testid="player-state"
+        data-track-id={currentTrack?.id ?? ""}
+        data-playing={isPlaying}
+        data-loading={isLoading}
+      />
       <button onClick={() => void playTrack(track)}>
         Play generated stream
       </button>
@@ -186,6 +192,55 @@ afterEach(() => {
 });
 
 describe("protected generated API auth failures", () => {
+  it("keeps the authenticated player stopped after stream_error 500", async () => {
+    runtime.fetchSession.mockResolvedValueOnce(session);
+    runtime.streamQuery.mockRejectedValueOnce({
+      status: 500,
+      data: {
+        error: "stream_error",
+        message: "Could not resolve stream URL",
+      },
+    });
+    renderProtectedRuntime();
+
+    const play = await screen.findByRole("button", {
+      name: "Play generated stream",
+    });
+    expect(canUseTfProtectedActivity()).toBe(true);
+    expect(FakeAudio.instances).toHaveLength(1);
+    await act(async () => { fireEvent.click(play); });
+
+    await waitFor(() => expect(runtime.streamQuery).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(runtime.toast).toHaveBeenCalledWith({
+        title: "Ошибка воспроизведения",
+        description: "Не удалось загрузить трек.",
+        variant: "destructive",
+      }),
+    );
+    expect(FakeAudio.instances[0].src).toBe("");
+    expect(FakeAudio.instances[0].play).not.toHaveBeenCalled();
+    expect(screen.getByTestId("player-state")).toHaveAttribute(
+      "data-track-id",
+      "",
+    );
+    expect(screen.getByTestId("player-state")).toHaveAttribute(
+      "data-playing",
+      "false",
+    );
+    expect(screen.getByTestId("player-state")).toHaveAttribute(
+      "data-loading",
+      "false",
+    );
+    expect(
+      screen.getByRole("button", { name: "Play generated stream" }),
+    ).toBeEnabled();
+    expect(canUseTfProtectedActivity()).toBe(true);
+    expect(runtime.fetchSession).toHaveBeenCalledTimes(1);
+    expect(runtime.logoutSession).not.toHaveBeenCalled();
+    expect(runtime.streamQuery).toHaveBeenCalledTimes(1);
+  });
+
   it("invalidates and unmounts after generated stream unauthorized while preserving playback feedback", async () => {
     runtime.fetchSession.mockResolvedValueOnce(session);
     runtime.streamQuery.mockRejectedValueOnce(
