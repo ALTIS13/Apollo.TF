@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream, readFileSync } from "node:fs";
 import {
@@ -406,8 +406,40 @@ type SourceValidationStage =
   | "source_archive_integrity"
   | "claimed_archive_integrity";
 
-// Child errors and arbitrary error properties are not trusted stage evidence.
-const sourceValidationFailureStages = new WeakMap<Error, SourceValidationStage>();
+type CommandFailure = {
+  reason: "child_exit" | "signal" | "timeout" | "spawn_error" | "runner_error";
+  exitCode: number | null;
+  signalClass: "term" | "kill" | "interrupt" | "abort" | "other" | "none";
+};
+
+// Only observations owned by this runner may cross the public error boundary.
+const commandObservations = new WeakMap<object, CommandFailure>();
+const sourceValidationFailures = new WeakMap<
+  Error,
+  {
+    validationStage: SourceValidationStage;
+    commandFailure?: CommandFailure;
+  }
+>();
+
+function signalClass(
+  signal: NodeJS.Signals | null,
+): CommandFailure["signalClass"] {
+  switch (signal) {
+    case null:
+      return "none";
+    case "SIGTERM":
+      return "term";
+    case "SIGKILL":
+      return "kill";
+    case "SIGINT":
+      return "interrupt";
+    case "SIGABRT":
+      return "abort";
+    default:
+      return "other";
+  }
+}
 
 export function runOperatorReleaseCommand(
   executable: string,
@@ -433,19 +465,63 @@ export function runOperatorReleaseCommand(
     let stderr = "";
     let stdout = "";
     let completed = false;
-    const finish = (result: OperatorReleaseCommandResult): void => {
+    let spawned = false;
+    let timeoutTriggered = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const clearDeadline = (): void => {
+      clearTimeout(timeout);
+      timeout = undefined;
+    };
+    const finish = (
+      result: OperatorReleaseCommandResult,
+      observation: CommandFailure,
+    ): void => {
       if (completed) return;
       completed = true;
+      clearDeadline();
+      commandObservations.set(result, observation);
       complete(result);
     };
-    const child = spawn(spawnedExecutable, spawnedArgs, {
-      cwd: options.cwd,
-      env: options.env,
-      shell: false,
-      signal: options.signal,
-      timeout: options.timeoutMs,
-      windowsHide: true,
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      // Preserve spawn's timeout validation before taking ownership of its timer.
+      if (
+        options.timeoutMs != null &&
+        (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 0)
+      ) {
+        throw new RangeError("Invalid command timeout");
+      }
+      child = spawn(spawnedExecutable, spawnedArgs, {
+        cwd: options.cwd,
+        env: options.env,
+        shell: false,
+        signal: options.signal,
+        windowsHide: true,
+      });
+    } catch (error) {
+      if (error instanceof Error)
+        commandObservations.set(error, {
+          reason: "spawn_error",
+          exitCode: null,
+          signalClass: "none",
+        });
+      throw error;
+    }
+    if (options.timeoutMs !== undefined && options.timeoutMs > 0) {
+      timeout = setTimeout(() => {
+        timeoutTriggered = true;
+        try {
+          child.kill("SIGTERM");
+        } catch (error) {
+          child.emit("error", error);
+        }
+        timeout = undefined;
+      }, options.timeoutMs);
+    }
+    child.once("spawn", () => {
+      spawned = true;
     });
+    child.once("exit", clearDeadline);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
@@ -455,10 +531,38 @@ export function runOperatorReleaseCommand(
       stderr += chunk;
     });
     child.on("error", () => {
-      finish({ status: -1, stderr: "", stdout: "" });
+      finish(
+        { status: -1, stderr: "", stdout: "" },
+        {
+          reason: timeoutTriggered
+            ? "timeout"
+            : spawned
+              ? "runner_error"
+              : "spawn_error",
+          exitCode: null,
+          signalClass: "none",
+        },
+      );
     });
-    child.on("close", (status) => {
-      finish({ status: status ?? -1, stderr, stdout });
+    child.on("close", (status, signal) => {
+      finish(
+        { status: status ?? -1, stderr, stdout },
+        {
+          reason: timeoutTriggered
+            ? "timeout"
+            : signal !== null
+              ? "signal"
+              : "child_exit",
+          exitCode:
+            status !== null &&
+            Number.isInteger(status) &&
+            status >= 0 &&
+            status <= 255
+              ? status
+              : null,
+          signalClass: signalClass(signal),
+        },
+      );
     });
   });
 }
@@ -929,10 +1033,11 @@ function releaseClaimDirectory(
 function operatorError(
   code: string,
   validationStage?: SourceValidationStage,
+  commandFailure?: CommandFailure,
 ): Error {
   const error = new Error(code);
   if (code === "source_validation_failed" && validationStage !== undefined) {
-    sourceValidationFailureStages.set(error, validationStage);
+    sourceValidationFailures.set(error, { validationStage, commandFailure });
   }
   return error;
 }
@@ -1043,12 +1148,22 @@ async function checkedCommand(
   let result: OperatorReleaseCommandResult;
   try {
     result = await dependencies.command(executable, args, options);
-  } catch {
+  } catch (error) {
     throwIfCancelled(options.signal);
-    throw operatorError(code, validationStage);
+    throw operatorError(
+      code,
+      validationStage,
+      (error instanceof Error ? commandObservations.get(error) : undefined) ?? {
+        reason: "runner_error",
+        exitCode: null,
+        signalClass: "none",
+      },
+    );
   }
   throwIfCancelled(options.signal);
-  if (result.status !== 0) throw operatorError(code, validationStage);
+  if (result.status !== 0) {
+    throw operatorError(code, validationStage, commandObservations.get(result));
+  }
   return result;
 }
 
@@ -2134,12 +2249,13 @@ const defaultOperatorReleaseCliIo: OperatorReleaseCliIo = {
 function publicErrorResponse(error: unknown): {
   error: string;
   validationStage?: SourceValidationStage;
+  commandFailure?: CommandFailure;
 } {
   const sanitized = sanitizedOperatorError(error);
-  const validationStage = sourceValidationFailureStages.get(sanitized);
-  return validationStage === undefined
+  const failure = sourceValidationFailures.get(sanitized);
+  return failure === undefined
     ? { error: sanitized.message }
-    : { error: sanitized.message, validationStage };
+    : { error: sanitized.message, ...failure };
 }
 
 export async function runOperatorReleaseCli(

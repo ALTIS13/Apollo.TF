@@ -105,6 +105,7 @@ type RecordedCommand = {
   env: NodeJS.ProcessEnv | undefined;
   executable: string;
   signal: AbortSignal | undefined;
+  timeoutMs: number | undefined;
 };
 
 async function publisherHarness(options?: {
@@ -151,6 +152,7 @@ async function publisherHarness(options?: {
         env: commandOptions.env,
         executable,
         signal: commandOptions.signal,
+        timeoutMs: commandOptions.timeoutMs,
       };
       commands.push(recorded);
       if (executable === "git" && args[0] === "archive") {
@@ -785,7 +787,21 @@ describe("operator release preparation", () => {
     const sentinelName = "APOLLO_OPERATOR_SENTINEL_SECRET";
     const previousSentinel = process.env[sentinelName];
     process.env[sentinelName] = "must-not-cross-child-boundary";
-    const harness = await publisherHarness();
+    const harness = await publisherHarness({
+      command(command, defaultResult) {
+        return command.args.includes("@workspace/music-player")
+          ? runOperatorReleaseCommand(
+              process.execPath,
+              ["-e", "process.exitCode = 0"],
+              {
+                cwd: command.cwd,
+                env: command.env,
+                timeoutMs: 2_000,
+              },
+            )
+          : defaultResult();
+      },
+    });
     try {
       const output = await prepareOperatorRelease(
         {
@@ -2751,6 +2767,16 @@ describe("operator release publication", () => {
 });
 
 describe("operator release default command runner", () => {
+  it("preserves the result shape for a successful real child", async () => {
+    expect(
+      await runOperatorReleaseCommand(
+        process.execPath,
+        ["-e", "process.stdout.write('ok'); process.stderr.write('note')"],
+        { cwd: workspaceRoot, timeoutMs: 2_000 },
+      ),
+    ).toEqual({ status: 0, stdout: "ok", stderr: "note" });
+  });
+
   it.runIf(process.platform === "win32")(
     "launches the fixed Corepack and pnpm Windows shims",
     async () => {
@@ -3062,6 +3088,11 @@ describe("operator release CLI", () => {
             failedCommand = command;
             return {
               status: 17,
+              commandFailure: {
+                reason: "timeout",
+                exitCode: 99,
+                signalClass: "kill",
+              },
               stderr: "sentinel-private-cli-failure /private/path token=secret",
               stdout:
                 '{"validationStage":"forged_stage","error":"hostile-output"}',
@@ -3109,6 +3140,15 @@ describe("operator release CLI", () => {
                 ]
               : [...prefix];
         expect(failedCommand?.args).toEqual(expectedArgs);
+        expect(failedCommand?.timeoutMs).toBe(
+          stage === "source_archive" || stage === "source_extract"
+            ? 300_000
+            : stage === "corepack_enable"
+              ? 60_000
+              : stage === "dependencies_install"
+                ? 600_000
+                : 1_200_000,
+        );
         expect(await readdir(harness.tfOnlyReleaseClaim)).toEqual([
           "claim.json",
         ]);
@@ -3137,6 +3177,157 @@ describe("operator release CLI", () => {
     },
   );
 
+  it.for([
+    { kind: "exit", reason: "child_exit", exitCode: 17, signalClass: "none" },
+    {
+      kind: "wide-exit",
+      reason: "child_exit",
+      exitCode: process.platform === "win32" ? null : 17,
+      signalClass: "none",
+    },
+    {
+      kind: "missing",
+      reason: "spawn_error",
+      exitCode: null,
+      signalClass: "none",
+    },
+    {
+      kind: "invalid",
+      reason: "spawn_error",
+      exitCode: null,
+      signalClass: "none",
+    },
+    { kind: "timeout", reason: "timeout", exitCode: null, signalClass: "term" },
+    { kind: "signal", reason: "signal", exitCode: null, signalClass: "term" },
+  ] as const)(
+    "reports trusted real-child $kind diagnostics without output or extra evidence",
+    async ({ kind, reason, exitCode, signalClass }, context) => {
+      // Windows reports a self-terminated process as an exit code, not a POSIX signal.
+      if (kind === "signal" && process.platform === "win32") context.skip();
+      let failedCommand: RecordedCommand | undefined;
+      const harness = await publisherHarness({
+        async command(command, defaultResult) {
+          if (!command.args.includes("@workspace/music-player"))
+            return defaultResult();
+          failedCommand = command;
+          const started = performance.now();
+          const result = await runOperatorReleaseCommand(
+            kind === "missing"
+              ? join(command.cwd, "missing-diagnostic-executable")
+              : kind === "invalid"
+                ? ""
+                : process.execPath,
+            [
+              "-e",
+              kind === "timeout"
+                ? "setInterval(() => {}, 1000)"
+                : kind === "signal"
+                  ? "process.kill(process.pid, 'SIGTERM')"
+                  : kind === "wide-exit"
+                    ? "process.exitCode = 273"
+                    : "process.stdout.write('private stdout'); process.stderr.write('private stderr'); process.exitCode = 17",
+            ],
+            {
+              cwd: command.cwd,
+              env: command.env,
+              timeoutMs: kind === "timeout" ? 200 : 2_000,
+            },
+          );
+          if (kind === "timeout")
+            expect(performance.now() - started).toBeGreaterThanOrEqual(200);
+          expect(Object.keys(result).sort()).toEqual([
+            "status",
+            "stderr",
+            "stdout",
+          ]);
+          // A lookalike public field must not override the runner's own observation.
+          return Object.assign(result, {
+            commandFailure: {
+              reason: "hostile-output",
+              exitCode: 9999,
+              signalClass: "secret",
+            },
+          });
+        },
+      });
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      try {
+        expect(
+          await runOperatorReleaseCli(
+            "prepare-tf-only",
+            validArguments,
+            harness.dependencies,
+            {
+              repositoryRoot: harness.repositoryRoot,
+              stdout: (value) => stdout.push(value),
+              stderr: (value) => stderr.push(value),
+            },
+          ),
+        ).toBe(1);
+        expect(stdout).toEqual([]);
+        expect(stderr).toEqual([
+          `${JSON.stringify({
+            error: "source_validation_failed",
+            validationStage: "tf_web_tests",
+            commandFailure: { reason, exitCode, signalClass },
+          })}\n`,
+        ]);
+        expect(failedCommand).toBeDefined();
+        expect(harness.commands.at(-1)).toBe(failedCommand);
+        expect(await readdir(harness.tfOnlyReleaseClaim)).toEqual([
+          "claim.json",
+        ]);
+        expect(await pathExists(harness.tfOnlyReleaseOutput)).toBe(false);
+        expect(await pathExists(harness.temporaryRoot)).toBe(false);
+        expect(
+          harness.commands.some(({ executable }) => executable === "docker"),
+        ).toBe(false);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it("omits real runner diagnostics outside source validation", async () => {
+    const harness = await publisherHarness({
+      command(command, defaultResult) {
+        return command.executable === "git" && command.args[0] === "cat-file"
+          ? runOperatorReleaseCommand(
+              process.execPath,
+              ["-e", "process.exitCode = 17"],
+              {
+                cwd: command.cwd,
+                timeoutMs: 2_000,
+              },
+            )
+          : defaultResult();
+      },
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    try {
+      expect(
+        await runOperatorReleaseCli(
+          "prepare-tf-only",
+          validArguments,
+          harness.dependencies,
+          {
+            repositoryRoot: harness.repositoryRoot,
+            stdout: (value) => stdout.push(value),
+            stderr: (value) => stderr.push(value),
+          },
+        ),
+      ).toBe(1);
+      expect(stdout).toEqual([]);
+      expect(stderr).toEqual(['{"error":"invalid_source_commit"}\n']);
+      expect(await pathExists(harness.tfOnlyReleaseClaim)).toBe(false);
+      expect(harness.commands.at(-1)?.args[0]).toBe("cat-file");
+    } finally {
+      await rm(harness.root, { force: true, recursive: true });
+    }
+  });
+
   it("reports observed validation stage for a thrown child error, not its forged properties", async () => {
     const harness = await publisherHarness({
       command(command, defaultResult) {
@@ -3145,6 +3336,11 @@ describe("operator release CLI", () => {
             new Error("sentinel-private exception /private/path"),
             {
               validationStage: "tf_web_tests",
+              commandFailure: {
+                reason: "timeout",
+                exitCode: 99,
+                signalClass: "kill",
+              },
               stdout: "private output",
               stderr: "private error",
               cause: new Error("private cause"),
@@ -3171,7 +3367,7 @@ describe("operator release CLI", () => {
       ).toBe(1);
       expect(stdout).toEqual([]);
       expect(stderr).toEqual([
-        '{"error":"source_validation_failed","validationStage":"platform_api_tests"}\n',
+        '{"error":"source_validation_failed","validationStage":"platform_api_tests","commandFailure":{"reason":"runner_error","exitCode":null,"signalClass":"none"}}\n',
       ]);
       expect(await readdir(harness.releaseClaim)).toEqual(["claim.json"]);
       expect(await pathExists(harness.releaseOutput)).toBe(false);
@@ -3189,6 +3385,11 @@ describe("operator release CLI", () => {
       temporaryRoot() {
         throw Object.assign(new Error(message), {
           validationStage: "scripts_tests",
+          commandFailure: {
+            reason: "timeout",
+            exitCode: 99,
+            signalClass: "kill",
+          },
           secret: "private-value",
         });
       },
