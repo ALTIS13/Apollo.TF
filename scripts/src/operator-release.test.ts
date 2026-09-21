@@ -28,6 +28,7 @@ import {
   operatorReleaseBuildArguments,
   operatorReleaseOutputDirectory,
   parseOperatorReleaseArguments,
+  parseOperatorReleasePublicationArguments,
   pinnedRedisReference as operatorPinnedRedisReference,
   prepareOperatorRelease,
   publishOperatorRelease,
@@ -2974,6 +2975,119 @@ describe("operator release CLI", () => {
     }
   });
 
+  it.each([
+    ["release:prepare:tf-only", "prepare-tf-only"],
+    ["release:publish:tf-only", "publish-tf-only"],
+  ] as const)(
+    "forwards documented %s arguments through pinned pnpm without an operator run",
+    async (scriptName, operation) => {
+      const packageJson = JSON.parse(
+        await readFile(join(workspaceRoot, "package.json"), "utf8"),
+      ) as {
+        packageManager: string;
+        scripts: Record<string, string>;
+      };
+      const runbook = await readFile(
+        join(workspaceRoot, "docs/operations/apollo-production-rollout.md"),
+        "utf8",
+      );
+      const command = runbook
+        .split(/\r?\n/)
+        .find((line) => line.includes(`pnpm --silent ${scriptName} `));
+      expect(command).toBeDefined();
+      const receipt = "/fixture-only/receipt with spaces.json";
+      const substitutions: Record<string, string> = {
+        $releaseId: releaseId,
+        $approvedSourceCommit: sourceCommit,
+        "$preparation.receiptPath": receipt,
+      };
+      const documentedArgs = command!
+        .split(`pnpm --silent ${scriptName} `)[1]!
+        .split(" | ")[0]!
+        .trim()
+        .split(/\s+/)
+        .map((token) => substitutions[token] ?? token);
+      const root = await mkdtemp(join(tmpdir(), "apollo-pnpm-argv-"));
+      try {
+        const scriptsRoot = join(root, "scripts");
+        await mkdir(scriptsRoot);
+        const entrypoint = "tsx src/operator-release.ts";
+        expect(packageJson.scripts[scriptName]).toContain(entrypoint);
+        // Keep the registered pnpm forwarding chain, but never invoke the operator.
+        await writeFile(
+          join(root, "package.json"),
+          JSON.stringify({
+            private: true,
+            packageManager: packageJson.packageManager,
+            scripts: {
+              [scriptName]: packageJson.scripts[scriptName]!.replace(
+                entrypoint,
+                "node argv-probe.cjs",
+              ),
+            },
+          }),
+        );
+        await writeFile(
+          join(root, "pnpm-workspace.yaml"),
+          'packages:\n  - "scripts"\n',
+        );
+        await writeFile(
+          join(scriptsRoot, "package.json"),
+          JSON.stringify({ name: "@workspace/scripts", private: true }),
+        );
+        await writeFile(
+          join(scriptsRoot, "argv-probe.cjs"),
+          "process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), userAgent: process.env.npm_config_user_agent }));\n",
+        );
+        const result = spawnSync(
+          process.execPath,
+          [pnpmCliPath, "--silent", scriptName, ...documentedArgs],
+          {
+            cwd: root,
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              COREPACK_ENABLE_NETWORK: "0",
+              COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
+            },
+            shell: false,
+            windowsHide: true,
+            timeout: 30_000,
+          },
+        );
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        const captured = JSON.parse(result.stdout) as {
+          argv: string[];
+          userAgent: string;
+        };
+        expect(captured.userAgent).toContain(
+          packageJson.packageManager.replace("@", "/"),
+        );
+        const expectedArgs =
+          operation === "prepare-tf-only"
+            ? [...validArguments]
+            : [...validArguments, "--receipt", receipt];
+        expect(captured.argv).toEqual([operation, ...expectedArgs]);
+        const parsed =
+          operation === "prepare-tf-only"
+            ? parseOperatorReleaseArguments(captured.argv.slice(1))
+            : parseOperatorReleasePublicationArguments(captured.argv.slice(1));
+        expect(parsed).toMatchObject({
+          mode: "production",
+          releaseId,
+          sourceCommit,
+        });
+        if (operation === "publish-tf-only")
+          expect(parsed).toHaveProperty("receiptPath", receipt);
+        expect(await pathExists(join(root, ".ops-private"))).toBe(false);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
   it("exposes the split publisher and validator through executable root scripts", async () => {
     const packageJson = JSON.parse(
       await readFile(join(workspaceRoot, "package.json"), "utf8"),
@@ -3043,7 +3157,7 @@ describe("operator release CLI", () => {
     expect(await pathExists(releaseWorkflow)).toBe(false);
     expect(rolloutRunbook).toContain("$releaseId = 'v0.1.0-rc.1'");
     expect(rolloutRunbook).toContain(
-      "$preparation = pnpm --silent release:prepare -- --mode production --release-id $releaseId --source-commit $approvedSourceCommit | ConvertFrom-Json",
+      "$preparation = pnpm --silent release:prepare --mode production --release-id $releaseId --source-commit $approvedSourceCommit | ConvertFrom-Json",
     );
     expect(rolloutRunbook).toContain(
       "$pat = Read-Host 'GHCR classic PAT' -AsSecureString",
@@ -3058,14 +3172,14 @@ describe("operator release CLI", () => {
       "if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }",
     );
     expect(rolloutRunbook).toContain(
-      "pnpm --silent release:publish -- --mode production --release-id $releaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath",
+      "pnpm --silent release:publish --mode production --release-id $releaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath",
     );
     expect(rolloutRunbook).toContain(
       "[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($patPointer)",
     );
     expect(rolloutRunbook).not.toContain("$env:CR_PAT");
     expect(rolloutRunbook).toContain(
-      "pnpm --silent release:validate -- --env-file '<PRIVATE_RELEASE_ENV>' --mode production --release-manifest '.ops-private/releases/v0.1.0-rc.1/apollo-release-manifest.json'",
+      "pnpm --silent release:validate --env-file '<PRIVATE_RELEASE_ENV>' --mode production --release-manifest '.ops-private/releases/v0.1.0-rc.1/apollo-release-manifest.json'",
     );
     const prepareIndex = rolloutRunbook.indexOf(
       "pnpm --silent release:prepare",

@@ -554,8 +554,10 @@ EOF
   it("rejects hostile metadata before running checksum verification or disclosing it", () => {
     if (!requireScript(backupScript) || !requireScript(verifyScript)) return;
     const root = temporaryRoot();
-    const env = contractEnvironment(root);
+    const env = withBashFunctions(root, contractEnvironment(root), "sha256sum() { printf 'sha256sum %s\\n' \"$*\" >> \"$FAKE_LOG\"; /usr/bin/sha256sum \"$@\"; }\n");
     expect(runScript(backupScript, env).status).toBe(0);
+    const backupLog = readFileSync(env.FAKE_LOG!, "utf8");
+    expect(backupLog).toContain("sha256sum");
     const artifacts = backupArtifacts(env.APOLLO_BACKUP_DESTINATION!);
     writeFileSync(artifacts.metadata, JSON.stringify({ hostile: env.FAKE_SENSITIVE }));
     const result = runScript(verifyScript, {
@@ -570,7 +572,11 @@ EOF
     expect(result.status).not.toBe(0);
     expect(output(result)).toBe("verify: metadata failed\n");
     expect(output(result).includes(env.FAKE_SENSITIVE!)).toBe(false);
-    expect(readFileSync(env.FAKE_LOG!, "utf8")).not.toContain("sha256sum");
+    const commandLog = readFileSync(env.FAKE_LOG!, "utf8");
+    expect(commandLog.startsWith(backupLog)).toBe(true);
+    const verifierLog = commandLog.slice(backupLog.length);
+    expect(verifierLog).not.toContain("sha256sum");
+    expect(verifierLog).not.toContain(env.FAKE_SENSITIVE!);
   });
 
   it("redacts direct verifier checksum failures", () => {

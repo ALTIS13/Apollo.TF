@@ -133,7 +133,7 @@ uses that fresh archive as the only build input.
 ```powershell
 $approvedSourceCommit = '9e04ca66a70e4a1563c6a75294d64b8d540959fb'
 $releaseId = 'v0.1.0-rc.1'
-$preparation = pnpm --silent release:prepare -- --mode production --release-id $releaseId --source-commit $approvedSourceCommit | ConvertFrom-Json
+$preparation = pnpm --silent release:prepare --mode production --release-id $releaseId --source-commit $approvedSourceCommit | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Release preparation failed' }
 
 $pat = $null
@@ -146,7 +146,7 @@ try {
   $plainPat | docker login ghcr.io -u ALTIS13 --password-stdin
   if ($LASTEXITCODE -ne 0) { throw 'GHCR login failed' }
 
-  pnpm --silent release:publish -- --mode production --release-id $releaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath
+  pnpm --silent release:publish --mode production --release-id $releaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath
   if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
 }
 finally {
@@ -157,7 +157,7 @@ finally {
   if ($null -ne $pat) { $pat.Dispose() }
 }
 
-pnpm --silent release:validate -- --env-file '<PRIVATE_RELEASE_ENV>' --mode production --release-manifest '.ops-private/releases/v0.1.0-rc.1/apollo-release-manifest.json'
+pnpm --silent release:validate --env-file '<PRIVATE_RELEASE_ENV>' --mode production --release-manifest '.ops-private/releases/v0.1.0-rc.1/apollo-release-manifest.json'
 if ($LASTEXITCODE -ne 0) { throw 'Release validation failed' }
 ```
 
@@ -180,15 +180,19 @@ image sources being built. Do not reuse the implementation base commit merely
 because it was used to design this profile. Offline preparation remains before
 credential introduction:
 
+Pass flags directly after the script name. With pinned pnpm 10.33.2 a standalone
+`--` is forwarded to the operator and rejected as `invalid_arguments`; it is not
+a separator to add to these commands.
+
 ```powershell
 $approvedSourceCommit = '<ACCEPTED_TF_SOURCE_COMMIT>'
 $releaseId = '<NEW_UNIQUE_RELEASE_ID>'
-$preparation = pnpm --silent release:prepare:tf-only -- --mode production --release-id $releaseId --source-commit $approvedSourceCommit | ConvertFrom-Json
+$preparation = pnpm --silent release:prepare:tf-only --mode production --release-id $releaseId --source-commit $approvedSourceCommit | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'TF-only release preparation failed' }
 
 # Only after preparation: authenticate Docker's external credential store with
 # an authorized principal that can read and write all nine private TF packages.
-pnpm --silent release:publish:tf-only -- --mode production --release-id $releaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath
+pnpm --silent release:publish:tf-only --mode production --release-id $releaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath
 if ($LASTEXITCODE -ne 0) { throw 'TF-only release publication failed' }
 ```
 
