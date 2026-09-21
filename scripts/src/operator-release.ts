@@ -274,27 +274,27 @@ const corepackDistributionRoot = join(
 );
 const corepackCliPath = join(corepackDistributionRoot, "corepack.js");
 const pnpmCliPath = join(corepackDistributionRoot, "pnpm.js");
-const sourceValidationCommands: readonly {
-  args: readonly string[];
-  executable: string;
-  timeoutMs: number;
-}[] = [
+const sourceValidationCommands = [
   {
+    stage: "corepack_enable",
     args: [corepackCliPath, "enable"],
     executable: process.execPath,
     timeoutMs: 60_000,
   },
   {
+    stage: "dependencies_install",
     args: [pnpmCliPath, "install", "--frozen-lockfile"],
     executable: process.execPath,
     timeoutMs: 10 * 60_000,
   },
   {
+    stage: "scripts_tests",
     args: [pnpmCliPath, "--filter", "@workspace/scripts", "test"],
     executable: process.execPath,
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "platform_api_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -308,6 +308,7 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "tf_api_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -321,6 +322,7 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "tf_admin_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -334,6 +336,7 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "tf_web_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -347,6 +350,7 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "tf_search_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -360,6 +364,7 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "tf_integrations_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -373,6 +378,7 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "tf_download_worker_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -386,11 +392,22 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "workspace_typecheck",
     args: [pnpmCliPath, "run", "typecheck"],
     executable: process.execPath,
     timeoutMs: 20 * 60_000,
   },
-];
+] as const;
+
+type SourceValidationStage =
+  | (typeof sourceValidationCommands)[number]["stage"]
+  | "source_archive"
+  | "source_extract"
+  | "source_archive_integrity"
+  | "claimed_archive_integrity";
+
+// Child errors and arbitrary error properties are not trusted stage evidence.
+const sourceValidationFailureStages = new WeakMap<Error, SourceValidationStage>();
 
 export function runOperatorReleaseCommand(
   executable: string,
@@ -600,6 +617,7 @@ async function prepareOperatorReleaseForProfile(
         env: environment,
         timeoutMs: 5 * 60_000,
       },
+      "source_archive",
     );
     const archiveSha256 = await sha256File(temporaryArchivePath);
     await checkedCommand(
@@ -612,6 +630,7 @@ async function prepareOperatorReleaseForProfile(
         env: environment,
         timeoutMs: 5 * 60_000,
       },
+      "source_extract",
     );
     const sourceTreeSha256 = await sha256Directory(validationRoot);
     for (const validation of sourceValidationCommands) {
@@ -625,10 +644,11 @@ async function prepareOperatorReleaseForProfile(
           env: environment,
           timeoutMs: validation.timeoutMs,
         },
+        validation.stage,
       );
     }
     if ((await sha256File(temporaryArchivePath)) !== archiveSha256) {
-      throw operatorError("source_validation_failed");
+      throw operatorError("source_validation_failed", "source_archive_integrity");
     }
 
     const claimedArchivePath = join(claimDirectory, "source.tar");
@@ -644,7 +664,7 @@ async function prepareOperatorReleaseForProfile(
       await archiveHandle.close();
     }
     if ((await sha256File(claimedArchivePath)) !== archiveSha256) {
-      throw operatorError("source_validation_failed");
+      throw operatorError("source_validation_failed", "claimed_archive_integrity");
     }
     await writeDurableExclusive(
       receiptPath,
@@ -906,8 +926,15 @@ function releaseClaimDirectory(
   );
 }
 
-function operatorError(code: string): Error {
-  return new Error(code);
+function operatorError(
+  code: string,
+  validationStage?: SourceValidationStage,
+): Error {
+  const error = new Error(code);
+  if (code === "source_validation_failed" && validationStage !== undefined) {
+    sourceValidationFailureStages.set(error, validationStage);
+  }
+  return error;
 }
 
 function sanitizedOperatorError(error: unknown): Error {
@@ -1010,6 +1037,7 @@ async function checkedCommand(
     signal?: AbortSignal;
     timeoutMs?: number;
   },
+  validationStage?: SourceValidationStage,
 ): Promise<OperatorReleaseCommandResult> {
   throwIfCancelled(options.signal);
   let result: OperatorReleaseCommandResult;
@@ -1017,10 +1045,10 @@ async function checkedCommand(
     result = await dependencies.command(executable, args, options);
   } catch {
     throwIfCancelled(options.signal);
-    throw operatorError(code);
+    throw operatorError(code, validationStage);
   }
   throwIfCancelled(options.signal);
-  if (result.status !== 0) throw operatorError(code);
+  if (result.status !== 0) throw operatorError(code, validationStage);
   return result;
 }
 
@@ -2103,8 +2131,15 @@ const defaultOperatorReleaseCliIo: OperatorReleaseCliIo = {
   },
 };
 
-function publicErrorCode(error: unknown): string {
-  return sanitizedOperatorError(error).message;
+function publicErrorResponse(error: unknown): {
+  error: string;
+  validationStage?: SourceValidationStage;
+} {
+  const sanitized = sanitizedOperatorError(error);
+  const validationStage = sourceValidationFailureStages.get(sanitized);
+  return validationStage === undefined
+    ? { error: sanitized.message }
+    : { error: sanitized.message, validationStage };
 }
 
 export async function runOperatorReleaseCli(
@@ -2157,7 +2192,7 @@ export async function runOperatorReleaseCli(
     io.stdout(`${JSON.stringify(output)}\n`);
     return 0;
   } catch (error) {
-    io.stderr(`${JSON.stringify({ error: publicErrorCode(error) })}\n`);
+    io.stderr(`${JSON.stringify(publicErrorResponse(error))}\n`);
     return 1;
   }
 }

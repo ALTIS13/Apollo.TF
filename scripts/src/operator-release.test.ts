@@ -8,6 +8,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  readdir,
   rename,
   rm,
   symlink,
@@ -796,13 +797,13 @@ describe("operator release preparation", () => {
         harness.dependencies,
       );
 
-      expect(output).toMatchObject({
+      expect(output).toEqual({
         archiveSha256: sha256("synthetic-source-archive\n"),
         receiptPath: harness.releaseReceipt,
         releaseId,
         sourceCommit,
+        sourceTreeSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       });
-      expect(output.sourceTreeSha256).toMatch(/^[a-f0-9]{64}$/);
       const receipt = JSON.parse(
         await readFile(harness.releaseReceipt, "utf8"),
       ) as Record<string, unknown>;
@@ -1934,19 +1935,28 @@ describe("operator release publication", () => {
         return defaultResult();
       },
     });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
     try {
-      await expect(
-        prepareOperatorRelease(
-          {
-            mode: "production",
-            releaseId,
-            repositoryRoot: harness.repositoryRoot,
-            sourceCommit,
-          },
+      expect(
+        await runOperatorReleaseCli(
+          "prepare-tf-only",
+          validArguments,
           harness.dependencies,
+          {
+            repositoryRoot: harness.repositoryRoot,
+            stdout: (value) => stdout.push(value),
+            stderr: (value) => stderr.push(value),
+          },
         ),
-      ).rejects.toThrowError(/^source_validation_failed$/);
+      ).toBe(1);
+      expect(stdout).toEqual([]);
+      expect(stderr).toEqual([
+        '{"error":"source_validation_failed","validationStage":"source_archive_integrity"}\n',
+      ]);
       expect(archiveMutated).toBe(true);
+      expect(await readdir(harness.tfOnlyReleaseClaim)).toEqual(["claim.json"]);
+      expect(await pathExists(harness.tfOnlyReleaseOutput)).toBe(false);
       expect(await pathExists(harness.buildRoot)).toBe(false);
       expect(
         harness.commands.some(({ executable }) => executable === "docker"),
@@ -2929,15 +2939,217 @@ describe("operator release CLI", () => {
     }
   });
 
-  it("returns nonzero JSON errors without rejected values or command output", async () => {
+  it.each([
+    ["source_archive", "git", ["archive"]],
+    ["source_extract", "tar", ["-xf"]],
+    ["corepack_enable", process.execPath, [corepackCliPath, "enable"]],
+    [
+      "dependencies_install",
+      process.execPath,
+      [pnpmCliPath, "install", "--frozen-lockfile"],
+    ],
+    [
+      "scripts_tests",
+      process.execPath,
+      [pnpmCliPath, "--filter", "@workspace/scripts", "test"],
+    ],
+    [
+      "platform_api_tests",
+      process.execPath,
+      [
+        pnpmCliPath,
+        "--filter",
+        "@workspace/platform-api",
+        "exec",
+        "vitest",
+        "run",
+        "--maxWorkers=2",
+      ],
+    ],
+    [
+      "tf_api_tests",
+      process.execPath,
+      [
+        pnpmCliPath,
+        "--filter",
+        "@workspace/api-server",
+        "exec",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+      ],
+    ],
+    [
+      "tf_admin_tests",
+      process.execPath,
+      [
+        pnpmCliPath,
+        "--filter",
+        "@workspace/admin-dashboard",
+        "exec",
+        "vitest",
+        "run",
+        "--maxWorkers=2",
+      ],
+    ],
+    [
+      "tf_web_tests",
+      process.execPath,
+      [
+        pnpmCliPath,
+        "--filter",
+        "@workspace/music-player",
+        "exec",
+        "vitest",
+        "run",
+        "--maxWorkers=2",
+      ],
+    ],
+    [
+      "tf_search_tests",
+      process.execPath,
+      [
+        pnpmCliPath,
+        "--filter",
+        "@workspace/tf-search",
+        "exec",
+        "vitest",
+        "run",
+        "--maxWorkers=2",
+      ],
+    ],
+    [
+      "tf_integrations_tests",
+      process.execPath,
+      [
+        pnpmCliPath,
+        "--filter",
+        "@workspace/tf-integrations",
+        "exec",
+        "vitest",
+        "run",
+        "--maxWorkers=2",
+      ],
+    ],
+    [
+      "tf_download_worker_tests",
+      process.execPath,
+      [
+        pnpmCliPath,
+        "--filter",
+        "@workspace/tf-download-worker",
+        "exec",
+        "vitest",
+        "run",
+        "--maxWorkers=2",
+      ],
+    ],
+    [
+      "workspace_typecheck",
+      process.execPath,
+      [pnpmCliPath, "run", "typecheck"],
+    ],
+  ] as const)(
+    "reports observed validation stage %s without child output",
+    async (stage, executable, prefix) => {
+      let failedCommand: RecordedCommand | undefined;
+      const harness = await publisherHarness({
+        command(command, defaultResult) {
+          if (
+            command.executable === executable &&
+            prefix.every((value, index) => command.args[index] === value)
+          ) {
+            failedCommand = command;
+            return {
+              status: 17,
+              stderr: "sentinel-private-cli-failure /private/path token=secret",
+              stdout:
+                '{"validationStage":"forged_stage","error":"hostile-output"}',
+            };
+          }
+          return defaultResult();
+        },
+      });
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      try {
+        await expect(
+          runOperatorReleaseCli(
+            "prepare-tf-only",
+            validArguments,
+            harness.dependencies,
+            {
+              repositoryRoot: harness.repositoryRoot,
+              stderr: (value) => stderr.push(value),
+              stdout: (value) => stdout.push(value),
+            },
+          ),
+        ).resolves.toBe(1);
+        expect(stdout).toEqual([]);
+        expect(stderr).toEqual([
+          `${JSON.stringify({ error: "source_validation_failed", validationStage: stage })}\n`,
+        ]);
+        expect(failedCommand).toBeDefined();
+        expect(harness.commands.at(-1)).toBe(failedCommand);
+        const expectedArgs =
+          stage === "source_archive"
+            ? [
+                "archive",
+                "--format=tar",
+                "--output",
+                join(harness.temporaryRoot, "source.tar"),
+                sourceCommit,
+              ]
+            : stage === "source_extract"
+              ? [
+                  "-xf",
+                  join(harness.temporaryRoot, "source.tar"),
+                  "-C",
+                  harness.validationRoot,
+                ]
+              : [...prefix];
+        expect(failedCommand?.args).toEqual(expectedArgs);
+        expect(await readdir(harness.tfOnlyReleaseClaim)).toEqual([
+          "claim.json",
+        ]);
+        expect(
+          JSON.parse(
+            await readFile(
+              join(harness.tfOnlyReleaseClaim, "claim.json"),
+              "utf8",
+            ),
+          ),
+        ).toEqual({
+          artifactSet: "tf-only",
+          formatVersion: 1,
+          protocolVersion: 2,
+          releaseId,
+          sourceCommit,
+        });
+        expect(await pathExists(harness.tfOnlyReleaseOutput)).toBe(false);
+        expect(
+          harness.commands.some(({ executable }) => executable === "docker"),
+        ).toBe(false);
+        expect(await pathExists(harness.temporaryRoot)).toBe(false);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it("reports observed validation stage for a thrown child error, not its forged properties", async () => {
     const harness = await publisherHarness({
       command(command, defaultResult) {
-        if (command.args.includes("@workspace/api-server")) {
-          return {
-            status: 1,
-            stderr: "sentinel-private-cli-failure",
-            stdout: "",
-          };
+        if (command.args.includes("@workspace/platform-api")) {
+          throw Object.assign(
+            new Error("sentinel-private exception /private/path"),
+            {
+              validationStage: "tf_web_tests",
+              stdout: "private output",
+              stderr: "private error",
+              cause: new Error("private cause"),
+            },
+          );
         }
         return defaultResult();
       },
@@ -2945,30 +3157,61 @@ describe("operator release CLI", () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
     try {
-      await expect(
-        runOperatorReleaseCli(
+      expect(
+        await runOperatorReleaseCli(
           "prepare",
-          [
-            "--mode",
-            "production",
-            "--release-id",
-            releaseId,
-            "--source-commit",
-            sourceCommit,
-          ],
+          validArguments,
           harness.dependencies,
           {
             repositoryRoot: harness.repositoryRoot,
-            stderr: (value) => stderr.push(value),
             stdout: (value) => stdout.push(value),
+            stderr: (value) => stderr.push(value),
           },
         ),
-      ).resolves.toBe(1);
+      ).toBe(1);
       expect(stdout).toEqual([]);
       expect(stderr).toEqual([
-        `${JSON.stringify({ error: "source_validation_failed" })}\n`,
+        '{"error":"source_validation_failed","validationStage":"platform_api_tests"}\n',
       ]);
-      expect(stderr.join("")).not.toContain("sentinel-private");
+      expect(await readdir(harness.releaseClaim)).toEqual(["claim.json"]);
+      expect(await pathExists(harness.releaseOutput)).toBe(false);
+      expect(await pathExists(harness.temporaryRoot)).toBe(false);
+    } finally {
+      await rm(harness.root, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    ["sentinel-private unexpected failure", "release_error"],
+    ["source_validation_failed", "source_validation_failed"],
+  ])("omits unobserved validation stage for %s", async (message, code) => {
+    const harness = await publisherHarness({
+      temporaryRoot() {
+        throw Object.assign(new Error(message), {
+          validationStage: "scripts_tests",
+          secret: "private-value",
+        });
+      },
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    try {
+      expect(
+        await runOperatorReleaseCli(
+          "prepare-tf-only",
+          validArguments,
+          harness.dependencies,
+          {
+            repositoryRoot: harness.repositoryRoot,
+            stdout: (value) => stdout.push(value),
+            stderr: (value) => stderr.push(value),
+          },
+        ),
+      ).toBe(1);
+      expect(stdout).toEqual([]);
+      expect(stderr).toEqual([`${JSON.stringify({ error: code })}\n`]);
+      expect(await readdir(harness.tfOnlyReleaseClaim)).toEqual(["claim.json"]);
+      expect(await pathExists(harness.tfOnlyReleaseOutput)).toBe(false);
       expect(await pathExists(harness.temporaryRoot)).toBe(false);
     } finally {
       await rm(harness.root, { force: true, recursive: true });

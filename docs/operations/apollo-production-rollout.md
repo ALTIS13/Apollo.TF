@@ -184,6 +184,19 @@ Pass flags directly after the script name. With pinned pnpm 10.33.2 a standalone
 `--` is forwarded to the operator and rejected as `invalid_arguments`; it is not
 a separator to add to these commands.
 
+Preparation failures keep the existing top-level `error` code and exit 1.
+An observed source-validation failure also includes a fixed `validationStage`
+in its stderr JSON, for example:
+`{"error":"source_validation_failed","validationStage":"platform_api_tests"}`.
+Both preparation profiles use the same mandatory gates, including vendored
+Platform checks. The stage identifies the failed gate, not its cause; child
+output and private values are never included. Unknown or unstaged failures omit
+the field. Consumers must tolerate this optional field; successful receipt and
+output schemas are unchanged. No failed preparation grants publication authority.
+Keep any consumed release ID closed and investigate before authorizing a new one;
+do not blindly retry preparation. See the
+[diagnostics contract](2026-09-21-tf-validation-diagnostics.md).
+
 ```powershell
 $approvedSourceCommit = '<ACCEPTED_TF_SOURCE_COMMIT>'
 $releaseId = '<NEW_UNIQUE_RELEASE_ID>'
