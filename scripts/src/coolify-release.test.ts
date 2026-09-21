@@ -1114,10 +1114,11 @@ describe("validateCoolifyRelease", () => {
     ["apollo-tf", "tf-integrations", "TF_INTEGRATIONS_SPOTIFY_CALLBACK_URI"],
     ["apollo-tf", "tf-search", "TF_SEARCH_HEARTBEAT_ALLOW_INSECURE_HTTP"],
     ["apollo-tf", "tf-download-worker", "TF_DOWNLOAD_HEARTBEAT_API_ORIGIN"],
-    ["apollo-tf", "tf-api", "APOLLO_PLATFORM_API_ORIGIN"],
-    ["apollo-tf", "tf-api", "APOLLO_PLATFORM_ISSUER"],
-    ["apollo-tf", "tf-api", "APOLLO_TF_BRIDGE_ALLOW_INTERNAL_HTTP"],
-    ["apollo-tf", "tf-api", "APOLLO_TF_CALLBACK_URL"],
+    // These fields also violate the atomic TF production binding.
+    ["apollo-tf", "tf-api", "APOLLO_PLATFORM_API_ORIGIN", true],
+    ["apollo-tf", "tf-api", "APOLLO_PLATFORM_ISSUER", true],
+    ["apollo-tf", "tf-api", "APOLLO_TF_BRIDGE_ALLOW_INTERNAL_HTTP", true],
+    ["apollo-tf", "tf-api", "APOLLO_TF_CALLBACK_URL", true],
     ["apollo-tf", "tf-api", "SERVER_URL"],
     ["apollo-tf", "tf-api", "WEB_URL"],
     ["apollo-tf", "tf-api", "TF_DOWNLOAD_WORKER_ORIGIN"],
@@ -1126,7 +1127,12 @@ describe("validateCoolifyRelease", () => {
     ["apollo-tf", "tf-admin", "APOLLO_API_UPSTREAM"],
   ] as const)(
     "rejects rendered environment drift for %s.%s.%s without leaking values",
-    (stackName, serviceName, environmentName) => {
+    (
+      stackName,
+      serviceName,
+      environmentName,
+      violatesProductionBinding: boolean = false,
+    ) => {
       const input = validInput();
       const hostileValue = `https://hostile.invalid/${environmentName.toLowerCase()}`;
       const stack = input.stacks.find(({ name }) => name === stackName)!;
@@ -1143,6 +1149,15 @@ describe("validateCoolifyRelease", () => {
             service: serviceName,
             stack: stackName,
           },
+          ...(violatesProductionBinding
+            ? [
+                {
+                  code: "tf_production_binding",
+                  service: "tf-api",
+                  stack: "apollo-tf",
+                },
+              ]
+            : []),
         ],
       });
 
