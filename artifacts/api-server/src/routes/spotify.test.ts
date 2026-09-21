@@ -607,6 +607,81 @@ describe("Spotify gateway routes", () => {
     },
   );
 
+  describe.each([49, 0])(
+    "liked-all normalized first page of %i tracks",
+    (firstPageCount) => {
+      it.each([
+        { outcome: "success", status: 200 },
+        { outcome: "provider_rejected", status: 502 },
+        { outcome: "unexpected_exception", status: 502 },
+      ] as const)(
+        "reaches the remaining page and handles $outcome",
+        async ({ outcome, status }) => {
+          const current = spotifyDependencies(async (command) => {
+            if (command.operation !== "spotify.liked.list") {
+              throw new Error("unexpected operation");
+            }
+            if (command.input.offset === 50) {
+              if (outcome === "provider_rejected") {
+                return failure(command, "provider_rejected");
+              }
+              if (outcome === "unexpected_exception") {
+                throw new Error("private-normalized-page-canary");
+              }
+            }
+            return success(command, {
+              tracks: Array.from(
+                { length: command.input.offset === 0 ? firstPageCount : 50 },
+                (_, index) => ({
+                  ...track,
+                  id: `track-${command.input.offset + index}`,
+                }),
+              ),
+              total: 100,
+              offset: command.input.offset,
+              limit: command.input.limit,
+            });
+          });
+          const baseUrl = await startSpotifyServer(current.dependencies);
+
+          const response = await request(baseUrl, "/spotify/liked-all");
+
+          expect(response.status).toBe(status);
+          if (outcome === "success") {
+            const body = (await response.json()) as {
+              tracks: { id: string }[];
+              total: number;
+            };
+            expect(body.total).toBe(firstPageCount + 50);
+            expect(body.tracks.map(({ id }) => id)).toEqual([
+              ...Array.from(
+                { length: firstPageCount },
+                (_, index) => `track-${index}`,
+              ),
+              ...Array.from(
+                { length: 50 },
+                (_, index) => `track-${50 + index}`,
+              ),
+            ]);
+          } else {
+            await expect(response.json()).resolves.toEqual({
+              error: "spotify_error",
+            });
+          }
+          expect(current.execute.mock.calls).toEqual(
+            [0, 50].map((offset) => [
+              {
+                accountId: ACCOUNT_ID,
+                operation: "spotify.liked.list",
+                input: { offset, limit: 50 },
+              },
+            ]),
+          );
+        },
+      );
+    },
+  );
+
   it("fails explicitly when liked-all exceeds replay admission capacity", async () => {
     let likedCalls = 0;
     const current = spotifyDependencies(async (command) => {

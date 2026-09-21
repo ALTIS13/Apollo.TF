@@ -346,8 +346,8 @@ export function createSpotifyRouter(
         }
         total = result.result.total;
         allTracks.push(...result.result.tracks.map(mapTrack));
+        // Null tracks are filtered out; advance by the raw page size, not retained tracks.
         offset += MAX_PAGE_SIZE;
-        if (result.result.tracks.length < MAX_PAGE_SIZE) break;
       } catch (error) {
         if (error instanceof TfIntegrationsUnavailableError) {
           response.status(503).json({ error: "spotify_unavailable" });
