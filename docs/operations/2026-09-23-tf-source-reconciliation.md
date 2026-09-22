@@ -19,7 +19,7 @@ The admin dashboard UI itself is **not** a successor-only source change: `artifa
 - TF owns its search, parser completeness/preview rejection, player, collections, provider credentials/status, admin presentation, and TF runtime/API. Existing parser checks and the dashboard tables are not missing features to reimplement.
 - Platform owns the common account/session authority boundary and entitlement/policy admission. TF must consume Platform decisions; it must not mint a second login, duplicate identity/entitlement tables, or infer module access from a downloaded client. Admin accounts/connections need the Platform overview and integrations connection contracts, not mock healthy rows.
 - GAP owns managed networking subscriptions, routing, nodes and telemetry; TF must not mirror that authority.
-- F's first runtime obligations and the exact operator sequence remain in `docs/operations/2026-09-21-tf-first-runtime-handoff.md` in the accepted handoff worktree. Root's current status is `Apollo.Platform/docs/operations/2026-09-08-unified-resume.md`: F closed/no replay; B staged/not invoked; Spotify/direct-preview successors source accepted/not released.
+- F's first runtime obligations and the exact operator sequence remain in `docs/operations/2026-09-21-tf-first-runtime-handoff.md` in the accepted handoff worktree. Root's current status is `Apollo.Platform/docs/operations/2026-09-08-unified-resume.md` and `2026-09-23-tf-presecret-b-native-attempt.md`: F closed/no replay; B consumed/no replay after one zero-stdin nonsecret invocation (supervisor exit 79, claim `4f23d27f`, proof `6f609c55`, `PRE_READY_FAILURE/HANDSHAKE/STATUS_EOF`, no READY or terminal, `cleanupComplete=false`); Spotify/direct-preview successors source accepted/not released. B is outcome-unknown, not publication or cleanup acceptance.
 
 ## New narrow source change
 
@@ -30,5 +30,5 @@ This does not prove real dashboard data is available. `admin` still needs an aut
 ## Next handoff
 
 1. Independently review this branch's two-file behavior change and focused test. Do not absorb it into the frozen F artifact.
-2. Complete the separate root-owned publication gate for F once, then validate F's first runtime per the accepted handoff. This branch does not alter that gate or its inputs.
+2. Root must first diagnose B's `HANDSHAKE/STATUS_EOF` source-only; A and B must not be replayed. Only a justified, separately reviewed fresh operation may reopen the publication gate. Validate F's first runtime per the accepted handoff only after that gate actually succeeds; this branch does not alter it or authorize publication.
 3. After first runtime, choose a new successor release explicitly containing the accepted Spotify, preview, expiry, and this admin truthfulness change. Validate provider `/v1/me`, playlist schema, rate-limit and ID durability, and the four expiry obligations against real PostgreSQL/provider sessions. Source tests alone do not close those items.
