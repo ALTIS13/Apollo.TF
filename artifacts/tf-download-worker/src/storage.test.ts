@@ -12,7 +12,8 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import type { FileHandle } from "node:fs/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DownloadStorage, DownloadStorageError } from "./storage";
 
 const JOB_ID = "11111111-1111-4111-8111-111111111111";
@@ -54,6 +55,7 @@ async function createForeignSymlink(
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
@@ -65,6 +67,8 @@ describe("DownloadStorage", () => {
     const storage = await DownloadStorage.create({ root });
 
     const output = await storage.begin(JOB_ID, "mp3");
+    const handle = (output as unknown as { operation: { handle: FileHandle } })
+      .operation.handle;
     expect(await listNames(root)).toEqual([`${JOB_ID}.mp3.part`]);
     await expect(storage.begin(JOB_ID, "mp3")).rejects.toThrow(
       "storage_unavailable",
@@ -86,6 +90,7 @@ describe("DownloadStorage", () => {
     expect(await readFile(path.join(root, result.storageKey), "utf8")).toBe(
       "audio",
     );
+    expect(handle.fd).toBe(-1);
   });
 
   it("rejects noncanonical or escaping keys before touching the owned root", async () => {
@@ -154,12 +159,24 @@ describe("DownloadStorage", () => {
     const storage = await DownloadStorage.create({ root });
     const output = await storage.begin(JOB_ID, "mp3");
     await output.write(Buffer.from("partial"));
+    const handle = (output as unknown as { operation: { handle: FileHandle } })
+      .operation.handle;
+    const close = handle.close.bind(handle);
+    let partialPresentAtClose: boolean | undefined;
+    vi.spyOn(handle, "close").mockImplementation(async () => {
+      partialPresentAtClose = (await listNames(root)).includes(
+        `${JOB_ID}.mp3.part`,
+      );
+      await close();
+    });
 
     await output.abort();
     await output.abort();
 
     expect(await listNames(root)).toEqual(["foreign.part"]);
     expect(await readFile(foreign, "utf8")).toBe("keep");
+    expect(partialPresentAtClose).toBe(false);
+    expect(handle.fd).toBe(-1);
   });
 
   it("startup removes only regular canonical owned partials", async () => {
@@ -377,6 +394,99 @@ describe("DownloadStorage", () => {
     ]);
   });
 
+  it.each(["commit", "abort"] as const)(
+    "does not adopt a partial after losing the original handle during %s",
+    async (action) => {
+      const root = await createRoot();
+      const storage = await DownloadStorage.create({ root });
+      const output = await storage.begin(JOB_ID, "mp3");
+      expect(await output.write(Buffer.from("owned"))).toBe(true);
+      const operation = (
+        output as unknown as {
+          operation: { handle: FileHandle | undefined };
+        }
+      ).operation;
+      await operation.handle!.close();
+      operation.handle = undefined;
+
+      const failure = await (
+        action === "commit" ? output.commit(metadata) : output.abort()
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(DownloadStorageError);
+      expect(failure).toMatchObject({
+        code: "storage_unavailable",
+        retriable: false,
+      });
+      expect(
+        await readFile(path.join(root, `${JOB_ID}.mp3.part`), "utf8"),
+      ).toBe("owned");
+      expect(await listNames(root)).toEqual([`${JOB_ID}.mp3.part`]);
+    },
+  );
+
+  it("retains the original handle when a partial is replaced at publication", async () => {
+    const root = await createRoot();
+    const partPath = path.join(root, `${JOB_ID}.mp3.part`);
+    const movedPath = path.join(root, "original-moved");
+    let handle: FileHandle;
+    let openAtPublication: boolean | undefined;
+    const storage = await DownloadStorage.create(
+      { root },
+      {
+        beforePublish: async () => {
+          openAtPublication = handle.fd !== -1;
+          // Retain the old inode on disk too, so fixture identity never depends on reuse.
+          await rename(partPath, movedPath);
+          await writeFile(partPath, "other");
+        },
+      },
+    );
+    const output = await storage.begin(JOB_ID, "mp3");
+    handle = (output as unknown as { operation: { handle: FileHandle } })
+      .operation.handle;
+    expect(await output.write(Buffer.from("owned"))).toBe(true);
+
+    const failure = await output
+      .commit(metadata)
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(DownloadStorageError);
+    expect(failure).toMatchObject({
+      code: "storage_unavailable",
+      retriable: false,
+    });
+    expect(await readFile(partPath, "utf8")).toBe("other");
+    expect(await readFile(movedPath, "utf8")).toBe("owned");
+    expect(await listNames(root)).not.toContain(`${JOB_ID}.mp3`);
+    expect(openAtPublication).toBe(true);
+    expect(handle.fd).toBe(-1);
+  });
+
+  it("preserves a same-sized replacement when abort still holds the original handle", async () => {
+    const root = await createRoot();
+    const storage = await DownloadStorage.create({ root });
+    const output = await storage.begin(JOB_ID, "mp3");
+    const handle = (output as unknown as { operation: { handle: FileHandle } })
+      .operation.handle;
+    expect(await output.write(Buffer.from("owned"))).toBe(true);
+    const partPath = path.join(root, `${JOB_ID}.mp3.part`);
+    const movedPath = path.join(root, "original-moved");
+    await rename(partPath, movedPath);
+    await writeFile(partPath, "other");
+
+    const failure = await output.abort().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(DownloadStorageError);
+    expect(failure).toMatchObject({
+      code: "storage_unavailable",
+      retriable: false,
+    });
+    expect(await readFile(partPath, "utf8")).toBe("other");
+    expect(await readFile(movedPath, "utf8")).toBe("owned");
+    expect(handle.fd).toBe(-1);
+  });
+
   it("does not unlink a same-sized replacement partial during failed commit cleanup", async () => {
     const root = await createRoot();
     const storage = await DownloadStorage.create({ root });
@@ -494,12 +604,19 @@ describe("DownloadStorage", () => {
     const root = await createRoot();
     const movedRoot = `${root}-moved`;
     roots.push(movedRoot);
+    const stagingRoot = await createRoot();
+    const partName = `${JOB_ID}.mp3.part`;
     const storage = await DownloadStorage.create(
       { root },
       {
         beforePublish: async () => {
+          // NTFS cannot rename a directory containing an open file. Keep the
+          // original file/handle alive outside it while replacing the directory.
+          const stagedPart = path.join(stagingRoot, partName);
+          await rename(path.join(root, partName), stagedPart);
           await rename(root, movedRoot);
           await mkdir(root, { mode: 0o700 });
+          await rename(stagedPart, path.join(movedRoot, partName));
         },
       },
     );

@@ -12,11 +12,12 @@ import {
 } from "./tf-session-client";
 
 const CSRF_TOKEN = "c".repeat(42) + "A";
+const TICKET = "a".repeat(42) + "A";
 const session = {
   accountId: "10000000-0000-4000-8000-000000000001",
   installationId: "20000000-0000-4000-8000-000000000002",
   entitlements: ["tf.search", "tf.downloads"],
-  expiresAt: "2099-01-01T00:00:00.000Z",
+  expiresAt: new Date(Date.now() + 300_000).toISOString(),
   csrfToken: CSRF_TOKEN,
 };
 
@@ -50,7 +51,7 @@ describe("TF browser session client", () => {
       expect.objectContaining({ method: "GET", credentials: "include" }),
     );
     expect(() => tfRequestInit({ method: "POST" })).toThrowError(
-      expect.objectContaining({ code: "csrf_unavailable" }),
+      expect.objectContaining({ status: 401, code: "unauthorized" }),
     );
 
     commitTfSessionSecurityState(fetchedSession);
@@ -69,9 +70,9 @@ describe("TF browser session client", () => {
     unsubscribe();
   });
 
-  it("refuses unsafe requests before fetch when CSRF is absent", async () => {
+  it("refuses unsafe requests before fetch without a committed session", async () => {
     await expect(tfFetch("/tracks/play", { method: "POST" })).rejects.toMatchObject({
-      code: "csrf_unavailable",
+      status: 401, code: "unauthorized",
     });
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -82,21 +83,21 @@ describe("TF browser session client", () => {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ticket: "a".repeat(43) }), {
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ticket: TICKET }), {
         status: 201,
         headers: { "Content-Type": "application/json" },
       }));
 
     await fetchAndCommitSession();
-    await expect(createWebSocketTicket()).resolves.toBe("a".repeat(43));
+    await expect(createWebSocketTicket()).resolves.toBe(TICKET);
     expect(fetch).toHaveBeenLastCalledWith(
       expect.stringMatching(/\/api\/ws\/tickets$/),
       expect.objectContaining({ method: "POST", credentials: "include" }),
     );
     const request = vi.mocked(fetch).mock.calls.at(-1)?.[1];
     expect(request?.body).toBeUndefined();
-    expect(buildTfWebSocketUrl("a".repeat(43))).toMatch(
-      /^wss?:\/\/[^?]+\/api\/ws\?ticket=a{43}$/,
+    expect(buildTfWebSocketUrl(TICKET)).toMatch(
+      /^wss?:\/\/[^?]+\/api\/ws\?ticket=a{42}A$/,
     );
   });
 
@@ -105,17 +106,20 @@ describe("TF browser session client", () => {
     [403, "module_access_denied", "forbidden"],
     [503, "policy_unavailable", "unavailable"],
   ])("classifies status %s and code %s", async (status, code, kind) => {
+    commitTfSessionSecurityState(session);
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ error: code }), {
       status,
       headers: { "Content-Type": "application/json" },
     }));
 
-    const error = await tfFetch("/auth/me").catch((value: unknown) => value);
+    const error = await tfFetch("/tracks/recommendations").catch((value: unknown) => value);
+    expect(fetch).toHaveBeenCalledOnce();
     expect(error).toBeInstanceOf(TfApiError);
     expect(error).toMatchObject({ status, code, kind });
   });
 
   it("normalizes a successful response body read failure", async () => {
+    commitTfSessionSecurityState(session);
     vi.mocked(fetch).mockResolvedValue({
       status: 200,
       ok: true,
@@ -123,7 +127,7 @@ describe("TF browser session client", () => {
       json: vi.fn().mockRejectedValue(new Error("body read failed")),
     } as unknown as Response);
 
-    await expect(tfFetch("/auth/me")).rejects.toMatchObject({
+    await expect(tfFetch("/tracks/recommendations")).rejects.toMatchObject({
       status: 0,
       code: "transport_unavailable",
       kind: "transport",
@@ -135,19 +139,31 @@ describe("TF browser session client", () => {
     [403, "forbidden"],
     [503, "unavailable"],
   ])("classifies malformed JSON on status %s", async (status, kind) => {
+    commitTfSessionSecurityState(session);
     vi.mocked(fetch).mockResolvedValue(new Response("{", {
       status,
       headers: { "Content-Type": "application/json" },
     }));
 
-    await expect(tfFetch("/auth/me")).rejects.toMatchObject({
+    await expect(tfFetch("/tracks/recommendations")).rejects.toMatchObject({
       status,
       code: "invalid_response",
       kind,
     });
   });
 
-  it("clears CSRF after a confirmed 401", async () => {
+  it.each([
+    ["/spotify/liked", "unauthorized"],
+    ["/spotify/status", "not_connected"],
+    ["/tracks/recommendations", "not_connected"],
+  ])("does not treat %s %s as a Spotify library disconnection", async (path, code) => {
+    commitTfSessionSecurityState(session);
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ error: code }), { status: 401 }));
+    await expect(tfFetch(path)).rejects.toMatchObject({ kind: "unauthenticated" });
+    expect(() => tfRequestInit()).toThrow();
+  });
+
+  it("blocks further protected requests after a confirmed 401", async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(new Response(JSON.stringify(session), {
         status: 200,
@@ -159,9 +175,9 @@ describe("TF browser session client", () => {
       }));
 
     await fetchAndCommitSession();
-    await expect(tfFetch("/auth/me")).rejects.toMatchObject({ status: 401 });
+    await expect(tfFetch("/tracks/recommendations")).rejects.toMatchObject({ status: 401 });
     await expect(tfFetch("/tracks/play", { method: "POST" })).rejects.toMatchObject({
-      code: "csrf_unavailable",
+      status: 401, code: "unauthorized",
     });
     expect(fetch).toHaveBeenCalledTimes(2);
   });
@@ -214,7 +230,7 @@ describe("TF browser session client", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("clears CSRF when a core policy 503 publishes revalidation", async () => {
+  it("blocks protected activity after a core policy 503", async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(new Response(JSON.stringify(session), {
         status: 200,
@@ -226,13 +242,14 @@ describe("TF browser session client", () => {
       }));
 
     await fetchAndCommitSession();
-    await expect(tfFetch("/auth/me")).rejects.toMatchObject({ status: 503 });
+    await expect(tfFetch("/tracks/recommendations")).rejects.toMatchObject({ status: 503 });
     expect(() => tfRequestInit({ method: "POST" })).toThrowError(
-      expect.objectContaining({ code: "csrf_unavailable" }),
+      expect.objectContaining({ status: 503, code: "policy_unavailable" }),
     );
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("publishes forced revalidation for pre-open WebSocket unavailability", async () => {
+  it("publishes suspension for pre-open WebSocket unavailability", async () => {
     const { reportTfAuthError, subscribeTfAuthSecurityEvents } = await import("./tf-session-client");
     const listener = vi.fn();
     const unsubscribe = subscribeTfAuthSecurityEvents(listener);
@@ -242,7 +259,7 @@ describe("TF browser session client", () => {
     )).toBe(true);
     expect(listener).toHaveBeenCalledOnce();
     expect(listener).toHaveBeenCalledWith(expect.objectContaining({
-      type: "revalidate",
+      type: "unavailable",
       error: expect.objectContaining({ code: "websocket_unavailable" }),
     }));
 

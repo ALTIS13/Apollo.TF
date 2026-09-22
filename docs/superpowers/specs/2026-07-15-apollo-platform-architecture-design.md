@@ -1,7 +1,14 @@
 # Apollo Platform Architecture Design
 
 **Date:** 2026-07-15
-**Status:** Approved
+**Status:** Partially superseded on 2026-08-24
+
+> **2026-08-24 ownership update:** The unified Apollo identity, module, launch,
+> status, and download boundaries in
+> `2026-08-24-apollo-tf-unified-platform-handoff-design.md` supersede this
+> document where it assigns identity/session authority to Platform or models TF
+> capabilities as top-level module entitlements. Runtime isolation, PKCE, RLS,
+> audit, container, and fail-closed requirements remain in force.
 
 ## Context
 
@@ -13,7 +20,10 @@ The first release is a closed web beta. Android is deferred until the web platfo
 
 Use a hybrid platform:
 
-- Apollo Platform owns identity, registration, invitations, product catalog, release metadata, changelog, and module entitlements.
+- Supabase Auth owns identity and source sessions. Apollo Platform owns the
+  mapped Apollo account policy, registration mode, invitations, product
+  catalog, release metadata, changelog, module entitlements/capabilities,
+  release/download admission, and audit.
 - Apollo TF owns music data and independently deployable search, integration, and download workers.
 - Apollo GA remains a separate runtime. The portal may display a sanitized project/version summary, but Platform and TF cannot control or become a dependency of GA.
 - Each product validates access on its server. A downloaded client or known endpoint cannot bypass an account entitlement.
@@ -38,9 +48,11 @@ This gives the beta fewer moving parts than full microservices while retaining s
 ### Apollo Platform
 
 - `platform-web`: portal and account UI.
-- `platform-api`: identity, authorization, registration, invitations, policy, catalog, and audit API.
+- `platform-api`: Supabase session adapter, authorization, registration policy,
+  invitations, module policy, catalog, admission, and audit API.
 - `platform-postgres`: account and platform data.
-- `platform-redis`: sessions, one-time authorization state, rate limits, and bounded revocation cache.
+- `platform-redis`: one-time authorization state, rate limits, and bounded
+  policy/revocation cache; it is not the source identity-session authority.
 - `admin-web`: the existing operator dashboard extended with registration, account, entitlement, project, release, and invite management.
 
 ### Apollo TF
@@ -57,8 +69,10 @@ Every independent module publishes the already specified signed heartbeat to `tf
 
 ## Authentication Flow
 
-1. `tf-web` starts Authorization Code + PKCE with `api.apollot.ru`.
-2. Platform binds the transaction-specific `state`, `code_challenge`, browser session, client ID, and exact redirect URI.
+1. `tf-web` starts Authorization Code + PKCE with `api.apollot.ru` after
+   Platform validates the Supabase source session.
+2. Platform binds the transaction-specific `state`, `code_challenge`, mapped
+   Apollo account, Platform installation ID, client ID, and exact redirect URI.
 3. Platform returns a short-lived one-time code to the registered TF callback.
 4. `tf-api` exchanges the code using the verifier and confidential client authentication.
 5. Platform returns a short-lived signed assertion containing `account_id`, account status, audience, installation ID, and entitlements.
@@ -69,7 +83,12 @@ The browser never stores long-lived bearer or provider tokens. The flow follows 
 
 ## Data Ownership
 
-Platform and TF use separate PostgreSQL databases and credentials. Platform is authoritative for identity and entitlements. TF stores the stable Platform `account_id` on user-owned rows but has no cross-database foreign key. Provider credentials are encrypted at rest with a runtime key and never returned to the browser after acceptance.
+Platform and TF use separate PostgreSQL databases and credentials. Supabase Auth
+is authoritative for identity/source session; Platform is authoritative for the
+mapped Apollo account policy, installation identity, entitlements, capabilities,
+and admission. TF stores the stable Platform `account_id` on user-owned rows but
+has no cross-database foreign key. Provider credentials are encrypted at rest
+with a runtime key and never returned to the browser after acceptance.
 
 Legacy `session_id` data remains isolated until an authenticated user explicitly confirms a one-time migration. The migration is audited and idempotent; ambiguous legacy identities are not merged automatically.
 

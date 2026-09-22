@@ -6,6 +6,8 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./collectionErrorResponse";
+export * from "./collectionErrorResponseError";
 export * from "./downloadErrorResponse";
 export * from "./downloadErrorResponseError";
 export * from "./downloadJob";
@@ -23,6 +25,11 @@ export * from "./downloadQueueTrack";
 export * from "./downloadResponse";
 export * from "./errorResponse";
 export * from "./healthStatus";
+export * from "./likedTrack";
+export * from "./likedTrackMutationResponse";
+export * from "./likedTrackPage";
+export * from "./listLikedTracksParams";
+export * from "./saveLikedTrackRequest";
 export * from "./searchRequest";
 export * from "./searchRequestMode";
 export * from "./searchRequestSourcesItem";

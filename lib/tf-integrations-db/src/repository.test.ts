@@ -334,6 +334,92 @@ describe("PostgresProviderAccountRepository", () => {
     });
   });
 
+  it.each([0, 1])(
+    "conditionally deletes only invalid_grant credentials matching both generation and envelope (%s rows)",
+    async (rowCount) => {
+      const pool = new RepositoryPoolDouble();
+      pool.rowCount = rowCount;
+      const expected = {
+        generation: firstGeneration,
+        tokenEnvelope: envelope(),
+      };
+      await expect(
+        repository(pool).delete(
+          accountId,
+          "spotify",
+          commandContext(),
+          expected,
+        ),
+      ).resolves.toBe(rowCount === 1);
+      const query = findQuery(
+        pool,
+        /delete from apollo_tf_integrations\.provider_accounts/i,
+      );
+      expect(query.text).toMatch(
+        /where account_id = \$1 and provider = \$2\s+and generation = \$3::uuid and token_envelope = \$4::jsonb/i,
+      );
+      expect(query.values).toEqual([
+        accountId,
+        "spotify",
+        firstGeneration,
+        JSON.stringify(expected.tokenEnvelope),
+      ]);
+    },
+  );
+
+  it("looks up at most one hundred canonical account connection summaries", async () => {
+    const pool = new RepositoryPoolDouble();
+    const secondAccountId = "7a28499b-9603-489a-89b0-e57d72ccaf23";
+    const updatedAt = new Date("2026-08-10T12:00:00.000Z");
+    pool.rows = [
+      {
+        account_id: accountId,
+        provider: "spotify",
+        display_name: "Spotify Listener",
+        updated_at: updatedAt,
+      },
+      {
+        account_id: secondAccountId,
+        provider: "yandex",
+        display_name: "Yandex Listener",
+        updated_at: updatedAt,
+      },
+    ];
+
+    await expect(
+      repository(pool).listAdminConnectionSummaries([accountId, secondAccountId]),
+    ).resolves.toEqual([
+      {
+        accountId,
+        provider: "spotify",
+        displayName: "Spotify Listener",
+        updatedAt,
+      },
+      {
+        accountId: secondAccountId,
+        provider: "yandex",
+        displayName: "Yandex Listener",
+        updatedAt,
+      },
+    ]);
+    expect(pool.queries[0]).toEqual({
+      text: expect.stringMatching(
+        /select account_id, provider, display_name, updated_at[\s\S]*where account_id = any\(\$1::uuid\[\]\)/i,
+      ),
+      values: [[accountId, secondAccountId]],
+    });
+    expect(pool.queries[0]?.text).not.toMatch(
+      /token_envelope|provider_user_id|provider_login/i,
+    );
+    await expect(
+      repository(pool).listAdminConnectionSummaries(
+        Array.from({ length: 101 }, (_, index) =>
+          `7a28499b-9603-489a-89b0-${String(index).padStart(12, "0")}`,
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "constraint_violation" });
+  });
+
   it("refreshes only the exact loaded generation and can never insert a missing row", async () => {
     const pool = new RepositoryPoolDouble();
     const target = repository(pool);

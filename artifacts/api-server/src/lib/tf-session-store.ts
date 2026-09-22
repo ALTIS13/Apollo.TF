@@ -9,6 +9,8 @@ import {
 } from "@workspace/platform-contract";
 import { z } from "zod";
 import type Redis from "ioredis";
+import { TfFamilyStore, redisFamilyPersistence } from "./tf-family-store.js";
+export { TfFamilyStore } from "./tf-family-store.js";
 
 const TRANSACTION_TTL_SECONDS = 300;
 const PROVIDER_OAUTH_STATE_TTL_SECONDS = 300;
@@ -27,6 +29,7 @@ const providerOAuthBindingSchema = z
 
 const transactionInputSchema = z
   .object({
+    familyHandle: z.string().regex(OPAQUE_PATTERN).optional(),
     state: z.string().regex(OPAQUE_PATTERN),
     codeVerifier: z.string().regex(/^[A-Za-z0-9._~-]{43,128}$/),
     nonce: z.string().regex(OPAQUE_PATTERN),
@@ -366,10 +369,13 @@ function validConcurrentRefresh(
 }
 
 export class TfSessionStore {
+  readonly families: TfFamilyStore;
   constructor(
     private readonly redis: StrictRedisClient,
     private readonly now: () => number = Date.now,
-  ) {}
+  ) {
+    this.families = new TfFamilyStore(redisFamilyPersistence(redis), now);
+  }
 
   async createTransaction(
     input: z.input<typeof transactionInputSchema>,

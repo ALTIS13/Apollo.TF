@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { searchTracks } from "@workspace/api-client-react";
-import type { SearchRequest, TrackType, TrackResult } from "@workspace/api-client-react";
+import type { SearchRequest, TrackType } from "@workspace/api-client-react";
 import { TrackCard } from "@/components/TrackCard";
-import { reportTfAuthError, tfRequestInit } from "@/lib/tf-session-client";
-import { Search, Music2, Loader2, Sparkles } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { SaveLikedTrackButton } from "@/components/LikedCollection";
+import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, reportTfAuthError, TfApiError, tfRequestInit } from "@/lib/tf-session-client";
+import { Search, Music2, Loader2, AlertCircle } from "lucide-react";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 
 type FilterType = TrackType | "all";
 type SourceKey = "yt" | "sc" | "bc" | "dz";
@@ -15,11 +16,11 @@ type HomeSearchRequest = SearchRequest & {
   sources?: SourceKey[];
 };
 
-const SOURCE_INFO: { key: SourceKey; label: string; color: string; dot: string }[] = [
-  { key: "yt", label: "YouTube", color: "text-red-400 bg-red-400/10 border-red-400/30", dot: "bg-red-400" },
-  { key: "sc", label: "SoundCloud", color: "text-orange-400 bg-orange-400/10 border-orange-400/30", dot: "bg-orange-400" },
-  { key: "bc", label: "Bandcamp", color: "text-cyan-400 bg-cyan-400/10 border-cyan-400/30", dot: "bg-cyan-400" },
-  { key: "dz", label: "Deezer", color: "text-purple-400 bg-purple-400/10 border-purple-400/30", dot: "bg-purple-400" },
+const SOURCE_INFO: { key: SourceKey; label: string; dot: string }[] = [
+  { key: "yt", label: "YouTube", dot: "bg-red-400" },
+  { key: "sc", label: "SoundCloud", dot: "bg-orange-400" },
+  { key: "bc", label: "Bandcamp", dot: "bg-cyan-400" },
+  { key: "dz", label: "Deezer", dot: "bg-purple-400" },
 ];
 
 function loadSourcePrefs(): { mode: SourceMode; sources: Record<SourceKey, boolean> } {
@@ -35,16 +36,23 @@ function saveSourcePrefs(mode: SourceMode, sources: Record<SourceKey, boolean>) 
 }
 
 export default function Home() {
+  const reduceMotion = useReducedMotion();
   const params = new URLSearchParams(window.location.search);
   const [artist, setArtist] = useState(params.get("artist") ?? "");
   const [title, setTitle] = useState(params.get("title") ?? "");
   const [activeFilter, setActiveFilter] = useState<FilterType>("all");
   const [hasSearched, setHasSearched] = useState(false);
 
-  const [sourceMode, setSourceMode] = useState<SourceMode>(() => loadSourcePrefs().mode);
-  const [sourcesState, setSourcesState] = useState<Record<SourceKey, boolean>>(() => loadSourcePrefs().sources);
+  const [sourceMode, setSourceMode] = useState<SourceMode>(
+    () => loadSourcePrefs().mode,
+  );
+  const [sourcesState, setSourcesState] = useState<Record<SourceKey, boolean>>(
+    () => loadSourcePrefs().sources,
+  );
 
-  const enabledSources = (Object.keys(sourcesState) as SourceKey[]).filter((k) => sourcesState[k]);
+  const enabledSources = (Object.keys(sourcesState) as SourceKey[]).filter(
+    (k) => sourcesState[k],
+  );
   const isAllEnabled = enabledSources.length === 4;
 
   const toggleSource = useCallback((key: SourceKey) => {
@@ -58,22 +66,46 @@ export default function Home() {
   }, []);
 
   const setAutoMode = useCallback(() => {
-    const next = { yt: true, sc: true, bc: true, dz: true } as Record<SourceKey, boolean>;
+    const next = { yt: true, sc: true, bc: true, dz: true } as Record<
+      SourceKey,
+      boolean
+    >;
     setSourceMode("auto");
     setSourcesState(next);
     saveSourcePrefs("auto", next);
   }, []);
 
   const searchMutation = useMutation({
-    mutationFn: (data: SearchRequest) =>
-      searchTracks(data, tfRequestInit({ method: "POST" })),
-    onError: (error) => {
-      reportTfAuthError(error);
+    mutationFn: async (data: SearchRequest) => {
+      const generation = captureTfSecurityGeneration();
+      try {
+        const result = await searchTracks(
+          data,
+          tfRequestInit({ method: "POST" }),
+        );
+        if (!isCurrentTfSecurityGeneration(generation)) {
+          throw new TfApiError(
+            0,
+            "stale_response",
+            "invalid",
+            false,
+            generation,
+          );
+        }
+        return result;
+      } catch (error) {
+        if (isCurrentTfSecurityGeneration(generation)) reportTfAuthError(error);
+        throw error;
+      }
     },
   });
 
   function buildSearchData(a: string, t: string): HomeSearchRequest {
-    if (sourceMode === "manual" && enabledSources.length > 0 && enabledSources.length < 4) {
+    if (
+      sourceMode === "manual" &&
+      enabledSources.length > 0 &&
+      enabledSources.length < 4
+    ) {
       return { artist: a, title: t, mode: "manual", sources: enabledSources };
     }
     return { artist: a, title: t, mode: "auto" };
@@ -93,243 +125,220 @@ export default function Home() {
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!artist.trim() || !title.trim()) return;
-    
+
     setHasSearched(true);
     searchMutation.mutate(buildSearchData(artist, title));
   };
 
   const results = searchMutation.data?.results || [];
-  
-  const filteredResults = activeFilter === "all" 
-    ? results 
-    : results.filter(track => track.type === activeFilter);
 
-  const filterOptions: { id: FilterType; label: string; color?: string }[] = [
+  const filteredResults =
+    activeFilter === "all"
+      ? results
+      : results.filter((track) => track.type === activeFilter);
+
+  const filterOptions: { id: FilterType; label: string }[] = [
     { id: "all", label: "All Types" },
-    { id: "original", label: "Originals", color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/20" },
-    { id: "remix", label: "Remixes", color: "text-purple-400 bg-purple-400/10 border-purple-400/20" },
-    { id: "live", label: "Live", color: "text-orange-400 bg-orange-400/10 border-orange-400/20" },
-    { id: "cover", label: "Covers", color: "text-blue-400 bg-blue-400/10 border-blue-400/20" },
+    { id: "original", label: "Originals" },
+    { id: "remix", label: "Remixes" },
+    { id: "live", label: "Live" },
+    { id: "cover", label: "Covers" },
   ];
 
   return (
-    <div className="min-h-screen pb-32">
-      {/* Hero Section */}
-      <div className="relative overflow-hidden border-b border-white/5 bg-black/20">
-        <div className="absolute inset-0 z-0">
-          <img 
-            src={`${import.meta.env.BASE_URL}images/hero-bg.png`} 
-            alt="Hero background" 
-            className="w-full h-full object-cover opacity-30 mix-blend-screen"
-          />
-          <div className="absolute inset-0 bg-gradient-to-b from-transparent to-background" />
-        </div>
-        
-        <div className="relative z-10 max-w-5xl mx-auto px-4 sm:px-6 py-20 sm:py-32 flex flex-col items-center text-center">
-          <motion.div 
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-sm font-medium text-muted-foreground mb-6 backdrop-blur-md"
+    <div className="min-h-full bg-[#09090b] pb-8">
+      <header className="border-b border-white/10">
+        <div className="mx-auto max-w-5xl px-4 py-5 sm:px-6">
+          <h1 className="mb-4 text-xl font-semibold tracking-normal text-white">
+            Apollo TF <span className="font-normal text-white/40">/ Поиск</span>
+          </h1>
+          <form
+            onSubmit={handleSearch}
+            aria-label="Поиск музыки"
+            className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end"
           >
-            <Sparkles className="w-4 h-4 text-primary" />
-            Cross-Platform Music Discovery
-          </motion.div>
-          
-          <motion.h1 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="text-4xl sm:text-6xl lg:text-7xl font-display font-bold text-white mb-6 tracking-tight"
-          >
-            Find any track. <br className="hidden sm:block" />
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-accent">
-              Play everywhere.
-            </span>
-          </motion.h1>
-          
-          <motion.p 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="text-lg sm:text-xl text-muted-foreground max-w-2xl mb-12"
-          >
-            Search YouTube and SoundCloud simultaneously. Discover originals, rare remixes, live performances, and covers instantly.
-          </motion.p>
-
-          <motion.form 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            onSubmit={handleSearch} 
-            className="w-full max-w-3xl glass-card p-2 sm:p-3 rounded-2xl sm:rounded-full flex flex-col sm:flex-row gap-3"
-          >
-            <div className="flex-1 flex items-center bg-secondary/50 rounded-xl sm:rounded-full px-4 border border-transparent focus-within:border-primary/50 focus-within:bg-secondary transition-all h-14">
-              <Music2 className="w-5 h-5 text-muted-foreground shrink-0" />
-              <input 
-                type="text" 
-                placeholder="Artist name..." 
-                value={artist}
-                onChange={(e) => setArtist(e.target.value)}
-                className="w-full bg-transparent border-none focus:outline-none text-foreground px-3 placeholder:text-muted-foreground h-full"
-                required
-              />
-            </div>
-            
-            <div className="w-px h-8 bg-white/10 hidden sm:block self-center" />
-            
-            <div className="flex-1 flex items-center bg-secondary/50 rounded-xl sm:rounded-full px-4 border border-transparent focus-within:border-primary/50 focus-within:bg-secondary transition-all h-14">
-              <Search className="w-5 h-5 text-muted-foreground shrink-0" />
-              <input 
-                type="text" 
-                placeholder="Track title..." 
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full bg-transparent border-none focus:outline-none text-foreground px-3 placeholder:text-muted-foreground h-full"
-                required
-              />
-            </div>
-
-            <button 
+            <label className="min-w-0 text-xs font-medium text-muted-foreground">
+              Исполнитель
+              <span className="mt-1.5 flex h-11 items-center gap-2 rounded-lg border border-white/15 bg-secondary/50 px-3 focus-within:border-primary">
+                <Music2 className="h-4 w-4 shrink-0" />
+                <input
+                  type="text"
+                  placeholder="Artist name..."
+                  value={artist}
+                  onChange={(e) => setArtist(e.target.value)}
+                  className="h-full w-full min-w-0 bg-transparent text-sm text-foreground outline-none"
+                  required
+                />
+              </span>
+            </label>
+            <label className="min-w-0 text-xs font-medium text-muted-foreground">
+              Название трека
+              <span className="mt-1.5 flex h-11 items-center gap-2 rounded-lg border border-white/15 bg-secondary/50 px-3 focus-within:border-primary">
+                <Search className="h-4 w-4 shrink-0" />
+                <input
+                  type="text"
+                  placeholder="Track title..."
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  className="h-full w-full min-w-0 bg-transparent text-sm text-foreground outline-none"
+                  required
+                />
+              </span>
+            </label>
+            <button
               type="submit"
               disabled={searchMutation.isPending}
-              className="h-14 px-8 rounded-xl sm:rounded-full font-bold bg-primary text-primary-foreground shadow-lg shadow-primary/25 hover:shadow-primary/40 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none transition-all duration-200 shrink-0"
+              className="flex h-11 min-w-32 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/85 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:opacity-50"
             >
               {searchMutation.isPending ? (
-                <span className="flex items-center gap-2">
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  Searching
-                </span>
+                <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
               ) : (
-                "Search"
+                <Search className="h-4 w-4" />
               )}
+              {searchMutation.isPending ? "Поиск..." : "Найти"}
             </button>
-          </motion.form>
-
-          {/* Source Filter Chips */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.4 }}
-            className="flex flex-wrap items-center justify-center gap-2 mt-6"
-          >
-            <button
-              onClick={setAutoMode}
-              className={`px-4 py-2 rounded-full text-sm font-semibold border transition-all duration-200 ${
-                isAllEnabled
-                  ? "bg-primary/15 border-primary/40 text-primary"
-                  : "bg-white/5 border-white/10 text-muted-foreground hover:bg-white/10"
-              }`}
-            >
-              Авто
-            </button>
-            {SOURCE_INFO.map((s) => (
+          </form>
+          <fieldset className="mt-4">
+            <legend className="mb-2 text-xs text-muted-foreground">
+              Источники
+            </legend>
+            <div className="flex flex-wrap items-center gap-2">
               <button
-                key={s.key}
-                onClick={() => toggleSource(s.key)}
-                className={`px-4 py-2 rounded-full text-sm font-semibold border transition-all duration-200 flex items-center gap-2 ${
-                  sourcesState[s.key]
-                    ? s.color + " border"
-                    : "bg-white/5 border-white/10 text-muted-foreground hover:bg-white/10"
-                }`}
+                type="button"
+                onClick={setAutoMode}
+                aria-pressed={isAllEnabled}
+                className={`h-9 rounded-lg border px-3 text-xs font-medium focus-visible:outline-2 focus-visible:outline-white ${isAllEnabled ? "border-white/25 bg-white/10 text-white" : "border-white/10 text-muted-foreground"}`}
               >
-                <span className={`w-2 h-2 rounded-full ${sourcesState[s.key] ? s.dot : "bg-white/30"}`} />
-                {s.label}
+                Авто
               </button>
-            ))}
-          </motion.div>
-        </div>
-      </div>
-
-      {/* Main Content Area */}
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-12">
-        {hasSearched && (
-          <div className="mb-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
-            <h2 className="text-2xl font-bold text-foreground">
-              {searchMutation.isPending ? "Searching..." : searchMutation.data ? "Results" : ""}
-            </h2>
-            
-            {!searchMutation.isPending && results.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2 p-1.5 glass-card rounded-2xl w-full sm:w-auto">
-                {filterOptions.map(opt => (
-                  <button
-                    key={opt.id}
-                    onClick={() => setActiveFilter(opt.id)}
-                    className={`
-                      px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-200
-                      ${activeFilter === opt.id 
-                        ? opt.color || 'bg-white text-black shadow-md' 
-                        : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
-                      }
-                    `}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {searchMutation.isPending && (
-          <div className="space-y-4">
-            {[...Array(5)].map((_, i) => (
-              <div key={i} className="glass-card rounded-2xl p-5 flex items-center gap-6 animate-pulse">
-                <div className="w-20 h-20 rounded-xl bg-secondary flex-shrink-0" />
-                <div className="flex-1 space-y-3">
-                  <div className="h-5 bg-secondary rounded-full w-1/3" />
-                  <div className="h-4 bg-secondary rounded-full w-1/4" />
-                </div>
-                <div className="w-12 h-12 rounded-full bg-secondary" />
-              </div>
-            ))}
-          </div>
-        )}
-
-        {!searchMutation.isPending && searchMutation.isError && (
-          <div className="text-center py-20 px-4 glass-card rounded-3xl border-destructive/20">
-            <div className="w-16 h-16 rounded-full bg-destructive/10 flex items-center justify-center mx-auto mb-6">
-              <Sparkles className="w-8 h-8 text-destructive" />
+              {SOURCE_INFO.map((source) => (
+                <label
+                  key={source.key}
+                  className="flex h-9 cursor-pointer items-center gap-2 rounded-lg border border-white/10 px-3 text-xs text-muted-foreground has-[:checked]:border-white/25 has-[:checked]:text-foreground"
+                >
+                  <input
+                    type="checkbox"
+                    checked={sourcesState[source.key]}
+                    onChange={() => toggleSource(source.key)}
+                    className="h-3.5 w-3.5 accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                  />
+                  <span className={`h-1.5 w-1.5 rounded-full ${source.dot}`} />
+                  {source.label}
+                </label>
+              ))}
             </div>
-            <h3 className="text-xl font-bold text-foreground mb-2">Search Failed</h3>
-            <p className="text-muted-foreground">We couldn't find tracks right now. Please try again later.</p>
+          </fieldset>
+        </div>
+      </header>
+
+      <section
+        aria-label="Результаты поиска"
+        aria-busy={searchMutation.isPending}
+        className="mx-auto max-w-5xl px-4 py-5 sm:px-6"
+      >
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-base font-semibold tracking-normal text-foreground">
+            Результаты{" "}
+            {searchMutation.data && !searchMutation.isPending && (
+              <span className="ml-1 font-normal tabular-nums text-muted-foreground">
+                {filteredResults.length}
+              </span>
+            )}
+          </h2>
+          {!searchMutation.isPending && results.length > 0 && (
+            <div
+              role="group"
+              aria-label="Тип записи"
+              className="flex flex-wrap gap-1"
+            >
+              {filterOptions.map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => setActiveFilter(opt.id)}
+                  aria-pressed={activeFilter === opt.id}
+                  className={`rounded-lg px-3 py-2 text-xs font-medium focus-visible:outline-2 focus-visible:outline-white ${activeFilter === opt.id ? "bg-white/10 text-white" : "text-muted-foreground hover:bg-white/5"}`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {!hasSearched && (
+          <div className="flex items-center gap-3 py-8 text-sm text-muted-foreground">
+            <Search className="h-5 w-5" />
+            Нет результатов поиска
           </div>
         )}
-
+        {searchMutation.isPending && (
+          <div role="status" aria-label="Поиск треков" className="space-y-3">
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="flex h-24 items-center gap-4 rounded-lg border border-white/5 p-4 motion-safe:animate-pulse"
+              >
+                <div className="h-14 w-14 shrink-0 rounded-md bg-secondary" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="h-4 w-1/2 rounded bg-secondary" />
+                  <div className="h-3 w-1/3 rounded bg-secondary" />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {!searchMutation.isPending && searchMutation.isError && (
+          <div
+            role="alert"
+            className="flex items-start gap-3 border-t border-white/10 py-6 text-sm"
+          >
+            <AlertCircle className="h-5 w-5 shrink-0 text-amber-400" />
+            <div>
+              <h3 className="tracking-normal text-foreground">Search Failed</h3>
+              <p className="mt-1 text-muted-foreground">
+                Не удалось выполнить поиск. Повторите попытку позже.
+              </p>
+            </div>
+          </div>
+        )}
         {!searchMutation.isPending && searchMutation.data && (
           <AnimatePresence mode="popLayout">
             {filteredResults.length === 0 ? (
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                className="text-center py-24 px-4 glass-card rounded-3xl"
+              <motion.div
+                initial={reduceMotion ? false : { opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: reduceMotion ? 0 : 0.15 }}
+                className="border-t border-white/10 py-8 text-sm text-muted-foreground"
               >
-                <div className="w-20 h-20 rounded-full bg-secondary flex items-center justify-center mx-auto mb-6">
-                  <Music2 className="w-10 h-10 text-muted-foreground" />
-                </div>
-                <h3 className="text-2xl font-display font-bold text-foreground mb-3">No tracks found</h3>
-                <p className="text-muted-foreground max-w-md mx-auto">
-                  We couldn't find any {activeFilter !== 'all' ? activeFilter : ''} matches for your search. Try changing the filter or searching for something else.
-                </p>
-                {activeFilter !== 'all' && (
-                  <button 
-                    onClick={() => setActiveFilter('all')}
-                    className="mt-6 text-primary hover:text-primary-foreground font-semibold hover:underline"
+                <h3 className="mb-2 text-base tracking-normal text-foreground">
+                  No tracks found
+                </h3>
+                <p>Совпадений нет.</p>
+                {activeFilter !== "all" && (
+                  <button
+                    onClick={() => setActiveFilter("all")}
+                    className="mt-3 text-primary underline focus-visible:outline-2 focus-visible:outline-white"
                   >
-                    View all results
+                    Все результаты
                   </button>
                 )}
               </motion.div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {filteredResults.map((track, i) => (
-                  <TrackCard key={`${track.id}-${i}`} track={track} index={i} />
+                  <TrackCard
+                    key={`${track.id}-${i}`}
+                    track={track}
+                    index={i}
+                    compact
+                    collectionAction={<SaveLikedTrackButton track={track} />}
+                  />
                 ))}
               </div>
             )}
           </AnimatePresence>
         )}
-      </div>
+      </section>
     </div>
   );
 }

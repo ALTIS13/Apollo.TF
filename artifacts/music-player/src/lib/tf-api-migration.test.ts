@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Discover from "@/pages/Discover";
 import Favorites from "@/pages/Favorites";
 import Home from "@/pages/Home";
+import { TfAuthProvider } from "@/auth/tf-auth";
+import { TfSessionBoundary } from "@/auth/TfSessionBoundary";
 import {
   useSpotifyLogout,
   spotifyLoginUrl,
@@ -22,12 +24,18 @@ import {
   tfRequestInit,
 } from "./tf-session-client";
 
+// Collection behavior is covered with the real auth provider in its own tests.
+vi.mock("@/components/LikedCollection", () => ({
+  LikedCollection: () => null,
+  SaveLikedTrackButton: () => null,
+}));
+
 const CSRF_TOKEN = "c".repeat(42) + "A";
 const session = {
   accountId: "10000000-0000-4000-8000-000000000001",
   installationId: "20000000-0000-4000-8000-000000000002",
   entitlements: ["tf.search", "tf.downloads"],
-  expiresAt: "2099-01-01T00:00:00.000Z",
+  expiresAt: new Date(Date.now() + 300_000).toISOString(),
   csrfToken: CSRF_TOKEN,
 };
 
@@ -45,7 +53,7 @@ function queryWrapper({ children }: { children: ReactNode }) {
   return createElement(QueryClientProvider, { client: queryClient }, children);
 }
 
-async function loadSessionForUnsafeRequest() {
+async function loadActiveSession() {
   vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(session));
   commitTfSessionSecurityState(await fetchTfSession());
   vi.mocked(fetch).mockClear();
@@ -65,6 +73,7 @@ describe("TF API migration", () => {
   });
 
   it("loads recommendations without a sessionId query and with credentials", async () => {
+    await loadActiveSession();
     vi.mocked(fetch).mockResolvedValue(jsonResponse({ results: [] }));
 
     render(createElement(Discover));
@@ -80,7 +89,7 @@ describe("TF API migration", () => {
   });
 
   it("posts Spotify and Yandex logout with CSRF", async () => {
-    await loadSessionForUnsafeRequest();
+    await loadActiveSession();
     vi.mocked(fetch).mockImplementation(() => Promise.resolve(jsonResponse({})));
     const { result } = renderHook(
       () => ({ spotify: useSpotifyLogout(), yandex: useYandexLogout() }),
@@ -121,20 +130,28 @@ describe("TF API migration", () => {
   });
 
   it("renders Yandex disconnected without accepting or transporting a provider token", async () => {
-    vi.mocked(fetch).mockResolvedValue(jsonResponse({ connected: false }));
+    vi.mocked(fetch).mockImplementation(async (url) =>
+      String(url).endsWith("/auth/me")
+        ? jsonResponse({ ...session, entitlements: [...session.entitlements, "tf.integrations"] })
+        : jsonResponse({ connected: false }),
+    );
     const user = userEvent.setup();
 
-    render(createElement(Favorites), { wrapper: queryWrapper });
+    render(createElement(TfAuthProvider, null,
+      createElement(TfSessionBoundary, null, createElement(Favorites)),
+    ), { wrapper: queryWrapper });
     await user.click(await screen.findByRole("button", { name: "Yandex Music" }));
 
-    expect(await screen.findByText(/Secure connection is temporarily unavailable/i)).toBeInTheDocument();
+    expect(await screen.findByText("Yandex Music не подключён.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "К подключениям" })).toHaveAttribute("href", "/integrations");
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url))).toContain("/api/yandex/status");
     expect(screen.queryByPlaceholderText(/token/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect Yandex Music" })).not.toBeInTheDocument();
     expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url))).not.toContain("/api/yandex/token");
   });
 
   it("preserves CSRF headers through generated searchTracks request options", async () => {
-    await loadSessionForUnsafeRequest();
+    await loadActiveSession();
     vi.mocked(fetch).mockResolvedValue(jsonResponse({ query: "Artist Track", results: [], cached: false }));
 
     await searchTracks(
@@ -169,9 +186,9 @@ describe("TF API migration", () => {
 
     render(createElement(Home), { wrapper: queryWrapper });
     clearTfSessionSecurityState();
-    await user.type(screen.getByPlaceholderText("Artist name..."), "Artist");
-    await user.type(screen.getByPlaceholderText("Track title..."), "Track");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.type(screen.getByRole("textbox", { name: "Исполнитель" }), "Artist");
+    await user.type(screen.getByRole("textbox", { name: "Название трека" }), "Track");
+    await user.click(screen.getByRole("button", { name: "Найти" }));
 
     expect(await screen.findByText("Search Failed")).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
@@ -185,7 +202,7 @@ describe("TF API migration", () => {
       cached: false,
     }));
 
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(screen.getByRole("button", { name: "Найти" }));
 
     await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
     const request = vi.mocked(fetch).mock.calls[0][1];
@@ -195,9 +212,9 @@ describe("TF API migration", () => {
   it.each([
     [401, "unauthorized", "invalidated"],
     [403, "module_access_denied", "revalidate"],
-    [503, "policy_unavailable", "revalidate"],
+    [503, "policy_unavailable", "unavailable"],
   ])("forwards generated search %s %s into the auth channel", async (status, code, eventType) => {
-    await loadSessionForUnsafeRequest();
+    await loadActiveSession();
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: code }), {
       status,
       headers: { "Content-Type": "application/json" },
@@ -209,9 +226,9 @@ describe("TF API migration", () => {
     const user = userEvent.setup();
 
     render(createElement(Home), { wrapper: queryWrapper });
-    await user.type(screen.getByPlaceholderText("Artist name..."), "Artist");
-    await user.type(screen.getByPlaceholderText("Track title..."), "Track");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.type(screen.getByRole("textbox", { name: "Исполнитель" }), "Artist");
+    await user.type(screen.getByRole("textbox", { name: "Название трека" }), "Track");
+    await user.click(screen.getByRole("button", { name: "Найти" }));
 
     expect(await screen.findByText("Search Failed")).toBeInTheDocument();
     await waitFor(() => expect(events).toHaveLength(1));
@@ -226,7 +243,7 @@ describe("TF API migration", () => {
     const homeSource = readFileSync(path.resolve(import.meta.dirname, "../pages/Home.tsx"), "utf8");
 
     expect(homeSource).not.toMatch(/\buseSearchTracks\b/);
-    expect(homeSource).toMatch(/searchTracks\(data,\s*tfRequestInit\(\{\s*method:\s*"POST"\s*\}\)\)/s);
+    expect(homeSource).toMatch(/searchTracks\(\s*data,\s*tfRequestInit\(\{\s*method:\s*"POST"\s*\}\),?\s*\)/s);
   });
 
   it("forwards WebSocket terminal errors into the auth channel", () => {

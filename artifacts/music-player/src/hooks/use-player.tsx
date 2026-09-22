@@ -7,10 +7,18 @@ import {
   buildTfWebSocketUrl,
   createWebSocketTicket,
   reportTfAuthError,
+  reportTfWebSocketRecovery,
   tfFetch,
   tfRequestInit,
+  canUseTfProtectedActivity,
+  captureTfSecurityGeneration,
+  isCurrentTfSecurityGeneration,
+  subscribeTfActivitySuspension,
+  setTfPlaybackActive,
 } from "@/lib/tf-session-client";
+import { useTfAuth } from "@/auth/tf-auth";
 import { TfWebSocketLifecycle } from "@/lib/tf-websocket";
+import { successorWebSocketEnabled } from "@/lib/tf-successor-ws-config";
 
 interface PlayerContextType {
   currentTrack: TrackResult | null;
@@ -51,6 +59,7 @@ interface PlayerSyncState {
 const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
+  const { session, status, webSocketRecoveryBudget } = useTfAuth();
   const [currentTrack, setCurrentTrack] = useState<TrackResult | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -62,6 +71,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [queueIndex, setQueueIndex] = useState(0);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const loadGeneration = useRef(0);
+  const appliedLoadGeneration = useRef<number | null>(null);
+  const mountedRef = useRef(false);
+  const suspendedPosition = useRef<number | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -72,7 +85,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const queueRef = useRef<TrackResult[]>([]);
   const queueIndexRef = useRef(0);
 
-  const playTrackRef = useRef<(track: TrackResult) => Promise<void>>(async () => {});
+  const playTrackRef = useRef<(track: TrackResult, originLive?: () => boolean) => Promise<void>>(async () => {});
   const playNextRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
@@ -84,20 +97,37 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // ── Audio element setup ───────────────────────────────────────────────────
 
   useEffect(() => {
+    mountedRef.current = true;
     audioRef.current = new Audio();
     audioRef.current.volume = 0.8; // matches initial volume state
 
     const audio = audioRef.current;
 
-    const handleTimeUpdate = () => setProgress(audio.currentTime);
+    const handleTimeUpdate = () => {
+      if (!canUseTfProtectedActivity()) {
+        // A sleeping tab may receive a media event before its delayed deadline timer.
+        try { tfRequestInit(); } catch { /* publishes the local deadline, without a request */ }
+        audio.pause(); return;
+      }
+      setProgress(audio.currentTime);
+    };
     const handleDurationChange = () => setDuration(audio.duration);
     const handleEnded = () => {
       setIsPlaying(false);
       setProgress(0);
       playNextRef.current();
     };
-    const handlePlay = () => setIsPlaying(true);
-    const handlePause = () => setIsPlaying(false);
+    const handlePlay = () => {
+      if (!canUseTfProtectedActivity()) { audio.pause(); return; }
+      setTfPlaybackActive(true); setIsPlaying(true);
+    };
+    const handlePause = () => { setTfPlaybackActive(false); setIsPlaying(false); };
+    const unsubscribe = subscribeTfActivitySuspension(() => {
+      loadGeneration.current += 1;
+      if (suspendedPosition.current === null) suspendedPosition.current = audio.currentTime;
+      setProgress(suspendedPosition.current);
+      audio.pause(); audio.src = ""; audio.load(); setIsLoading(false);
+    });
 
     audio.addEventListener("timeupdate", handleTimeUpdate);
     audio.addEventListener("durationchange", handleDurationChange);
@@ -106,6 +136,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     audio.addEventListener("pause", handlePause);
 
     return () => {
+      mountedRef.current = false; loadGeneration.current += 1; unsubscribe(); setTfPlaybackActive(false);
       audio.removeEventListener("timeupdate", handleTimeUpdate);
       audio.removeEventListener("durationchange", handleDurationChange);
       audio.removeEventListener("ended", handleEnded);
@@ -131,8 +162,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // ── Internal load helper (no toggle check, no queue reset) ────────────────
 
-  const _loadTrack = useCallback(async (track: TrackResult) => {
-    if (!audioRef.current) return;
+  const _loadTrack = useCallback(async (track: TrackResult, originLive?: () => boolean) => {
+    if (!audioRef.current || !canUseTfProtectedActivity() || originLive?.() === false) return;
+    const load = ++loadGeneration.current, security = captureTfSecurityGeneration();
+    appliedLoadGeneration.current = null;
+    const live = () => mountedRef.current && load === loadGeneration.current && isCurrentTfSecurityGeneration(security) && canUseTfProtectedActivity() && originLive?.() !== false;
+    const resumePosition = currentTrackRef.current?.id === track.id ? suspendedPosition.current : null;
+    suspendedPosition.current = null;
     try {
       setIsLoading(true);
       setCurrentTrack(track);
@@ -144,18 +180,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const res = await queryClient.fetchQuery(getGetTrackStreamQueryOptions(track.id, {
         request: tfRequestInit({ method: "GET" }),
       }));
+      if (!live()) return;
       if (!res.streamUrl) throw new Error("No stream URL");
       audioRef.current.src = res.streamUrl;
+      if (resumePosition !== null) { audioRef.current.currentTime = resumePosition; setProgress(resumePosition); }
       await audioRef.current.play();
+      if (!live()) return;
+      appliedLoadGeneration.current = load;
       setIsPlaying(true);
     } catch (err) {
+      if (!live()) return;
       reportTfAuthError(err);
-      console.error("Failed to play track:", err);
       setCurrentTrack(null);
       setIsPlaying(false);
       toast({ title: "Ошибка воспроизведения", description: "Не удалось загрузить трек.", variant: "destructive" });
     } finally {
-      setIsLoading(false);
+      if (mountedRef.current && load === loadGeneration.current) setIsLoading(false);
     }
   }, [queryClient, toast]);
 
@@ -164,8 +204,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // ── Public API ────────────────────────────────────────────────────────────
 
-  const playTrack = useCallback(async (track: TrackResult) => {
-    if (!audioRef.current) return;
+  const playTrack = useCallback(async (track: TrackResult, originLive?: () => boolean) => {
+    if (!audioRef.current || !canUseTfProtectedActivity() || originLive?.() === false) return;
     if (currentTrack?.id === track.id) {
       togglePlayPause();
       return;
@@ -175,13 +215,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setQueueIndex(0);
     queueRef.current = [track];
     queueIndexRef.current = 0;
-    await _loadTrackRef.current(track);
+    await _loadTrackRef.current(track, originLive);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrack?.id]);
 
   playTrackRef.current = playTrack;
 
   const playFromQueue = useCallback(async (index: number) => {
+    if (!canUseTfProtectedActivity()) return;
     const q = queueRef.current;
     if (index < 0 || index >= q.length) return;
     queueIndexRef.current = index;
@@ -190,6 +231,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const playNext = useCallback(async () => {
+    if (!canUseTfProtectedActivity()) return;
     const q = queueRef.current;
     const nextIdx = queueIndexRef.current + 1;
     if (nextIdx >= q.length) return;
@@ -201,6 +243,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   playNextRef.current = playNext;
 
   const playPrev = useCallback(async () => {
+    if (!canUseTfProtectedActivity()) return;
     const q = queueRef.current;
     const idx = queueIndexRef.current;
     // Restart if >3s into track
@@ -271,7 +314,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const togglePlayPause = useCallback(() => {
-    if (!audioRef.current || !currentTrackRef.current) return;
+    if (!audioRef.current || !currentTrackRef.current || !canUseTfProtectedActivity()) return;
+    if (suspendedPosition.current !== null) { void _loadTrackRef.current(currentTrackRef.current); return; }
     if (isPlayingRef.current) {
       audioRef.current.pause();
     } else {
@@ -305,9 +349,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // ── WebSocket sync ────────────────────────────────────────────────────────
 
   const wsRef = useRef<WebSocket | null>(null);
+  const wsEpoch = useRef(0);
+  const wsSecurityGeneration = captureTfSecurityGeneration();
   const suppressSendUntilRef = useRef<number>(0);
 
-  const handleWsMessage = useCallback((event: MessageEvent) => {
+  const handleWsMessage = useCallback((event: MessageEvent, isCurrent: () => boolean) => {
+    if (!canUseTfProtectedActivity() || !isCurrent()) return;
+    const epoch = wsEpoch.current, security = captureTfSecurityGeneration();
+    const originLive = () => isCurrent() && epoch === wsEpoch.current && isCurrentTfSecurityGeneration(security) && canUseTfProtectedActivity();
     try {
       const msg = JSON.parse(event.data) as PlayerSyncState;
       if (msg.type !== "player_state") return;
@@ -331,8 +380,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         };
         const targetPosition = msg.position;
         const targetIsPlaying = msg.isPlaying;
-        playTrackRef.current(remoteTrack)
-          .then(() => {
+        const work = playTrackRef.current(remoteTrack, originLive);
+        const load = loadGeneration.current;
+        work.then(() => {
+            if (!originLive() || load !== loadGeneration.current || appliedLoadGeneration.current !== load) return;
             if (targetPosition > 1 && audioRef.current) {
               audioRef.current.currentTime = targetPosition;
               setProgress(targetPosition);
@@ -362,7 +413,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    const successor = session?.renewalProfile === "renewal-v1";
+    if ((successor && !successorWebSocketEnabled()) || status !== "authenticated") return;
+    wsEpoch.current += 1;
     const lifecycle = new TfWebSocketLifecycle({
+      successor,
+      recoveryBudget: successor ? webSocketRecoveryBudget : undefined,
+      onRetryableError: reportTfWebSocketRecovery,
       createTicket: createWebSocketTicket,
       buildUrl: buildTfWebSocketUrl,
       createSocket: (url) => {
@@ -382,14 +439,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       },
     });
     lifecycle.start();
+    const unsubscribe = subscribeTfActivitySuspension(() => { wsEpoch.current += 1; lifecycle.stop(); wsRef.current = null; });
 
     return () => {
+      unsubscribe();
+      wsEpoch.current += 1;
       lifecycle.stop();
       wsRef.current = null;
     };
-  }, [handleWsMessage, toast]);
+  }, [handleWsMessage, toast, session?.renewalProfile, status, wsSecurityGeneration, webSocketRecoveryBudget]);
 
   const sendWsState = useCallback(() => {
+    if (!canUseTfProtectedActivity()) return;
     if (applyingRemoteRef.current) return;
     if (Date.now() < suppressSendUntilRef.current) return;
     const ws = wsRef.current;

@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants, createReadStream, readFileSync } from "node:fs";
+import { constants, createReadStream, readFileSync, type Stats } from "node:fs";
 import {
   copyFile,
   lstat,
@@ -28,9 +28,16 @@ import {
   pinnedRedisRepository,
   releaseImageCatalog,
   releaseImageEnvironmentNames,
+  tfOnlyApprovedImageRepositories,
+  tfOnlyArtifactImageNames,
+  tfOnlyOperatorReleaseImageTargets,
+  tfOnlyReleaseImageCatalog,
+  tfOnlyReleaseImageEnvironmentNames,
   type ArtifactImageName,
   type ReleaseArtifact,
   type ReleaseArtifactImage,
+  type ReleaseImageCatalogEntry,
+  type TfOnlyReleaseArtifact,
 } from "./release-images.js";
 
 export {
@@ -43,11 +50,18 @@ export {
   pinnedRedisRepository,
   releaseImageCatalog,
   releaseImageEnvironmentNames,
+  tfOnlyApprovedImageRepositories,
+  tfOnlyArtifactImageNames,
+  tfOnlyOperatorReleaseImageTargets,
+  tfOnlyReleaseImageCatalog,
+  tfOnlyReleaseImageEnvironmentNames,
   type ArtifactImageName,
   type OperatorReleaseImageTarget,
   type ReleaseArtifact,
   type ReleaseArtifactImage,
   type ReleaseImageCatalogEntry,
+  type TfOnlyArtifactImageName,
+  type TfOnlyReleaseArtifact,
 } from "./release-images.js";
 
 export type OperatorReleaseMode = "production" | "loopback-local-smoke";
@@ -57,6 +71,7 @@ export type OperatorReleaseOptions = {
   releaseId: string;
   sourceCommit: string;
   repositoryRoot: string;
+  tfSuccessorWsEnabled?: boolean;
 };
 
 export type OperatorReleasePublicationOptions = OperatorReleaseOptions & {
@@ -64,10 +79,20 @@ export type OperatorReleasePublicationOptions = OperatorReleaseOptions & {
   signal?: AbortSignal;
 };
 
+export type TfOnlyOperatorReleasePreparationOptions = OperatorReleaseOptions & {
+  captureSourceFailure?: boolean;
+};
+
 export type OperatorReleaseOutput = {
   envFragmentPath: string;
   manifestPath: string;
   releaseArtifact: ReleaseArtifact;
+};
+
+export type TfOnlyOperatorReleaseOutput = {
+  envFragmentPath: string;
+  manifestPath: string;
+  releaseArtifact: TfOnlyReleaseArtifact;
 };
 
 export type OperatorReleasePreparationOutput = {
@@ -120,9 +145,37 @@ const zeroSourceCommit = "0".repeat(40);
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const zeroDigest = `sha256:${"0".repeat(64)}`;
 const sha256Pattern = /^[a-f0-9]{64}$/;
-const argumentFlags = new Set(["--mode", "--release-id", "--source-commit"]);
-const publicationArgumentFlags = new Set([...argumentFlags, "--receipt"]);
+const requiredArgumentFlags = new Set([
+  "--mode",
+  "--release-id",
+  "--source-commit",
+]);
+const argumentFlags = new Set([
+  ...requiredArgumentFlags,
+  "--tf-successor-ws-enabled",
+]);
+const publicationRequiredArgumentFlags = new Set([
+  ...requiredArgumentFlags,
+  "--receipt",
+]);
+const publicationArgumentFlags = new Set([
+  ...publicationRequiredArgumentFlags,
+  "--tf-successor-ws-enabled",
+]);
+const tfOnlyArgumentFlags = new Set(requiredArgumentFlags);
+const captureSourceFailureFlag = "--capture-source-failure";
+const tfOnlyPreparationArgumentFlags = new Set([
+  ...tfOnlyArgumentFlags,
+  captureSourceFailureFlag,
+]);
+const privateFailureFileName = "source-validation-failure.json";
+const privateFailureStreamBytes = 65_536;
+const privateFailureFileBytes = 176_000;
+const tfOnlyPublicationArgumentFlags = new Set(
+  publicationRequiredArgumentFlags,
+);
 const sourceRepository = "https://github.com/ALTIS13/Apollo.TF";
+const tfWebApiOrigin = "https://api.tf.apollot.ru";
 const builderIdPattern = /^[a-z0-9][a-z0-9-]{0,47}$/;
 const absentManifestPattern = /(?:manifest unknown|not found)/i;
 const absentBuilderPattern = /(?:no builder|not found)/i;
@@ -165,6 +218,66 @@ const releaseEnvironmentOrder = [
   "TF_DOWNLOAD_REDIS_IMAGE",
   "TF_DOWNLOAD_WORKER_IMAGE",
 ] as const;
+const tfOnlyReleaseEnvironmentOrder = [
+  "TF_POSTGRES_IMAGE",
+  "TF_REDIS_IMAGE",
+  "TF_API_IMAGE",
+  "TF_WEB_IMAGE",
+  "TF_ADMIN_IMAGE",
+  "TF_SEARCH_IMAGE",
+  "TF_INTEGRATIONS_POSTGRES_IMAGE",
+  "TF_INTEGRATIONS_IMAGE",
+  "TF_DOWNLOAD_REDIS_IMAGE",
+  "TF_DOWNLOAD_WORKER_IMAGE",
+] as const;
+
+type ReleaseProfile = {
+  approvedImageRepositories: Readonly<Record<string, string>>;
+  artifactImageNames: readonly string[];
+  artifactSet?: "tf-only";
+  claimRootName: "release-claims" | "tf-only-release-claims";
+  completionFileName:
+    | "apollo-release-complete.json"
+    | "apollo-tf-release-complete.json";
+  environmentFileName: "release-images.env" | "tf-release-images.env";
+  environmentNames: Readonly<Record<string, string>>;
+  environmentOrder: readonly string[];
+  imageCatalog: readonly ReleaseImageCatalogEntry[];
+  manifestFileName:
+    | "apollo-release-manifest.json"
+    | "apollo-tf-release-manifest.json";
+  outputRootName: "releases" | "tf-only-releases";
+  targets: readonly import("./release-images.js").OperatorReleaseImageTarget[];
+};
+
+const legacyReleaseProfile: ReleaseProfile = {
+  approvedImageRepositories,
+  artifactImageNames,
+  claimRootName: "release-claims",
+  completionFileName: "apollo-release-complete.json",
+  environmentFileName: "release-images.env",
+  environmentNames: releaseImageEnvironmentNames,
+  environmentOrder: releaseEnvironmentOrder,
+  imageCatalog: releaseImageCatalog,
+  manifestFileName: "apollo-release-manifest.json",
+  outputRootName: "releases",
+  targets: operatorReleaseImageTargets,
+};
+
+const tfOnlyReleaseProfile: ReleaseProfile = {
+  approvedImageRepositories: tfOnlyApprovedImageRepositories,
+  artifactImageNames: tfOnlyArtifactImageNames,
+  artifactSet: "tf-only",
+  claimRootName: "tf-only-release-claims",
+  completionFileName: "apollo-tf-release-complete.json",
+  environmentFileName: "tf-release-images.env",
+  environmentNames: tfOnlyReleaseImageEnvironmentNames,
+  environmentOrder: tfOnlyReleaseEnvironmentOrder,
+  imageCatalog: tfOnlyReleaseImageCatalog,
+  manifestFileName: "apollo-tf-release-manifest.json",
+  outputRootName: "tf-only-releases",
+  targets: tfOnlyOperatorReleaseImageTargets,
+};
 const corepackDistributionRoot = join(
   dirname(process.execPath),
   "node_modules",
@@ -173,27 +286,27 @@ const corepackDistributionRoot = join(
 );
 const corepackCliPath = join(corepackDistributionRoot, "corepack.js");
 const pnpmCliPath = join(corepackDistributionRoot, "pnpm.js");
-const sourceValidationCommands: readonly {
-  args: readonly string[];
-  executable: string;
-  timeoutMs: number;
-}[] = [
+const sourceValidationCommands = [
   {
+    stage: "corepack_enable",
     args: [corepackCliPath, "enable"],
     executable: process.execPath,
     timeoutMs: 60_000,
   },
   {
+    stage: "dependencies_install",
     args: [pnpmCliPath, "install", "--frozen-lockfile"],
     executable: process.execPath,
     timeoutMs: 10 * 60_000,
   },
   {
+    stage: "scripts_tests",
     args: [pnpmCliPath, "--filter", "@workspace/scripts", "test"],
     executable: process.execPath,
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "platform_api_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -207,6 +320,7 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "tf_api_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -220,6 +334,7 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "tf_admin_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -233,6 +348,7 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "tf_web_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -246,6 +362,7 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "tf_search_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -259,6 +376,7 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "tf_integrations_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -272,6 +390,7 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "tf_download_worker_tests",
     args: [
       pnpmCliPath,
       "--filter",
@@ -285,11 +404,54 @@ const sourceValidationCommands: readonly {
     timeoutMs: 20 * 60_000,
   },
   {
+    stage: "workspace_typecheck",
     args: [pnpmCliPath, "run", "typecheck"],
     executable: process.execPath,
     timeoutMs: 20 * 60_000,
   },
-];
+] as const;
+
+type SourceValidationStage =
+  | (typeof sourceValidationCommands)[number]["stage"]
+  | "source_archive"
+  | "source_extract"
+  | "source_archive_integrity"
+  | "claimed_archive_integrity";
+
+type CommandFailure = {
+  reason: "child_exit" | "signal" | "timeout" | "spawn_error" | "runner_error";
+  exitCode: number | null;
+  signalClass: "term" | "kill" | "interrupt" | "abort" | "other" | "none";
+};
+
+// Only observations owned by this runner may cross the public error boundary.
+const commandObservations = new WeakMap<object, CommandFailure>();
+const sourceValidationFailures = new WeakMap<
+  Error,
+  {
+    validationStage: SourceValidationStage;
+    commandFailure?: CommandFailure;
+  }
+>();
+
+function signalClass(
+  signal: NodeJS.Signals | null,
+): CommandFailure["signalClass"] {
+  switch (signal) {
+    case null:
+      return "none";
+    case "SIGTERM":
+      return "term";
+    case "SIGKILL":
+      return "kill";
+    case "SIGINT":
+      return "interrupt";
+    case "SIGABRT":
+      return "abort";
+    default:
+      return "other";
+  }
+}
 
 export function runOperatorReleaseCommand(
   executable: string,
@@ -315,19 +477,63 @@ export function runOperatorReleaseCommand(
     let stderr = "";
     let stdout = "";
     let completed = false;
-    const finish = (result: OperatorReleaseCommandResult): void => {
+    let spawned = false;
+    let timeoutTriggered = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const clearDeadline = (): void => {
+      clearTimeout(timeout);
+      timeout = undefined;
+    };
+    const finish = (
+      result: OperatorReleaseCommandResult,
+      observation: CommandFailure,
+    ): void => {
       if (completed) return;
       completed = true;
+      clearDeadline();
+      commandObservations.set(result, observation);
       complete(result);
     };
-    const child = spawn(spawnedExecutable, spawnedArgs, {
-      cwd: options.cwd,
-      env: options.env,
-      shell: false,
-      signal: options.signal,
-      timeout: options.timeoutMs,
-      windowsHide: true,
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      // Preserve spawn's timeout validation before taking ownership of its timer.
+      if (
+        options.timeoutMs != null &&
+        (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 0)
+      ) {
+        throw new RangeError("Invalid command timeout");
+      }
+      child = spawn(spawnedExecutable, spawnedArgs, {
+        cwd: options.cwd,
+        env: options.env,
+        shell: false,
+        signal: options.signal,
+        windowsHide: true,
+      });
+    } catch (error) {
+      if (error instanceof Error)
+        commandObservations.set(error, {
+          reason: "spawn_error",
+          exitCode: null,
+          signalClass: "none",
+        });
+      throw error;
+    }
+    if (options.timeoutMs !== undefined && options.timeoutMs > 0) {
+      timeout = setTimeout(() => {
+        timeoutTriggered = true;
+        try {
+          child.kill("SIGTERM");
+        } catch (error) {
+          child.emit("error", error);
+        }
+        timeout = undefined;
+      }, options.timeoutMs);
+    }
+    child.once("spawn", () => {
+      spawned = true;
     });
+    child.once("exit", clearDeadline);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
@@ -337,10 +543,38 @@ export function runOperatorReleaseCommand(
       stderr += chunk;
     });
     child.on("error", () => {
-      finish({ status: -1, stderr: "", stdout: "" });
+      finish(
+        { status: -1, stderr: "", stdout: "" },
+        {
+          reason: timeoutTriggered
+            ? "timeout"
+            : spawned
+              ? "runner_error"
+              : "spawn_error",
+          exitCode: null,
+          signalClass: "none",
+        },
+      );
     });
-    child.on("close", (status) => {
-      finish({ status: status ?? -1, stderr, stdout });
+    child.on("close", (status, signal) => {
+      finish(
+        { status: status ?? -1, stderr, stdout },
+        {
+          reason: timeoutTriggered
+            ? "timeout"
+            : signal !== null
+              ? "signal"
+              : "child_exit",
+          exitCode:
+            status !== null &&
+            Number.isInteger(status) &&
+            status >= 0 &&
+            status <= 255
+              ? status
+              : null,
+          signalClass: signalClass(signal),
+        },
+      );
     });
   });
 }
@@ -360,6 +594,38 @@ export async function prepareOperatorRelease(
   options: OperatorReleaseOptions,
   dependencies: OperatorReleaseDependencies = defaultOperatorReleaseDependencies,
 ): Promise<OperatorReleasePreparationOutput> {
+  if ("captureSourceFailure" in options)
+    throw operatorError("invalid_arguments");
+  return prepareOperatorReleaseForProfile(
+    legacyReleaseProfile,
+    options,
+    dependencies,
+  );
+}
+
+export async function prepareTfOnlyOperatorRelease(
+  options: TfOnlyOperatorReleasePreparationOptions,
+  dependencies: OperatorReleaseDependencies = defaultOperatorReleaseDependencies,
+): Promise<OperatorReleasePreparationOutput> {
+  if (
+    options.tfSuccessorWsEnabled !== undefined ||
+    (options.captureSourceFailure !== undefined &&
+      typeof options.captureSourceFailure !== "boolean")
+  ) {
+    throw operatorError("invalid_arguments");
+  }
+  return prepareOperatorReleaseForProfile(
+    tfOnlyReleaseProfile,
+    { ...options, tfSuccessorWsEnabled: false },
+    dependencies,
+  );
+}
+
+async function prepareOperatorReleaseForProfile(
+  profile: ReleaseProfile,
+  options: TfOnlyOperatorReleasePreparationOptions,
+  dependencies: OperatorReleaseDependencies,
+): Promise<OperatorReleasePreparationOutput> {
   if (options.mode !== "production") {
     throw operatorError("invalid_release_mode");
   }
@@ -372,12 +638,14 @@ export async function prepareOperatorRelease(
   }
 
   const environment = isolatedOperatorEnvironment();
-  const claimDirectory = operatorReleaseClaimDirectory(
+  const claimDirectory = releaseClaimDirectory(
+    profile,
     options.repositoryRoot,
     options.releaseId,
   );
   const receiptPath = join(claimDirectory, "prepare-receipt.json");
-  const releaseDirectory = operatorReleaseOutputDirectory(
+  const releaseDirectory = releaseOutputDirectory(
+    profile,
     options.repositoryRoot,
     options.releaseId,
   );
@@ -429,16 +697,37 @@ export async function prepareOperatorRelease(
     await writeDurableExclusive(
       join(claimDirectory, "claim.json"),
       `${JSON.stringify(
-        {
-          formatVersion: 1,
-          protocolVersion: 2,
-          releaseId: options.releaseId,
-          sourceCommit: options.sourceCommit,
-        },
+        profile.artifactSet === undefined
+          ? {
+              formatVersion: 1,
+              protocolVersion: 2,
+              releaseId: options.releaseId,
+              sourceCommit: options.sourceCommit,
+            }
+          : {
+              artifactSet: profile.artifactSet,
+              formatVersion: 1,
+              protocolVersion: 2,
+              releaseId: options.releaseId,
+              sourceCommit: options.sourceCommit,
+            },
         null,
         2,
       )}\n`,
     );
+
+    let captureCustody: readonly Stats[] | undefined;
+    if (options.captureSourceFailure === true) {
+      try {
+        captureCustody = await readPrivateCaptureCustody(
+          profile,
+          options.repositoryRoot,
+          claimDirectory,
+        );
+      } catch {
+        // Optional diagnostics never replace the source gate's terminal outcome.
+      }
+    }
 
     temporaryRoot = dependencies.temporaryRoot();
     const validationRoot = join(temporaryRoot, "validation-source");
@@ -463,6 +752,7 @@ export async function prepareOperatorRelease(
         env: environment,
         timeoutMs: 5 * 60_000,
       },
+      "source_archive",
     );
     const archiveSha256 = await sha256File(temporaryArchivePath);
     await checkedCommand(
@@ -475,6 +765,7 @@ export async function prepareOperatorRelease(
         env: environment,
         timeoutMs: 5 * 60_000,
       },
+      "source_extract",
     );
     const sourceTreeSha256 = await sha256Directory(validationRoot);
     for (const validation of sourceValidationCommands) {
@@ -488,10 +779,24 @@ export async function prepareOperatorRelease(
           env: environment,
           timeoutMs: validation.timeoutMs,
         },
+        validation.stage,
+        captureCustody === undefined
+          ? undefined
+          : async (result, observation) => {
+              await writePrivateSourceFailure(
+                profile,
+                options.repositoryRoot,
+                claimDirectory,
+                captureCustody,
+                validation.stage,
+                result,
+                observation,
+              );
+            },
       );
     }
     if ((await sha256File(temporaryArchivePath)) !== archiveSha256) {
-      throw operatorError("source_validation_failed");
+      throw operatorError("source_validation_failed", "source_archive_integrity");
     }
 
     const claimedArchivePath = join(claimDirectory, "source.tar");
@@ -507,21 +812,33 @@ export async function prepareOperatorRelease(
       await archiveHandle.close();
     }
     if ((await sha256File(claimedArchivePath)) !== archiveSha256) {
-      throw operatorError("source_validation_failed");
+      throw operatorError("source_validation_failed", "claimed_archive_integrity");
     }
     await writeDurableExclusive(
       receiptPath,
       `${JSON.stringify(
-        {
-          archiveFile: "source.tar",
-          archiveSha256,
-          formatVersion: 1,
-          imageCatalog: releaseImageCatalog,
-          protocolVersion: 2,
-          releaseId: options.releaseId,
-          sourceCommit: options.sourceCommit,
-          sourceTreeSha256,
-        },
+        profile.artifactSet === undefined
+          ? {
+              archiveFile: "source.tar",
+              archiveSha256,
+              formatVersion: 1,
+              imageCatalog: profile.imageCatalog,
+              protocolVersion: 2,
+              releaseId: options.releaseId,
+              sourceCommit: options.sourceCommit,
+              sourceTreeSha256,
+            }
+          : {
+              archiveFile: "source.tar",
+              archiveSha256,
+              artifactSet: profile.artifactSet,
+              formatVersion: 1,
+              imageCatalog: profile.imageCatalog,
+              protocolVersion: 2,
+              releaseId: options.releaseId,
+              sourceCommit: options.sourceCommit,
+              sourceTreeSha256,
+            },
         null,
         2,
       )}\n`,
@@ -561,18 +878,35 @@ export function parseOperatorReleaseArguments(argv: readonly string[]): {
   mode: OperatorReleaseMode;
   releaseId: string;
   sourceCommit: string;
+  tfSuccessorWsEnabled: boolean;
 } {
-  const values = parsePairwiseArguments(argv, argumentFlags);
-  return parseReleaseIdentity(values);
+  const values = parsePairwiseArguments(
+    argv,
+    argumentFlags,
+    requiredArgumentFlags,
+  );
+  return {
+    ...parseReleaseIdentity(values),
+    tfSuccessorWsEnabled: parseSuccessorWebSocketSelection(values),
+  };
 }
 
 function parsePairwiseArguments(
   argv: readonly string[],
   allowedFlags: ReadonlySet<string>,
+  requiredFlags: ReadonlySet<string>,
+  valuelessFlag?: string,
 ): Map<string, string> {
   const values = new Map<string, string>();
-  for (let index = 0; index < argv.length; index += 2) {
+  for (let index = 0; index < argv.length; ) {
     const flag = argv[index];
+    if (flag === valuelessFlag && flag !== undefined) {
+      if (!allowedFlags.has(flag) || values.has(flag))
+        throw operatorError("invalid_arguments");
+      values.set(flag, "true");
+      index += 1;
+      continue;
+    }
     const value = argv[index + 1];
     if (
       flag === undefined ||
@@ -584,11 +918,22 @@ function parsePairwiseArguments(
       throw new Error("invalid_arguments");
     }
     values.set(flag, value);
+    index += 2;
   }
-  if (values.size !== allowedFlags.size) {
+  if ([...requiredFlags].some((flag) => !values.has(flag))) {
     throw new Error("invalid_arguments");
   }
   return values;
+}
+
+function parseSuccessorWebSocketSelection(
+  values: ReadonlyMap<string, string>,
+): boolean {
+  const value = values.get("--tf-successor-ws-enabled") ?? "false";
+  if (value !== "false" && value !== "true") {
+    throw operatorError("invalid_arguments");
+  }
+  return value === "true";
 }
 
 function parseReleaseIdentity(values: ReadonlyMap<string, string>): {
@@ -624,8 +969,56 @@ export function parseOperatorReleasePublicationArguments(
   receiptPath: string;
   releaseId: string;
   sourceCommit: string;
+  tfSuccessorWsEnabled: boolean;
 } {
-  const values = parsePairwiseArguments(argv, publicationArgumentFlags);
+  const values = parsePairwiseArguments(
+    argv,
+    publicationArgumentFlags,
+    publicationRequiredArgumentFlags,
+  );
+  const identity = parseReleaseIdentity(values);
+  const receiptPath = values.get("--receipt");
+  if (receiptPath === undefined || receiptPath.trim() === "") {
+    throw operatorError("invalid_arguments");
+  }
+  return {
+    ...identity,
+    receiptPath,
+    tfSuccessorWsEnabled: parseSuccessorWebSocketSelection(values),
+  };
+}
+
+function parseTfOnlyOperatorReleaseArguments(argv: readonly string[]): {
+  mode: OperatorReleaseMode;
+  releaseId: string;
+  sourceCommit: string;
+  captureSourceFailure: boolean;
+} {
+  const values = parsePairwiseArguments(
+    argv,
+    tfOnlyPreparationArgumentFlags,
+    requiredArgumentFlags,
+    captureSourceFailureFlag,
+  );
+  return {
+    ...parseReleaseIdentity(values),
+    captureSourceFailure: values.has(captureSourceFailureFlag),
+  };
+}
+
+function parseTfOnlyOperatorReleasePublicationArguments(
+  argv: readonly string[],
+): {
+  mode: OperatorReleaseMode;
+  receiptPath: string;
+  releaseId: string;
+  sourceCommit: string;
+} {
+  const values = parsePairwiseArguments(
+    argv,
+    tfOnlyPublicationArgumentFlags,
+    publicationRequiredArgumentFlags,
+  );
   const identity = parseReleaseIdentity(values);
   const receiptPath = values.get("--receipt");
   if (receiptPath === undefined || receiptPath.trim() === "") {
@@ -638,20 +1031,76 @@ export function operatorReleaseOutputDirectory(
   repositoryRoot: string,
   releaseId: string,
 ): string {
+  return releaseOutputDirectory(
+    legacyReleaseProfile,
+    repositoryRoot,
+    releaseId,
+  );
+}
+
+export function tfOnlyOperatorReleaseOutputDirectory(
+  repositoryRoot: string,
+  releaseId: string,
+): string {
+  return releaseOutputDirectory(
+    tfOnlyReleaseProfile,
+    repositoryRoot,
+    releaseId,
+  );
+}
+
+function releaseOutputDirectory(
+  profile: ReleaseProfile,
+  repositoryRoot: string,
+  releaseId: string,
+): string {
   assertReleaseId(releaseId);
-  return resolve(repositoryRoot, ".ops-private", "releases", releaseId);
+  return resolve(
+    repositoryRoot,
+    ".ops-private",
+    profile.outputRootName,
+    releaseId,
+  );
 }
 
 export function operatorReleaseClaimDirectory(
   repositoryRoot: string,
   releaseId: string,
 ): string {
-  assertReleaseId(releaseId);
-  return resolve(repositoryRoot, ".ops-private", "release-claims", releaseId);
+  return releaseClaimDirectory(legacyReleaseProfile, repositoryRoot, releaseId);
 }
 
-function operatorError(code: string): Error {
-  return new Error(code);
+export function tfOnlyOperatorReleaseClaimDirectory(
+  repositoryRoot: string,
+  releaseId: string,
+): string {
+  return releaseClaimDirectory(tfOnlyReleaseProfile, repositoryRoot, releaseId);
+}
+
+function releaseClaimDirectory(
+  profile: ReleaseProfile,
+  repositoryRoot: string,
+  releaseId: string,
+): string {
+  assertReleaseId(releaseId);
+  return resolve(
+    repositoryRoot,
+    ".ops-private",
+    profile.claimRootName,
+    releaseId,
+  );
+}
+
+function operatorError(
+  code: string,
+  validationStage?: SourceValidationStage,
+  commandFailure?: CommandFailure,
+): Error {
+  const error = new Error(code);
+  if (code === "source_validation_failed" && validationStage !== undefined) {
+    sourceValidationFailures.set(error, { validationStage, commandFailure });
+  }
+  return error;
 }
 
 function sanitizedOperatorError(error: unknown): Error {
@@ -672,12 +1121,13 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 async function assertUnredirectedPrivateClaim(
+  profile: ReleaseProfile,
   repositoryRoot: string,
   claimDirectory: string,
 ): Promise<void> {
   const expectedPaths = [
     resolve(repositoryRoot, ".ops-private"),
-    resolve(repositoryRoot, ".ops-private", "release-claims"),
+    resolve(repositoryRoot, ".ops-private", profile.claimRootName),
     resolve(claimDirectory),
   ];
   for (const expectedPath of expectedPaths) {
@@ -725,8 +1175,130 @@ function isolatedOperatorEnvironment(
   return environment;
 }
 
+async function readPrivateCaptureCustody(
+  profile: ReleaseProfile,
+  repositoryRoot: string,
+  claimDirectory: string,
+  expected?: readonly Stats[],
+): Promise<readonly Stats[]> {
+  await assertUnredirectedPrivateClaim(profile, repositoryRoot, claimDirectory);
+  const paths = [
+    resolve(repositoryRoot),
+    resolve(repositoryRoot, ".ops-private"),
+    resolve(repositoryRoot, ".ops-private", profile.claimRootName),
+    resolve(claimDirectory),
+  ];
+  const stats: Stats[] = [];
+  for (const [index, path] of paths.entries()) {
+    const stat = await lstat(path);
+    if (
+      !stat.isDirectory() ||
+      stat.isSymbolicLink() ||
+      (expected !== undefined &&
+        (stat.dev !== expected[index]?.dev ||
+          stat.ino !== expected[index]?.ino))
+    ) {
+      throw operatorError("invalid_release_receipt");
+    }
+    if (
+      process.platform !== "win32" &&
+      ((stat.uid !== 0 && stat.uid !== process.geteuid!()) ||
+        (index === 0
+          ? (stat.mode & 0o022) !== 0
+          : (stat.mode & 0o7777) !== 0o700))
+    ) {
+      throw operatorError("invalid_release_receipt");
+    }
+    stats.push(stat);
+  }
+  return stats;
+}
+
+async function writePrivateSourceFailure(
+  profile: ReleaseProfile,
+  repositoryRoot: string,
+  claimDirectory: string,
+  custody: readonly Stats[],
+  stage: (typeof sourceValidationCommands)[number]["stage"],
+  result: OperatorReleaseCommandResult,
+  observation: CommandFailure,
+): Promise<void> {
+  // One extra code unit keeps a sliced surrogate at the front outside the byte tail.
+  const stdout = Buffer.from(
+    result.stdout.slice(-privateFailureStreamBytes - 1),
+    "utf8",
+  );
+  const stderr = Buffer.from(
+    result.stderr.slice(-privateFailureStreamBytes - 1),
+    "utf8",
+  );
+  const contents = `${JSON.stringify({
+    formatVersion: 1,
+    validationStage: stage,
+    commandFailure: observation,
+    stdoutTailBase64: stdout
+      .subarray(-privateFailureStreamBytes)
+      .toString("base64"),
+    stderrTailBase64: stderr
+      .subarray(-privateFailureStreamBytes)
+      .toString("base64"),
+    stdoutTruncated:
+      Buffer.byteLength(result.stdout, "utf8") > privateFailureStreamBytes,
+    stderrTruncated:
+      Buffer.byteLength(result.stderr, "utf8") > privateFailureStreamBytes,
+  })}\n`;
+  if (Buffer.byteLength(contents) > privateFailureFileBytes)
+    throw operatorError("release_error");
+  await readPrivateCaptureCustody(
+    profile,
+    repositoryRoot,
+    claimDirectory,
+    custody,
+  );
+  const path = join(claimDirectory, privateFailureFileName);
+  const handle = await open(path, "wx", 0o600);
+  try {
+    await readPrivateCaptureCustody(
+      profile,
+      repositoryRoot,
+      claimDirectory,
+      custody,
+    );
+    const stat = await handle.stat();
+    const named = await lstat(path);
+    if (
+      !stat.isFile() ||
+      stat.nlink !== 1 ||
+      named.isSymbolicLink() ||
+      stat.dev !== named.dev ||
+      stat.ino !== named.ino ||
+      (process.platform !== "win32" &&
+        ((stat.mode & 0o7777) !== 0o600 || stat.uid !== process.geteuid!()))
+    ) {
+      throw operatorError("invalid_release_receipt");
+    }
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 function throwIfCancelled(signal: AbortSignal | undefined): void {
   if (signal?.aborted === true) throw operatorError("publication_cancelled");
+}
+
+export function operatorReleaseBuildArguments(
+  targetName: string,
+  tfSuccessorWsEnabled = false,
+): readonly string[] {
+  if (targetName !== "tf-web") return [];
+  return [
+    "--build-arg",
+    `VITE_API_URL=${tfWebApiOrigin}`,
+    "--build-arg",
+    `VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED=${String(tfSuccessorWsEnabled)}`,
+  ];
 }
 
 async function checkedCommand(
@@ -740,17 +1312,45 @@ async function checkedCommand(
     signal?: AbortSignal;
     timeoutMs?: number;
   },
+  validationStage?: SourceValidationStage,
+  captureFailure?: (
+    result: OperatorReleaseCommandResult,
+    observation: CommandFailure,
+  ) => Promise<void>,
 ): Promise<OperatorReleaseCommandResult> {
   throwIfCancelled(options.signal);
   let result: OperatorReleaseCommandResult;
   try {
     result = await dependencies.command(executable, args, options);
-  } catch {
+  } catch (error) {
     throwIfCancelled(options.signal);
-    throw operatorError(code);
+    throw operatorError(
+      code,
+      validationStage,
+      (error instanceof Error ? commandObservations.get(error) : undefined) ?? {
+        reason: "runner_error",
+        exitCode: null,
+        signalClass: "none",
+      },
+    );
   }
   throwIfCancelled(options.signal);
-  if (result.status !== 0) throw operatorError(code);
+  if (result.status !== 0) {
+    const observation = commandObservations.get(result);
+    if (
+      code === "source_validation_failed" &&
+      result.status === 1 &&
+      observation?.reason === "child_exit" &&
+      observation.exitCode === 1
+    ) {
+      try {
+        await captureFailure?.(result, observation);
+      } catch {
+        // Leave uncertain partial private output in root custody; never retry or expose it.
+      }
+    }
+    throw operatorError(code, validationStage, observation);
+  }
   return result;
 }
 
@@ -777,8 +1377,10 @@ async function readBuildMetadataDigest(path: string): Promise<string> {
   }
 }
 
-function pinnedRedisArtifactImage(): ReleaseArtifactImage {
-  const entry = releaseImageCatalog.find(
+function pinnedRedisArtifactImage(
+  profile: ReleaseProfile,
+): ReleaseArtifactImage {
+  const entry = profile.imageCatalog.find(
     (candidate) => candidate.kind === "external",
   );
   if (entry === undefined) throw operatorError("artifact_validation_failed");
@@ -799,22 +1401,32 @@ function pinnedRedisArtifactImage(): ReleaseArtifactImage {
 }
 
 function validateReleaseArtifact(artifact: ReleaseArtifact): void {
+  validateReleaseArtifactForProfile(legacyReleaseProfile, artifact);
+}
+
+function validateReleaseArtifactForProfile(
+  profile: ReleaseProfile,
+  artifact: ReleaseArtifact | TfOnlyReleaseArtifact,
+): void {
   if (
+    (profile.artifactSet === undefined
+      ? "artifactSet" in artifact
+      : !("artifactSet" in artifact) ||
+        artifact.artifactSet !== profile.artifactSet) ||
     artifact.formatVersion !== 1 ||
     artifact.sourceCommit === zeroSourceCommit ||
     !sourceCommitPattern.test(artifact.sourceCommit) ||
-    artifact.images.length !== artifactImageNames.length
+    artifact.images.length !== profile.artifactImageNames.length
   ) {
     throw operatorError("artifact_validation_failed");
   }
-  const expectedNames = [...artifactImageNames].sort();
+  const expectedNames = [...profile.artifactImageNames].sort();
   if (
     artifact.images.some((image, index) => {
       const expectedName = expectedNames[index];
       return (
         image.name !== expectedName ||
-        approvedImageRepositories[image.name as ArtifactImageName] !==
-          image.repository ||
+        profile.approvedImageRepositories[image.name] !== image.repository ||
         !digestPattern.test(image.imageDigest) ||
         image.imageDigest === zeroDigest ||
         image.imageReference !== `${image.repository}@${image.imageDigest}` ||
@@ -845,13 +1457,31 @@ function hasExactKeys(
   );
 }
 
-function renderReleaseEnvironment(artifact: ReleaseArtifact): string {
+function renderReleaseEnvironment(
+  artifact: ReleaseArtifact,
+  tfSuccessorWsEnabled: boolean,
+): string {
+  return renderReleaseEnvironmentForProfile(
+    legacyReleaseProfile,
+    artifact,
+    tfSuccessorWsEnabled,
+  );
+}
+
+function renderReleaseEnvironmentForProfile(
+  profile: ReleaseProfile,
+  artifact: ReleaseArtifact | TfOnlyReleaseArtifact,
+  tfSuccessorWsEnabled: boolean,
+): string {
   const references = new Map(
     artifact.images.map(({ imageReference, name }) => [name, imageReference]),
   );
-  const lines = [`RELEASE_SOURCE_COMMIT=${artifact.sourceCommit}`];
-  for (const environmentName of releaseEnvironmentOrder) {
-    const imageName = releaseImageEnvironmentNames[environmentName];
+  const lines = [
+    `RELEASE_SOURCE_COMMIT=${artifact.sourceCommit}`,
+    `TF_SUCCESSOR_WS_ENABLED=${String(tfSuccessorWsEnabled)}`,
+  ];
+  for (const environmentName of profile.environmentOrder) {
+    const imageName = profile.environmentNames[environmentName];
     const reference = references.get(imageName);
     if (reference === undefined) {
       throw operatorError("artifact_validation_failed");
@@ -859,6 +1489,14 @@ function renderReleaseEnvironment(artifact: ReleaseArtifact): string {
     lines.push(`${environmentName}=${reference}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function releaseSuccessorSelection(environmentContents: string): boolean {
+  const matches = environmentContents.match(
+    /^TF_SUCCESSOR_WS_ENABLED=(false|true)$/gm,
+  );
+  if (matches?.length !== 1) throw operatorError("invalid_release_manifest");
+  return matches[0] === "TF_SUCCESSOR_WS_ENABLED=true";
 }
 
 async function writeDurableExclusive(
@@ -881,31 +1519,61 @@ function sha256(contents: string): string {
 export function verifyOperatorReleaseEvidence(
   manifestPath: string,
 ): ReleaseArtifact {
+  return verifyOperatorReleaseEvidenceForProfile(
+    legacyReleaseProfile,
+    manifestPath,
+  ) as ReleaseArtifact;
+}
+
+export function verifyTfOnlyOperatorReleaseEvidence(
+  manifestPath: string,
+): TfOnlyReleaseArtifact {
+  return verifyOperatorReleaseEvidenceForProfile(
+    tfOnlyReleaseProfile,
+    manifestPath,
+  ) as TfOnlyReleaseArtifact;
+}
+
+function verifyOperatorReleaseEvidenceForProfile(
+  profile: ReleaseProfile,
+  manifestPath: string,
+): ReleaseArtifact | TfOnlyReleaseArtifact {
   try {
     const resolvedManifestPath = resolve(manifestPath);
-    if (basename(resolvedManifestPath) !== "apollo-release-manifest.json") {
+    if (basename(resolvedManifestPath) !== profile.manifestFileName) {
       throw operatorError("invalid_release_manifest");
     }
     const releaseDirectory = dirname(resolvedManifestPath);
     const releaseId = basename(releaseDirectory);
     assertReleaseId(releaseId);
 
-    const completionPath = join(
-      releaseDirectory,
-      "apollo-release-complete.json",
-    );
+    const completionPath = join(releaseDirectory, profile.completionFileName);
     const completionValue = JSON.parse(
       readFileSync(completionPath, "utf8"),
     ) as unknown;
     if (
       !isRecord(completionValue) ||
-      !hasExactKeys(completionValue, [
-        "environmentSha256",
-        "formatVersion",
-        "manifestSha256",
-        "releaseId",
-        "sourceCommit",
-      ]) ||
+      !hasExactKeys(
+        completionValue,
+        profile.artifactSet === undefined
+          ? [
+              "environmentSha256",
+              "formatVersion",
+              "manifestSha256",
+              "releaseId",
+              "sourceCommit",
+            ]
+          : [
+              "artifactSet",
+              "environmentSha256",
+              "formatVersion",
+              "manifestSha256",
+              "releaseId",
+              "sourceCommit",
+            ],
+      ) ||
+      (profile.artifactSet !== undefined &&
+        completionValue.artifactSet !== profile.artifactSet) ||
       completionValue.formatVersion !== 1 ||
       completionValue.releaseId !== releaseId ||
       completionValue.sourceCommit === zeroSourceCommit ||
@@ -921,7 +1589,7 @@ export function verifyOperatorReleaseEvidence(
 
     const manifestContents = readFileSync(resolvedManifestPath, "utf8");
     const environmentContents = readFileSync(
-      join(releaseDirectory, "release-images.env"),
+      join(releaseDirectory, profile.environmentFileName),
       "utf8",
     );
     if (
@@ -934,11 +1602,14 @@ export function verifyOperatorReleaseEvidence(
     const artifactValue = JSON.parse(manifestContents) as unknown;
     if (
       !isRecord(artifactValue) ||
-      !hasExactKeys(artifactValue, [
-        "formatVersion",
-        "images",
-        "sourceCommit",
-      ]) ||
+      !hasExactKeys(
+        artifactValue,
+        profile.artifactSet === undefined
+          ? ["formatVersion", "images", "sourceCommit"]
+          : ["artifactSet", "formatVersion", "images", "sourceCommit"],
+      ) ||
+      (profile.artifactSet !== undefined &&
+        artifactValue.artifactSet !== profile.artifactSet) ||
       artifactValue.formatVersion !== 1 ||
       typeof artifactValue.sourceCommit !== "string" ||
       !Array.isArray(artifactValue.images) ||
@@ -959,11 +1630,18 @@ export function verifyOperatorReleaseEvidence(
     ) {
       throw operatorError("invalid_release_manifest");
     }
-    const artifact = artifactValue as ReleaseArtifact;
-    validateReleaseArtifact(artifact);
+    const artifact = artifactValue as ReleaseArtifact | TfOnlyReleaseArtifact;
+    validateReleaseArtifactForProfile(profile, artifact);
     if (
       artifact.sourceCommit !== completionValue.sourceCommit ||
-      environmentContents !== renderReleaseEnvironment(artifact)
+      environmentContents !==
+        renderReleaseEnvironmentForProfile(
+          profile,
+          artifact,
+          profile.artifactSet === undefined
+            ? releaseSuccessorSelection(environmentContents)
+            : false,
+        )
     ) {
       throw operatorError("invalid_release_manifest");
     }
@@ -1014,31 +1692,46 @@ async function sha256Directory(root: string): Promise<string> {
 }
 
 async function writeReleaseOutput(
+  profile: ReleaseProfile,
   stagingDirectory: string,
   releaseDirectory: string,
   releaseId: string,
-  releaseArtifact: ReleaseArtifact,
+  releaseArtifact: ReleaseArtifact | TfOnlyReleaseArtifact,
+  tfSuccessorWsEnabled: boolean,
   dependencies: OperatorReleaseDependencies,
-): Promise<OperatorReleaseOutput> {
-  const stagedManifestPath = join(
+): Promise<OperatorReleaseOutput | TfOnlyOperatorReleaseOutput> {
+  const stagedManifestPath = join(stagingDirectory, profile.manifestFileName);
+  const stagedEnvFragmentPath = join(
     stagingDirectory,
-    "apollo-release-manifest.json",
+    profile.environmentFileName,
   );
-  const stagedEnvFragmentPath = join(stagingDirectory, "release-images.env");
   const stagedCompletionPath = join(
     stagingDirectory,
-    "apollo-release-complete.json",
+    profile.completionFileName,
   );
   const manifestContents = `${JSON.stringify(releaseArtifact, null, 2)}\n`;
-  const renderedEnvironment = renderReleaseEnvironment(releaseArtifact);
+  const renderedEnvironment = renderReleaseEnvironmentForProfile(
+    profile,
+    releaseArtifact,
+    tfSuccessorWsEnabled,
+  );
   const completionContents = `${JSON.stringify(
-    {
-      environmentSha256: sha256(renderedEnvironment),
-      formatVersion: 1,
-      manifestSha256: sha256(manifestContents),
-      releaseId,
-      sourceCommit: releaseArtifact.sourceCommit,
-    },
+    profile.artifactSet === undefined
+      ? {
+          environmentSha256: sha256(renderedEnvironment),
+          formatVersion: 1,
+          manifestSha256: sha256(manifestContents),
+          releaseId,
+          sourceCommit: releaseArtifact.sourceCommit,
+        }
+      : {
+          artifactSet: profile.artifactSet,
+          environmentSha256: sha256(renderedEnvironment),
+          formatVersion: 1,
+          manifestSha256: sha256(manifestContents),
+          releaseId,
+          sourceCommit: releaseArtifact.sourceCommit,
+        },
     null,
     2,
   )}\n`;
@@ -1049,8 +1742,11 @@ async function writeReleaseOutput(
     await dependencies.publicationCheckpoint?.("staged_environment_written");
     await writeDurableExclusive(stagedCompletionPath, completionContents);
     await dependencies.publicationCheckpoint?.("staged_completion_written");
-    validateReleaseArtifact(
-      JSON.parse(await readFile(stagedManifestPath, "utf8")) as ReleaseArtifact,
+    validateReleaseArtifactForProfile(
+      profile,
+      JSON.parse(await readFile(stagedManifestPath, "utf8")) as
+        | ReleaseArtifact
+        | TfOnlyReleaseArtifact,
     );
     const completion = JSON.parse(
       await readFile(stagedCompletionPath, "utf8"),
@@ -1059,13 +1755,27 @@ async function writeReleaseOutput(
       (await readFile(stagedManifestPath, "utf8")) !== manifestContents ||
       (await readFile(stagedEnvFragmentPath, "utf8")) !== renderedEnvironment ||
       !isRecord(completion) ||
-      !hasExactKeys(completion, [
-        "environmentSha256",
-        "formatVersion",
-        "manifestSha256",
-        "releaseId",
-        "sourceCommit",
-      ]) ||
+      !hasExactKeys(
+        completion,
+        profile.artifactSet === undefined
+          ? [
+              "environmentSha256",
+              "formatVersion",
+              "manifestSha256",
+              "releaseId",
+              "sourceCommit",
+            ]
+          : [
+              "artifactSet",
+              "environmentSha256",
+              "formatVersion",
+              "manifestSha256",
+              "releaseId",
+              "sourceCommit",
+            ],
+      ) ||
+      (profile.artifactSet !== undefined &&
+        completion.artifactSet !== profile.artifactSet) ||
       completion.environmentSha256 !== sha256(renderedEnvironment) ||
       completion.formatVersion !== 1 ||
       completion.manifestSha256 !== sha256(manifestContents) ||
@@ -1086,8 +1796,8 @@ async function writeReleaseOutput(
   }
 
   return {
-    envFragmentPath: join(releaseDirectory, "release-images.env"),
-    manifestPath: join(releaseDirectory, "apollo-release-manifest.json"),
+    envFragmentPath: join(releaseDirectory, profile.environmentFileName),
+    manifestPath: join(releaseDirectory, profile.manifestFileName),
     releaseArtifact,
   };
 }
@@ -1095,6 +1805,7 @@ async function writeReleaseOutput(
 type OperatorReleaseReceipt = {
   archiveFile: "source.tar";
   archiveSha256: string;
+  artifactSet?: "tf-only";
   formatVersion: 1;
   imageCatalog: unknown;
   protocolVersion: 2;
@@ -1104,6 +1815,7 @@ type OperatorReleaseReceipt = {
 };
 
 async function loadOperatorReleaseReceipt(
+  profile: ReleaseProfile,
   options: OperatorReleasePublicationOptions,
   claimDirectory: string,
 ): Promise<OperatorReleaseReceipt> {
@@ -1121,22 +1833,39 @@ async function loadOperatorReleaseReceipt(
     ) as unknown;
     if (
       !isRecord(value) ||
-      !hasExactKeys(value, [
-        "archiveFile",
-        "archiveSha256",
-        "formatVersion",
-        "imageCatalog",
-        "protocolVersion",
-        "releaseId",
-        "sourceCommit",
-        "sourceTreeSha256",
-      ]) ||
+      !hasExactKeys(
+        value,
+        profile.artifactSet === undefined
+          ? [
+              "archiveFile",
+              "archiveSha256",
+              "formatVersion",
+              "imageCatalog",
+              "protocolVersion",
+              "releaseId",
+              "sourceCommit",
+              "sourceTreeSha256",
+            ]
+          : [
+              "archiveFile",
+              "archiveSha256",
+              "artifactSet",
+              "formatVersion",
+              "imageCatalog",
+              "protocolVersion",
+              "releaseId",
+              "sourceCommit",
+              "sourceTreeSha256",
+            ],
+      ) ||
+      (profile.artifactSet !== undefined &&
+        value.artifactSet !== profile.artifactSet) ||
       value.archiveFile !== "source.tar" ||
       typeof value.archiveSha256 !== "string" ||
       !sha256Pattern.test(value.archiveSha256) ||
       value.formatVersion !== 1 ||
       JSON.stringify(value.imageCatalog) !==
-        JSON.stringify(releaseImageCatalog) ||
+        JSON.stringify(profile.imageCatalog) ||
       value.protocolVersion !== 2 ||
       value.releaseId !== options.releaseId ||
       value.sourceCommit !== options.sourceCommit ||
@@ -1155,6 +1884,34 @@ export async function publishOperatorRelease(
   options: OperatorReleasePublicationOptions,
   dependencies: OperatorReleaseDependencies = defaultOperatorReleaseDependencies,
 ): Promise<OperatorReleaseOutput> {
+  return (await publishOperatorReleaseForProfile(
+    legacyReleaseProfile,
+    options,
+    dependencies,
+  )) as OperatorReleaseOutput;
+}
+
+export async function publishTfOnlyOperatorRelease(
+  options: OperatorReleasePublicationOptions,
+  dependencies: OperatorReleaseDependencies = defaultOperatorReleaseDependencies,
+): Promise<TfOnlyOperatorReleaseOutput> {
+  if (options.tfSuccessorWsEnabled !== undefined) {
+    throw operatorError("invalid_arguments");
+  }
+  return (await publishOperatorReleaseForProfile(
+    tfOnlyReleaseProfile,
+    { ...options, tfSuccessorWsEnabled: false },
+    dependencies,
+  )) as TfOnlyOperatorReleaseOutput;
+}
+
+async function publishOperatorReleaseForProfile(
+  profile: ReleaseProfile,
+  options: OperatorReleasePublicationOptions,
+  dependencies: OperatorReleaseDependencies,
+): Promise<OperatorReleaseOutput | TfOnlyOperatorReleaseOutput> {
+  if ("captureSourceFailure" in options)
+    throw operatorError("invalid_arguments");
   if (options.mode !== "production") {
     throw operatorError("invalid_release_mode");
   }
@@ -1166,11 +1923,13 @@ export async function publishOperatorRelease(
     throw operatorError("invalid_source_commit");
   }
 
-  const releaseDirectory = operatorReleaseOutputDirectory(
+  const releaseDirectory = releaseOutputDirectory(
+    profile,
     options.repositoryRoot,
     options.releaseId,
   );
-  const claimDirectory = operatorReleaseClaimDirectory(
+  const claimDirectory = releaseClaimDirectory(
+    profile,
     options.repositoryRoot,
     options.releaseId,
   );
@@ -1179,7 +1938,7 @@ export async function publishOperatorRelease(
   let buildRoot: string | undefined;
   let builderName: string | undefined;
   let builderRemovalRequired = false;
-  let output: OperatorReleaseOutput | undefined;
+  let output: OperatorReleaseOutput | TfOnlyOperatorReleaseOutput | undefined;
   let primaryError: Error | undefined;
   let releaseStagingDirectory: string | undefined;
   let releaseStagingOwned = false;
@@ -1189,10 +1948,15 @@ export async function publishOperatorRelease(
   try {
     throwIfCancelled(options.signal);
     await assertUnredirectedPrivateClaim(
+      profile,
       options.repositoryRoot,
       claimDirectory,
     );
-    const receipt = await loadOperatorReleaseReceipt(options, claimDirectory);
+    const receipt = await loadOperatorReleaseReceipt(
+      profile,
+      options,
+      claimDirectory,
+    );
     archivePath = join(claimDirectory, receipt.archiveFile);
     try {
       const archiveStat = await lstat(archivePath);
@@ -1212,12 +1976,20 @@ export async function publishOperatorRelease(
       await writeDurableExclusive(
         join(claimDirectory, "publication-started.json"),
         `${JSON.stringify(
-          {
-            formatVersion: 1,
-            protocolVersion: 2,
-            releaseId: options.releaseId,
-            sourceCommit: options.sourceCommit,
-          },
+          profile.artifactSet === undefined
+            ? {
+                formatVersion: 1,
+                protocolVersion: 2,
+                releaseId: options.releaseId,
+                sourceCommit: options.sourceCommit,
+              }
+            : {
+                artifactSet: profile.artifactSet,
+                formatVersion: 1,
+                protocolVersion: 2,
+                releaseId: options.releaseId,
+                sourceCommit: options.sourceCommit,
+              },
           null,
           2,
         )}\n`,
@@ -1286,7 +2058,7 @@ export async function publishOperatorRelease(
       throw operatorError("invalid_release_receipt");
     }
 
-    for (const target of operatorReleaseImageTargets) {
+    for (const target of profile.targets) {
       throwIfCancelled(options.signal);
       let inspection: OperatorReleaseCommandResult;
       try {
@@ -1357,13 +2129,22 @@ export async function publishOperatorRelease(
       await writeDurableExclusive(
         join(claimDirectory, "builder-claim.json"),
         `${JSON.stringify(
-          {
-            builderName,
-            formatVersion: 1,
-            protocolVersion: 2,
-            releaseId: options.releaseId,
-            sourceCommit: options.sourceCommit,
-          },
+          profile.artifactSet === undefined
+            ? {
+                builderName,
+                formatVersion: 1,
+                protocolVersion: 2,
+                releaseId: options.releaseId,
+                sourceCommit: options.sourceCommit,
+              }
+            : {
+                artifactSet: profile.artifactSet,
+                builderName,
+                formatVersion: 1,
+                protocolVersion: 2,
+                releaseId: options.releaseId,
+                sourceCommit: options.sourceCommit,
+              },
           null,
           2,
         )}\n`,
@@ -1424,7 +2205,7 @@ export async function publishOperatorRelease(
       throw operatorError("image_build_failed");
     }
     const buildDigests = new Map<string, string>();
-    for (const target of operatorReleaseImageTargets) {
+    for (const target of profile.targets) {
       const metadataPath = join(metadataRoot, `${target.name}.json`);
       await checkedCommand(
         dependencies,
@@ -1441,6 +2222,10 @@ export async function publishOperatorRelease(
           "mode=max",
           "--sbom",
           "true",
+          ...operatorReleaseBuildArguments(
+            target.name,
+            options.tfSuccessorWsEnabled,
+          ),
           "--label",
           `org.opencontainers.image.source=${sourceRepository}`,
           "--label",
@@ -1472,7 +2257,7 @@ export async function publishOperatorRelease(
     }
 
     const images: ReleaseArtifactImage[] = [];
-    for (const target of operatorReleaseImageTargets) {
+    for (const target of profile.targets) {
       const reference = `${target.repository}:${options.releaseId}`;
       const buildDigest = buildDigests.get(target.name);
       if (buildDigest === undefined) throw operatorError("image_build_failed");
@@ -1533,16 +2318,24 @@ export async function publishOperatorRelease(
         repository: target.repository,
       });
     }
-    images.push(pinnedRedisArtifactImage());
+    images.push(pinnedRedisArtifactImage(profile));
     images.sort(({ name: left }, { name: right }) =>
       left < right ? -1 : left > right ? 1 : 0,
     );
-    const releaseArtifact: ReleaseArtifact = {
-      formatVersion: 1,
-      images,
-      sourceCommit: options.sourceCommit,
-    };
-    validateReleaseArtifact(releaseArtifact);
+    const releaseArtifact: ReleaseArtifact | TfOnlyReleaseArtifact =
+      profile.artifactSet === undefined
+        ? {
+            formatVersion: 1,
+            images,
+            sourceCommit: options.sourceCommit,
+          }
+        : {
+            artifactSet: profile.artifactSet,
+            formatVersion: 1,
+            images,
+            sourceCommit: options.sourceCommit,
+          };
+    validateReleaseArtifactForProfile(profile, releaseArtifact);
     try {
       await mkdir(dirname(releaseDirectory), { recursive: true });
       await mkdir(releaseStagingDirectory, { mode: 0o700 });
@@ -1551,10 +2344,12 @@ export async function publishOperatorRelease(
       throw operatorError("artifact_validation_failed");
     }
     output = await writeReleaseOutput(
+      profile,
       releaseStagingDirectory,
       releaseDirectory,
       options.releaseId,
       releaseArtifact,
+      options.tfSuccessorWsEnabled === true,
       dependencies,
     );
   } catch (error) {
@@ -1640,39 +2435,69 @@ const defaultOperatorReleaseCliIo: OperatorReleaseCliIo = {
   },
 };
 
-function publicErrorCode(error: unknown): string {
-  return sanitizedOperatorError(error).message;
+function publicErrorResponse(error: unknown): {
+  error: string;
+  validationStage?: SourceValidationStage;
+  commandFailure?: CommandFailure;
+} {
+  const sanitized = sanitizedOperatorError(error);
+  const failure = sourceValidationFailures.get(sanitized);
+  return failure === undefined
+    ? { error: sanitized.message }
+    : { error: sanitized.message, ...failure };
 }
 
 export async function runOperatorReleaseCli(
-  operation: "prepare" | "publish",
+  operation: "prepare" | "prepare-tf-only" | "publish" | "publish-tf-only",
   argv: readonly string[],
   dependencies: OperatorReleaseDependencies = defaultOperatorReleaseDependencies,
   io: OperatorReleaseCliIo = defaultOperatorReleaseCliIo,
   signal?: AbortSignal,
 ): Promise<number> {
   try {
-    const output =
-      operation === "prepare"
-        ? await prepareOperatorRelease(
-            {
-              ...parseOperatorReleaseArguments(argv),
-              repositoryRoot: io.repositoryRoot,
-            },
-            dependencies,
-          )
-        : await publishOperatorRelease(
-            {
-              ...parseOperatorReleasePublicationArguments(argv),
-              repositoryRoot: io.repositoryRoot,
-              signal,
-            },
-            dependencies,
-          );
+    let output:
+      | OperatorReleaseOutput
+      | OperatorReleasePreparationOutput
+      | TfOnlyOperatorReleaseOutput;
+    if (operation === "prepare") {
+      output = await prepareOperatorRelease(
+        {
+          ...parseOperatorReleaseArguments(argv),
+          repositoryRoot: io.repositoryRoot,
+        },
+        dependencies,
+      );
+    } else if (operation === "prepare-tf-only") {
+      output = await prepareTfOnlyOperatorRelease(
+        {
+          ...parseTfOnlyOperatorReleaseArguments(argv),
+          repositoryRoot: io.repositoryRoot,
+        },
+        dependencies,
+      );
+    } else if (operation === "publish") {
+      output = await publishOperatorRelease(
+        {
+          ...parseOperatorReleasePublicationArguments(argv),
+          repositoryRoot: io.repositoryRoot,
+          signal,
+        },
+        dependencies,
+      );
+    } else {
+      output = await publishTfOnlyOperatorRelease(
+        {
+          ...parseTfOnlyOperatorReleasePublicationArguments(argv),
+          repositoryRoot: io.repositoryRoot,
+          signal,
+        },
+        dependencies,
+      );
+    }
     io.stdout(`${JSON.stringify(output)}\n`);
     return 0;
   } catch (error) {
-    io.stderr(`${JSON.stringify({ error: publicErrorCode(error) })}\n`);
+    io.stderr(`${JSON.stringify(publicErrorResponse(error))}\n`);
     return 1;
   }
 }
@@ -1701,12 +2526,19 @@ if (
   import.meta.url === pathToFileURL(resolve(entryPath)).href
 ) {
   const operation = process.argv[2];
-  if (operation !== "prepare" && operation !== "publish") {
+  if (
+    operation !== "prepare" &&
+    operation !== "prepare-tf-only" &&
+    operation !== "publish" &&
+    operation !== "publish-tf-only"
+  ) {
     process.stderr.write(`${JSON.stringify({ error: "invalid_arguments" })}\n`);
     process.exitCode = 1;
   } else {
     const cancellation =
-      operation === "publish" ? new AbortController() : undefined;
+      operation === "publish" || operation === "publish-tf-only"
+        ? new AbortController()
+        : undefined;
     const removeSignalHandlers =
       cancellation === undefined
         ? () => {}

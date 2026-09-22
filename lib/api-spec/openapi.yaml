@@ -12,6 +12,8 @@ tags:
     description: Health operations
   - name: tracks
     description: Track search, streaming, and download operations
+  - name: collections
+    description: Account-scoped TF music collections
 paths:
   /healthz:
     get:
@@ -341,6 +343,136 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DownloadErrorResponse"
+  /collections/liked:
+    get:
+      operationId: listLikedTracks
+      tags: [collections]
+      summary: List tracks saved by the current account
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: ^[A-Za-z0-9_-]+$
+      responses:
+        "200":
+          description: Current account liked tracks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikedTrackPage"
+        "400":
+          description: Invalid pagination input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "401":
+          description: TF session is missing or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "403":
+          description: Current account lacks tf.collections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "503":
+          description: Live Platform policy could not be confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+  /collections/liked/{trackId}:
+    put:
+      operationId: saveLikedTrack
+      tags: [collections]
+      summary: Save or update one track for the current account
+      parameters:
+        - $ref: "#/components/parameters/LikedTrackId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveLikedTrackRequest"
+      responses:
+        "200":
+          description: Saved track state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikedTrackMutationResponse"
+        "400":
+          description: Invalid track metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "401":
+          description: TF session is missing or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "403":
+          description: Current account lacks tf.collections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "503":
+          description: Live Platform policy could not be confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+    delete:
+      operationId: removeLikedTrack
+      tags: [collections]
+      summary: Remove one track from the current account collection
+      parameters:
+        - $ref: "#/components/parameters/LikedTrackId"
+      responses:
+        "204":
+          description: Track is no longer saved
+        "400":
+          description: Invalid track ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "401":
+          description: TF session is missing or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "403":
+          description: Current account lacks tf.collections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "503":
+          description: Live Platform policy could not be confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
 components:
   parameters:
     DownloadJobId:
@@ -351,6 +483,15 @@ components:
         type: string
         format: uuid
         pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+    LikedTrackId:
+      name: trackId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 4
+        maxLength: 4096
+        pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
   schemas:
     HealthStatus:
       type: object
@@ -685,6 +826,107 @@ components:
             - file_not_ready
             - range_not_satisfiable
             - worker_unavailable
+      required: [error]
+
+    LikedTrack:
+      type: object
+      additionalProperties: false
+      properties:
+        trackId:
+          type: string
+          minLength: 4
+          maxLength: 4096
+          pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+        artist:
+          type: string
+          nullable: true
+          maxLength: 300
+        title:
+          type: string
+          nullable: true
+          maxLength: 500
+        thumbnailUrl:
+          type: string
+          format: uri
+          nullable: true
+          maxLength: 2048
+        durationSeconds:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 86400
+        likedAt:
+          type: string
+          format: date-time
+      required:
+        - trackId
+        - artist
+        - title
+        - thumbnailUrl
+        - durationSeconds
+        - likedAt
+
+    LikedTrackPage:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/LikedTrack"
+        nextCursor:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: ^[A-Za-z0-9_-]+$
+      required: [items, nextCursor]
+
+    SaveLikedTrackRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        artist:
+          type: string
+          minLength: 1
+          maxLength: 300
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+        thumbnailUrl:
+          type: string
+          format: uri
+          nullable: true
+          maxLength: 2048
+        durationSeconds:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 86400
+      required: [artist, title]
+
+    LikedTrackMutationResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        item:
+          $ref: "#/components/schemas/LikedTrack"
+      required: [item]
+
+    CollectionErrorResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum:
+            - bad_request
+            - unauthorized
+            - forbidden
+            - module_access_denied
+            - policy_unavailable
+            - internal_error
       required: [error]
 
     ErrorResponse:

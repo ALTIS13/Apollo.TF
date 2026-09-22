@@ -316,3 +316,202 @@ export const CancelDownloadJobResponse = zod.object({
   jobId: zod.string().uuid(),
   status: zod.enum(["waiting", "active", "completed", "failed", "canceled"]),
 });
+
+/**
+ * @summary List tracks saved by the current account
+ */
+export const listLikedTracksQueryLimitDefault = 50;
+export const listLikedTracksQueryLimitMax = 100;
+
+export const listLikedTracksQueryCursorMax = 64;
+
+export const listLikedTracksQueryCursorRegExp = new RegExp("^[A-Za-z0-9_-]+$");
+
+export const ListLikedTracksQueryParams = zod
+  .object({
+    limit: zod.coerce
+      .number().int()
+      .min(1)
+      .max(listLikedTracksQueryLimitMax)
+      .default(listLikedTracksQueryLimitDefault),
+    cursor: zod.coerce
+      .string()
+      .min(1)
+      .max(listLikedTracksQueryCursorMax)
+      .regex(listLikedTracksQueryCursorRegExp)
+      .optional(),
+  })
+  .strict();
+
+export const listLikedTracksResponseItemsItemTrackIdMin = 4;
+export const listLikedTracksResponseItemsItemTrackIdMax = 4096;
+
+export const listLikedTracksResponseItemsItemTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const listLikedTracksResponseItemsItemArtistMax = 300;
+
+export const listLikedTracksResponseItemsItemTitleMax = 500;
+
+export const listLikedTracksResponseItemsItemThumbnailUrlMax = 2048;
+
+export const listLikedTracksResponseItemsItemDurationSecondsMax = 86400;
+
+export const listLikedTracksResponseItemsMax = 100;
+
+export const listLikedTracksResponseNextCursorMax = 64;
+
+export const listLikedTracksResponseNextCursorRegExp = new RegExp(
+  "^[A-Za-z0-9_-]+$",
+);
+
+export const ListLikedTracksResponse = zod
+  .object({
+    items: zod
+      .array(
+        zod
+          .object({
+            trackId: zod
+              .string()
+              .min(listLikedTracksResponseItemsItemTrackIdMin)
+              .max(listLikedTracksResponseItemsItemTrackIdMax)
+              .regex(listLikedTracksResponseItemsItemTrackIdRegExp),
+            artist: zod
+              .string()
+              .max(listLikedTracksResponseItemsItemArtistMax)
+              .nullable(),
+            title: zod
+              .string()
+              .max(listLikedTracksResponseItemsItemTitleMax)
+              .nullable(),
+            thumbnailUrl: zod
+              .string()
+              .url()
+              .max(listLikedTracksResponseItemsItemThumbnailUrlMax)
+              .nullable(),
+            durationSeconds: zod
+              .number().int()
+              .min(1)
+              .max(listLikedTracksResponseItemsItemDurationSecondsMax)
+              .nullable(),
+            likedAt: zod.string().datetime({}),
+          })
+          .strict(),
+      )
+      .max(listLikedTracksResponseItemsMax),
+    nextCursor: zod
+      .string()
+      .max(listLikedTracksResponseNextCursorMax)
+      .regex(listLikedTracksResponseNextCursorRegExp)
+      .nullable(),
+  })
+  .strict();
+
+/**
+ * @summary Save or update one track for the current account
+ */
+export const saveLikedTrackPathTrackIdMin = 4;
+export const saveLikedTrackPathTrackIdMax = 4096;
+
+export const saveLikedTrackPathTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+
+export const SaveLikedTrackParams = zod
+  .object({
+    trackId: zod
+      .string()
+      .min(saveLikedTrackPathTrackIdMin)
+      .max(saveLikedTrackPathTrackIdMax)
+      .regex(saveLikedTrackPathTrackIdRegExp),
+  })
+  .strict();
+
+export const saveLikedTrackBodyArtistMax = 300;
+
+export const saveLikedTrackBodyTitleMax = 500;
+
+export const saveLikedTrackBodyThumbnailUrlMax = 2048;
+
+export const saveLikedTrackBodyDurationSecondsMax = 86400;
+
+export const SaveLikedTrackBody = zod
+  .object({
+    artist: zod.string().trim().min(1).max(saveLikedTrackBodyArtistMax),
+    title: zod.string().trim().min(1).max(saveLikedTrackBodyTitleMax),
+    thumbnailUrl: zod
+      .string()
+      .url()
+      .max(saveLikedTrackBodyThumbnailUrlMax)
+      .nullish(),
+    durationSeconds: zod
+      .number().int()
+      .min(1)
+      .max(saveLikedTrackBodyDurationSecondsMax)
+      .nullish(),
+  })
+  .strict();
+
+export const saveLikedTrackResponseItemTrackIdMin = 4;
+export const saveLikedTrackResponseItemTrackIdMax = 4096;
+
+export const saveLikedTrackResponseItemTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const saveLikedTrackResponseItemArtistMax = 300;
+
+export const saveLikedTrackResponseItemTitleMax = 500;
+
+export const saveLikedTrackResponseItemThumbnailUrlMax = 2048;
+
+export const saveLikedTrackResponseItemDurationSecondsMax = 86400;
+
+export const SaveLikedTrackResponse = zod
+  .object({
+    item: zod
+      .object({
+        trackId: zod
+          .string()
+          .min(saveLikedTrackResponseItemTrackIdMin)
+          .max(saveLikedTrackResponseItemTrackIdMax)
+          .regex(saveLikedTrackResponseItemTrackIdRegExp),
+        artist: zod
+          .string()
+          .max(saveLikedTrackResponseItemArtistMax)
+          .nullable(),
+        title: zod.string().max(saveLikedTrackResponseItemTitleMax).nullable(),
+        thumbnailUrl: zod
+          .string()
+          .url()
+          .max(saveLikedTrackResponseItemThumbnailUrlMax)
+          .nullable(),
+        durationSeconds: zod
+          .number().int()
+          .min(1)
+          .max(saveLikedTrackResponseItemDurationSecondsMax)
+          .nullable(),
+        likedAt: zod.string().datetime({}),
+      })
+      .strict(),
+  })
+  .strict();
+
+/**
+ * @summary Remove one track from the current account collection
+ */
+export const removeLikedTrackPathTrackIdMin = 4;
+export const removeLikedTrackPathTrackIdMax = 4096;
+
+export const removeLikedTrackPathTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+
+export const RemoveLikedTrackParams = zod
+  .object({
+    trackId: zod
+      .string()
+      .min(removeLikedTrackPathTrackIdMin)
+      .max(removeLikedTrackPathTrackIdMax)
+      .regex(removeLikedTrackPathTrackIdRegExp),
+  })
+  .strict();

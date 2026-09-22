@@ -9,7 +9,7 @@ export type OperatorReleaseImageTarget = {
 export type ReleaseImageCatalogEntry =
   | (OperatorReleaseImageTarget & { kind: "custom" })
   | {
-      environmentNames: readonly ["PLATFORM_REDIS_IMAGE", "TF_REDIS_IMAGE"];
+      environmentNames: readonly string[];
       kind: "external";
       name: "redis";
       reference: string;
@@ -130,6 +130,13 @@ export type ReleaseArtifact = {
   sourceCommit: string;
 };
 
+export type TfOnlyReleaseArtifact = {
+  artifactSet: "tf-only";
+  formatVersion: 1;
+  images: ReleaseArtifactImage[];
+  sourceCommit: string;
+};
+
 type CatalogImageNames<Catalog extends readonly { readonly name: string }[]> = {
   readonly [Index in keyof Catalog]: Catalog[Index] extends {
     readonly name: infer Name;
@@ -162,6 +169,139 @@ export const operatorReleaseImageTargets: readonly OperatorReleaseImageTarget[] 
     const { kind: _kind, ...target } = entry;
     return [target];
   });
+
+export const tfOnlyReleaseImageCatalog = [
+  {
+    dockerfile: "artifacts/api-server/Dockerfile",
+    environmentNames: ["TF_API_IMAGE"],
+    kind: "custom",
+    name: "tf-api",
+    repository: "ghcr.io/altis13/apollo-tf-api",
+    target: "runner",
+  },
+  {
+    dockerfile: "artifacts/api-server/Dockerfile",
+    environmentNames: ["TF_POSTGRES_IMAGE"],
+    kind: "custom",
+    name: "tf-postgres",
+    repository: "ghcr.io/altis13/apollo-tf-postgres",
+    target: "postgres-role-init",
+  },
+  {
+    dockerfile: "artifacts/music-player/Dockerfile",
+    environmentNames: ["TF_WEB_IMAGE"],
+    kind: "custom",
+    name: "tf-web",
+    repository: "ghcr.io/altis13/apollo-tf-web",
+    target: "runner",
+  },
+  {
+    dockerfile: "artifacts/admin-dashboard/Dockerfile",
+    environmentNames: ["TF_ADMIN_IMAGE"],
+    kind: "custom",
+    name: "tf-admin",
+    repository: "ghcr.io/altis13/apollo-tf-admin",
+    target: "default",
+  },
+  {
+    dockerfile: "artifacts/tf-search/Dockerfile",
+    environmentNames: ["TF_SEARCH_IMAGE"],
+    kind: "custom",
+    name: "tf-search",
+    repository: "ghcr.io/altis13/apollo-tf-search",
+    target: "runner",
+  },
+  {
+    dockerfile: "artifacts/tf-integrations/Dockerfile",
+    environmentNames: ["TF_INTEGRATIONS_IMAGE"],
+    kind: "custom",
+    name: "tf-integrations",
+    repository: "ghcr.io/altis13/apollo-tf-integrations",
+    target: "runner",
+  },
+  {
+    dockerfile: "artifacts/tf-integrations/Dockerfile",
+    environmentNames: ["TF_INTEGRATIONS_POSTGRES_IMAGE"],
+    kind: "custom",
+    name: "tf-integrations-postgres",
+    repository: "ghcr.io/altis13/apollo-tf-integrations-postgres",
+    target: "postgres-role-init",
+  },
+  {
+    dockerfile: "artifacts/tf-download-worker/Dockerfile",
+    environmentNames: ["TF_DOWNLOAD_WORKER_IMAGE"],
+    kind: "custom",
+    name: "tf-download-worker",
+    repository: "ghcr.io/altis13/apollo-tf-download-worker",
+    target: "runner",
+  },
+  {
+    dockerfile: "artifacts/tf-download-worker/Dockerfile",
+    environmentNames: ["TF_DOWNLOAD_REDIS_IMAGE"],
+    kind: "custom",
+    name: "tf-download-redis",
+    repository: "ghcr.io/altis13/apollo-tf-download-redis",
+    target: "queue-redis",
+  },
+  {
+    environmentNames: ["TF_REDIS_IMAGE"],
+    kind: "external",
+    name: "redis",
+    reference:
+      "docker.io/library/redis:7-bookworm@sha256:595cc6f2bb3af6e03347b90deb6123c6aa2c81dea05ce08128de8a174b6ac67b",
+    repository: "docker.io/library/redis",
+  },
+] as const satisfies readonly ReleaseImageCatalogEntry[];
+
+export type TfOnlyArtifactImageName =
+  (typeof tfOnlyReleaseImageCatalog)[number]["name"];
+
+export const tfOnlyArtifactImageNames = tfOnlyReleaseImageCatalog.map(
+  ({ name }) => name,
+) as unknown as CatalogImageNames<typeof tfOnlyReleaseImageCatalog>;
+
+export const tfOnlyApprovedImageRepositories: Readonly<
+  Record<TfOnlyArtifactImageName, string>
+> = Object.fromEntries(
+  tfOnlyReleaseImageCatalog.map(({ name, repository }) => [name, repository]),
+) as Record<TfOnlyArtifactImageName, string>;
+
+export const tfOnlyReleaseImageEnvironmentNames: Readonly<
+  Record<string, TfOnlyArtifactImageName>
+> = Object.fromEntries(
+  tfOnlyReleaseImageCatalog.flatMap(({ environmentNames, name }) =>
+    environmentNames.map((environmentName) => [environmentName, name]),
+  ),
+) as Record<string, TfOnlyArtifactImageName>;
+
+export const tfOnlyOperatorReleaseImageTargets: readonly OperatorReleaseImageTarget[] =
+  tfOnlyReleaseImageCatalog.flatMap((entry) => {
+    if (entry.kind === "external") return [];
+    const { kind: _kind, ...target } = entry;
+    return [target];
+  });
+
+const tfOnlyTargetNames = new Set(
+  tfOnlyOperatorReleaseImageTargets.map(({ name }) => name),
+);
+const tfOnlyRepositories = new Set(
+  tfOnlyReleaseImageCatalog.map(({ repository }) => repository),
+);
+if (
+  tfOnlyReleaseImageCatalog.length !== 10 ||
+  tfOnlyOperatorReleaseImageTargets.length !== 9 ||
+  tfOnlyTargetNames.size !== 9 ||
+  tfOnlyRepositories.size !== 10 ||
+  tfOnlyReleaseImageCatalog.filter(({ kind }) => kind === "external").length !==
+    1 ||
+  tfOnlyReleaseImageCatalog.some(
+    ({ environmentNames, repository }) =>
+      repository.startsWith("ghcr.io/altis13/apollo-platform-") ||
+      environmentNames.some((name) => name.startsWith("PLATFORM_")),
+  )
+) {
+  throw new Error("invalid TF-only release image catalog");
+}
 
 export const pinnedRedisReference = releaseImageCatalog.find(
   (

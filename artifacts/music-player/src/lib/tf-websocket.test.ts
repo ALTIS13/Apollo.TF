@@ -5,9 +5,9 @@ import {
 } from "./tf-session-client";
 import { TfWebSocketLifecycle } from "./tf-websocket";
 
-const FIRST_TICKET = "a".repeat(43);
-const SECOND_TICKET = "b".repeat(43);
-const THIRD_TICKET = "c".repeat(43);
+const FIRST_TICKET = "a".repeat(42) + "A";
+const SECOND_TICKET = "b".repeat(42) + "A";
+const THIRD_TICKET = "c".repeat(42) + "A";
 
 class FakeSocket {
   readonly url: string;
@@ -158,10 +158,10 @@ describe("TfWebSocketLifecycle", () => {
       FIRST_TICKET,
       SECOND_TICKET,
       THIRD_TICKET,
-      "d".repeat(43),
-      "e".repeat(43),
-      "f".repeat(43),
-      "g".repeat(43),
+      "d".repeat(42) + "A",
+      "e".repeat(42) + "A",
+      "f".repeat(42) + "A",
+      "g".repeat(42) + "A",
     ]);
     const expectedDelays = [3_000, 6_000, 12_000, 24_000, 30_000, 30_000];
 

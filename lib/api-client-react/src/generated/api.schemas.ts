@@ -276,6 +276,77 @@ export interface DownloadErrorResponse {
   error: DownloadErrorResponseError;
 }
 
+export interface LikedTrack {
+  /**
+   * @minLength 4
+   * @maxLength 4096
+   * @pattern ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+   */
+  trackId: string;
+  /** @maxLength 300 */
+  artist: string | null;
+  /** @maxLength 500 */
+  title: string | null;
+  /** @maxLength 2048 */
+  thumbnailUrl: string | null;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   */
+  durationSeconds: number | null;
+  likedAt: string;
+}
+
+export interface LikedTrackPage {
+  /** @maxItems 100 */
+  items: LikedTrack[];
+  /**
+   * @maxLength 64
+   * @pattern ^[A-Za-z0-9_-]+$
+   */
+  nextCursor: string | null;
+}
+
+export interface SaveLikedTrackRequest {
+  /**
+   * @minLength 1
+   * @maxLength 300
+   */
+  artist: string;
+  /**
+   * @minLength 1
+   * @maxLength 500
+   */
+  title: string;
+  /** @maxLength 2048 */
+  thumbnailUrl?: string | null;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   */
+  durationSeconds?: number | null;
+}
+
+export interface LikedTrackMutationResponse {
+  item: LikedTrack;
+}
+
+export type CollectionErrorResponseError =
+  (typeof CollectionErrorResponseError)[keyof typeof CollectionErrorResponseError];
+
+export const CollectionErrorResponseError = {
+  bad_request: "bad_request",
+  unauthorized: "unauthorized",
+  forbidden: "forbidden",
+  module_access_denied: "module_access_denied",
+  policy_unavailable: "policy_unavailable",
+  internal_error: "internal_error",
+} as const;
+
+export interface CollectionErrorResponse {
+  error: CollectionErrorResponseError;
+}
+
 export interface ErrorResponse {
   error: string;
   message: string;
@@ -285,3 +356,17 @@ export const SearchUnavailableResponseValue = {
   error: "search_unavailable",
 } as const;
 export type SearchUnavailableResponse = typeof SearchUnavailableResponseValue;
+
+export type ListLikedTracksParams = {
+  /**
+   * @minimum 1
+   * @maximum 100
+   */
+  limit?: number;
+  /**
+   * @minLength 1
+   * @maxLength 64
+   * @pattern ^[A-Za-z0-9_-]+$
+   */
+  cursor?: string;
+};

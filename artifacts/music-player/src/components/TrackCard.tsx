@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Play,
   Pause,
@@ -13,15 +13,18 @@ import { Badge } from "@/components/ui/badge";
 import { usePlayer } from "@/hooks/use-player";
 import type { TrackResult } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { useTrackDownload } from "@/hooks/use-track-download";
 
 interface TrackCardProps {
   track: TrackResult;
   index: number;
+  collectionAction?: ReactNode;
+  compact?: boolean;
 }
 
-export function TrackCard({ track, index }: TrackCardProps) {
+export function TrackCard({ track, index, collectionAction, compact = false }: TrackCardProps) {
+  const reduceMotion = useReducedMotion();
   const {
     currentTrack,
     isPlaying,
@@ -110,18 +113,20 @@ export function TrackCard({ track, index }: TrackCardProps) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
+      initial={reduceMotion ? false : { opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, delay: index * 0.05 }}
+      transition={{ duration: reduceMotion ? 0 : 0.3, delay: reduceMotion ? 0 : index * 0.05 }}
       className={`
-        glass-card rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6 group
-        hover:bg-card/90 hover:border-white/10 hover:-translate-y-1
+        group border border-white/5 bg-card/60 hover:bg-card/90 hover:border-white/10
+        ${compact ? "grid grid-cols-[56px_minmax(0,1fr)] items-center gap-3 rounded-lg p-3 lg:grid-cols-[64px_minmax(0,1fr)_auto]" : "glass-card rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6 hover:-translate-y-1"}
         ${isCurrentTrack ? "ring-2 ring-primary/50 bg-card/90" : ""}
       `}
     >
       {/* Thumbnail + Play Overlay */}
-      <div
-        className="relative w-full sm:w-20 h-48 sm:h-20 rounded-xl overflow-hidden bg-secondary flex-shrink-0 cursor-pointer shadow-lg group-hover:shadow-primary/10 transition-all"
+      <button
+        type="button"
+        aria-label={`${isThisPlaying ? "Пауза" : "Воспроизвести"}: ${track.title}`}
+        className={`relative overflow-hidden bg-secondary flex-shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${compact ? "h-14 w-14 rounded-md lg:h-16 lg:w-16" : "w-full sm:w-20 h-48 sm:h-20 rounded-xl shadow-lg group-hover:shadow-primary/10 transition-all"}`}
         onClick={handlePlayClick}
       >
         {track.thumbnailUrl ? (
@@ -150,27 +155,27 @@ export function TrackCard({ track, index }: TrackCardProps) {
             )}
           </div>
         </div>
-      </div>
+      </button>
 
       {/* Info */}
       <div className="flex-grow min-w-0 w-full">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 className="text-lg font-bold text-foreground truncate group-hover:text-primary transition-colors">
+        <div className={`flex gap-2 ${compact ? "flex-col xl:flex-row xl:items-center xl:justify-between" : "items-start justify-between"}`}>
+          <div className="min-w-0">
+            <h3 className={`${compact ? "text-sm font-semibold tracking-normal" : "text-lg font-bold"} text-foreground truncate group-hover:text-primary transition-colors`}>
               {track.title}
             </h3>
-            <p className="text-muted-foreground flex items-center gap-2 mt-1">
+            <p className={`${compact ? "text-xs" : ""} text-muted-foreground flex items-center gap-2 mt-1`}>
               <span className="truncate">{track.artist}</span>
               <span className="w-1 h-1 rounded-full bg-muted-foreground/30 inline-block" />
-              <span className="font-mono text-sm tracking-wide">
+              <span className="shrink-0 font-mono text-xs tracking-normal">
                 {formatDuration(track.duration)}
               </span>
             </p>
           </div>
-          <div className="flex flex-col items-end gap-2 flex-shrink-0">
+          <div className={`flex gap-2 flex-shrink-0 ${compact ? "flex-wrap items-center" : "flex-col items-end"}`}>
             <Badge
               variant={getVariant(track.type)}
-              className="capitalize px-3 py-1"
+              className={compact ? "capitalize px-2 py-0 text-[10px]" : "capitalize px-3 py-1"}
             >
               {track.type}
             </Badge>
@@ -185,7 +190,8 @@ export function TrackCard({ track, index }: TrackCardProps) {
       </div>
 
       {/* Actions */}
-      <div className="flex-shrink-0 w-full sm:w-auto flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2 border-t sm:border-t-0 sm:border-l border-white/10 pt-4 sm:pt-0 sm:pl-6">
+      <div className={compact ? "col-span-2 flex min-w-0 items-center justify-end gap-2 border-t border-white/10 pt-2 lg:col-span-1 lg:border-t-0 lg:pt-0" : "flex-shrink-0 w-full sm:w-auto flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2 border-t sm:border-t-0 sm:border-l border-white/10 pt-4 sm:pt-0 sm:pl-6"}>
+        {collectionAction}
         <button
           onClick={handleAddToQueue}
           className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold transition-all border ${
@@ -204,7 +210,7 @@ export function TrackCard({ track, index }: TrackCardProps) {
 
         <div
           data-testid="track-download-action"
-          className="h-12 w-full min-w-0 sm:w-28"
+          className={`h-12 min-w-0 ${compact ? "w-28 shrink-0" : "w-full sm:w-28"}`}
         >
           {isDownloadPending ? (
             <div className="flex h-12 w-full items-center justify-between rounded-xl border border-white/5 bg-secondary/50 px-3 text-xs text-muted-foreground">

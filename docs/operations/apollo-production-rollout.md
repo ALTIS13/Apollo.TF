@@ -133,7 +133,7 @@ uses that fresh archive as the only build input.
 ```powershell
 $approvedSourceCommit = '9e04ca66a70e4a1563c6a75294d64b8d540959fb'
 $releaseId = 'v0.1.0-rc.1'
-$preparation = pnpm --silent release:prepare -- --mode production --release-id $releaseId --source-commit $approvedSourceCommit | ConvertFrom-Json
+$preparation = pnpm --silent release:prepare --mode production --release-id $releaseId --source-commit $approvedSourceCommit | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Release preparation failed' }
 
 $pat = $null
@@ -146,7 +146,7 @@ try {
   $plainPat | docker login ghcr.io -u ALTIS13 --password-stdin
   if ($LASTEXITCODE -ne 0) { throw 'GHCR login failed' }
 
-  pnpm --silent release:publish -- --mode production --release-id $releaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath
+  pnpm --silent release:publish --mode production --release-id $releaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath
   if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
 }
 finally {
@@ -157,9 +157,76 @@ finally {
   if ($null -ne $pat) { $pat.Dispose() }
 }
 
-pnpm --silent release:validate -- --env-file '<PRIVATE_RELEASE_ENV>' --mode production --release-manifest '.ops-private/releases/v0.1.0-rc.1/apollo-release-manifest.json'
+pnpm --silent release:validate --env-file '<PRIVATE_RELEASE_ENV>' --mode production --release-manifest '.ops-private/releases/v0.1.0-rc.1/apollo-release-manifest.json'
 if ($LASTEXITCODE -ne 0) { throw 'Release validation failed' }
 ```
+
+### TF-only publication profile
+
+The separate TF-only profile is for publishing the nine TF-owned custom images
+plus the catalog-pinned Redis image without rebuilding or publishing the two
+vendored Platform images. It keeps the complete publisher above unchanged and
+uses disjoint ignored paths:
+
+- claims: `.ops-private/tf-only-release-claims/<releaseId>/`
+- final evidence: `.ops-private/tf-only-releases/<releaseId>/`
+- manifest: `apollo-tf-release-manifest.json`
+- environment: `tf-release-images.env`
+- completion marker: `apollo-tf-release-complete.json`
+
+The owner chooses a fresh release ID and binds `$approvedSourceCommit` to the
+accepted commit that contains the TF-only publisher implementation and the
+image sources being built. Do not reuse the implementation base commit merely
+because it was used to design this profile. Offline preparation remains before
+credential introduction:
+
+Pass flags directly after the script name. With pinned pnpm 10.33.2 a standalone
+`--` is forwarded to the operator and rejected as `invalid_arguments`; it is not
+a separator to add to these commands.
+
+Preparation failures keep the existing top-level `error` code and exit 1.
+An observed source-validation failure also includes a fixed `validationStage`
+in its stderr JSON, for example:
+`{"error":"source_validation_failed","validationStage":"platform_api_tests"}`.
+Both preparation profiles use the same mandatory gates, including vendored
+Platform checks. The stage identifies the failed gate, not its cause; child
+output and private values are never included. Unknown or unstaged failures omit
+the field. Consumers must tolerate this optional field; successful receipt and
+output schemas are unchanged. No failed preparation grants publication authority.
+Keep any consumed release ID closed and investigate before authorizing a new one;
+do not blindly retry preparation. See the
+[diagnostics contract](2026-09-21-tf-validation-diagnostics.md).
+
+```powershell
+$approvedSourceCommit = '<ACCEPTED_TF_SOURCE_COMMIT>'
+$releaseId = '<NEW_UNIQUE_RELEASE_ID>'
+$preparation = pnpm --silent release:prepare:tf-only --mode production --release-id $releaseId --source-commit $approvedSourceCommit | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'TF-only release preparation failed' }
+
+# Only after preparation: authenticate Docker's external credential store with
+# an authorized principal that can read and write all nine private TF packages.
+pnpm --silent release:publish:tf-only --mode production --release-id $releaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath
+if ($LASTEXITCODE -ne 0) { throw 'TF-only release publication failed' }
+```
+
+The operation accepts no image subset and no successor-WebSocket override; the
+TF Web build and emitted environment both fix that selection to `false`.
+`verifyTfOnlyOperatorReleaseEvidence` is the strict consumer for this artifact.
+The complete `release:validate` command intentionally rejects TF-only evidence,
+which is not a complete Platform/TF Coolify release environment.
+
+GHCR repository existence, private read/write access, package visibility, tag
+absence, post-push digest/revision inventory, and a Coolify pull remain runtime
+prerequisites. No registry access, publication, visibility change, or runtime
+acceptance is established by this source procedure. A partial push burns the
+release ID and produces no complete artifact; investigate it and prepare a new
+ID instead of retrying the consumed receipt.
+
+TF-only packages remain private. Provision a separately authorized, read-only
+Coolify pull principal for those packages; the legacy public/anonymous-pull
+procedure below does not apply to the TF-only profile.
+
+### Legacy complete-release visibility and proof (not TF-only)
 
 Set `RELEASE_SOURCE_COMMIT` in the completed private release env to the same
 commit and validate it with the generated manifest. After the first package is

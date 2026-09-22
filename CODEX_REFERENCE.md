@@ -1,6 +1,6 @@
 # Codex reference for Apollo TF
 
-Last updated: 2026-07-14.
+Last updated: 2026-08-24.
 
 ## Project context
 
@@ -12,8 +12,28 @@ Apollo Track Finder (Apollo TF) is a pnpm workspace for a music search/player sy
 - `lib/api-spec`: OpenAPI source of truth. Do not edit this directory casually; update generated clients through the established API generation flow.
 - `lib/api-client-react`, `lib/api-zod`, `lib/db`: shared clients, validation, and database packages.
 
-GitHub repository: `https://github.com/ALTIS13/apollo-trackfinder-api`.
+GitHub repository: `https://github.com/ALTIS13/Apollo.TF`.
 Local checkout remote `origin` points to that repo. Do not print credential-bearing remote URLs.
+
+## Unified Apollo ownership
+
+- Apollo TF is the `TF` module in the unified Apollo account and installation
+  system while retaining ownership of TF runtime and TF API behavior.
+- Supabase Auth owns identity and source sessions. Platform API owns policy,
+  module entitlements/capabilities, installation identity, module access,
+  release/download admission, and root audit.
+- Apollo.GAP remains authority for AWG/OlcRTC subscriptions, signed routes and
+  bundles, nodes, rooms, runtime, and network telemetry. TF has no direct
+  control-plane dependency on GAP.
+- Top-level module keys are `QUASAR`, `TF`, `OLC`, `AWG`, and `AI`. Existing
+  `tf.search`, `tf.integrations`, `tf.downloads`, and `tf.collections` values
+  remain compatibility capability keys and must not be renamed in place.
+- The cross-project handoff is
+  `docs/superpowers/specs/2026-08-24-apollo-tf-unified-platform-handoff-design.md`.
+  Its implementation plan is
+  `docs/superpowers/plans/2026-08-24-apollo-tf-unified-platform-integration.md`.
+  No implementation starts until ownership and the proposed contracts are
+  approved.
 
 ## Authorization and safety boundaries
 

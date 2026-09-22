@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
 const worktree = resolve(import.meta.dirname, "../..");
-const bash = "C:/Program Files/Git/bin/bash.exe";
+const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
 const backupScript = join(worktree, "deploy/ops/backup-postgres.sh");
 const verifyScript = join(worktree, "deploy/ops/verify-backup.sh");
 const restoreScript = join(worktree, "deploy/ops/restore-postgres.sh");
@@ -176,6 +176,27 @@ afterEach(() => {
 });
 
 describe("encrypted PostgreSQL backup contract", () => {
+  it("launches Bash on the host platform for synchronous and asynchronous fixtures", async () => {
+    const root = temporaryRoot();
+    const script = join(root, "bash fixture with spaces.sh");
+    writeFileSync(script, "items=(one two)\nprintf '%s:%s\\n' \"${#items[@]}\" \"$APOLLO_TEST_VALUE\"\nprintf 'fixture-stderr\\n' >&2\nexit 7\n");
+    const env = {
+      ...process.env,
+      BASH_ENV: "",
+      APOLLO_TEST_VALUE: "value with spaces & shell | metacharacters",
+    };
+    const expected = {
+      status: 7,
+      stdout: "2:value with spaces & shell | metacharacters\n",
+      stderr: "fixture-stderr\n",
+    };
+
+    const synchronous = runScript(script, env);
+    expect(synchronous.error).toBeUndefined();
+    expect(synchronous).toMatchObject(expected);
+    await expect(runScriptAsync(script, env)).resolves.toEqual(expected);
+  });
+
   it("rejects password and database URL arguments without printing them", () => {
     if (!requireScript(backupScript)) return;
     const root = temporaryRoot();
@@ -533,8 +554,10 @@ EOF
   it("rejects hostile metadata before running checksum verification or disclosing it", () => {
     if (!requireScript(backupScript) || !requireScript(verifyScript)) return;
     const root = temporaryRoot();
-    const env = contractEnvironment(root);
+    const env = withBashFunctions(root, contractEnvironment(root), "sha256sum() { printf 'sha256sum %s\\n' \"$*\" >> \"$FAKE_LOG\"; /usr/bin/sha256sum \"$@\"; }\n");
     expect(runScript(backupScript, env).status).toBe(0);
+    const backupLog = readFileSync(env.FAKE_LOG!, "utf8");
+    expect(backupLog).toContain("sha256sum");
     const artifacts = backupArtifacts(env.APOLLO_BACKUP_DESTINATION!);
     writeFileSync(artifacts.metadata, JSON.stringify({ hostile: env.FAKE_SENSITIVE }));
     const result = runScript(verifyScript, {
@@ -549,7 +572,11 @@ EOF
     expect(result.status).not.toBe(0);
     expect(output(result)).toBe("verify: metadata failed\n");
     expect(output(result).includes(env.FAKE_SENSITIVE!)).toBe(false);
-    expect(readFileSync(env.FAKE_LOG!, "utf8")).not.toContain("sha256sum");
+    const commandLog = readFileSync(env.FAKE_LOG!, "utf8");
+    expect(commandLog.startsWith(backupLog)).toBe(true);
+    const verifierLog = commandLog.slice(backupLog.length);
+    expect(verifierLog).not.toContain("sha256sum");
+    expect(verifierLog).not.toContain(env.FAKE_SENSITIVE!);
   });
 
   it("redacts direct verifier checksum failures", () => {

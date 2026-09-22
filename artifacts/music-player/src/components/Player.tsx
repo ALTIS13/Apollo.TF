@@ -6,6 +6,12 @@ import {
   Music, Loader2,
 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
+import type { KeyboardEvent } from "react";
+
+function keepSpaceOnButton(event: KeyboardEvent<HTMLButtonElement>) {
+  // Preserve native activation instead of invoking the global playback shortcut.
+  if (event.code === "Space" || event.key === " ") event.stopPropagation();
+}
 
 export function Player() {
   const {
@@ -50,7 +56,7 @@ export function Player() {
       <div className="h-[90px] px-4 flex items-center gap-4">
 
         {/* Track info */}
-        <div className="flex items-center gap-3 w-[28%] min-w-[140px]">
+        <div className="flex flex-1 min-w-0 items-center gap-3 sm:flex-none sm:w-[28%] sm:min-w-[140px]">
           <div className="w-12 h-12 rounded-lg overflow-hidden bg-secondary flex-shrink-0 relative shadow">
             {currentTrack?.thumbnailUrl ? (
               <img src={currentTrack.thumbnailUrl} alt={currentTrack.title} className="w-full h-full object-cover" />
@@ -78,11 +84,12 @@ export function Player() {
         </div>
 
         {/* Center: controls + seek */}
-        <div className="flex-1 flex flex-col items-center gap-1.5 max-w-[400px] mx-auto">
+        <div className="flex-1 min-w-[120px] flex flex-col items-center gap-1.5 max-w-[400px] mx-auto">
           {/* Buttons */}
           <div className="flex items-center gap-5">
             <button
               onClick={playPrev}
+              onKeyDown={keepSpaceOnButton}
               disabled={!hasPrev || !currentTrack}
               className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30"
               title="Предыдущий"
@@ -91,6 +98,7 @@ export function Player() {
             </button>
             <button
               onClick={togglePlayPause}
+              onKeyDown={keepSpaceOnButton}
               disabled={isLoading || !currentTrack}
               className="w-10 h-10 flex items-center justify-center bg-white text-black rounded-full hover:scale-105 active:scale-95 transition-all disabled:opacity-40 shadow-lg"
               title={isPlaying ? "Пауза" : "Воспроизвести"}
@@ -99,6 +107,7 @@ export function Player() {
             </button>
             <button
               onClick={playNext}
+              onKeyDown={keepSpaceOnButton}
               disabled={!hasNext || !currentTrack}
               className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30"
               title="Следующий"
@@ -129,9 +138,10 @@ export function Player() {
         </div>
 
         {/* Right: volume */}
-        <div className="flex items-center justify-end gap-2 w-[28%] min-w-[100px]">
+        <div className="flex shrink-0 items-center justify-end gap-2 sm:w-[28%] sm:min-w-[100px]">
           <button
             onClick={() => setVolume(volume === 0 ? 0.8 : 0)}
+            onKeyDown={keepSpaceOnButton}
             className="text-muted-foreground hover:text-foreground transition-colors"
             title={volume === 0 ? "Включить звук" : "Выключить звук"}
           >

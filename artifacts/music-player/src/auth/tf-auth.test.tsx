@@ -1,10 +1,12 @@
 import { useEffect } from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { isCancelledError, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TfApiError,
+  captureTfSecurityGeneration,
+  canUseTfProtectedActivity,
   clearTfSessionSecurityState,
   fetchTfSession,
   logoutTfSession,
@@ -30,7 +32,7 @@ const session = {
   accountId: "10000000-0000-4000-8000-000000000001",
   installationId: "20000000-0000-4000-8000-000000000002",
   entitlements: ["tf.search", "tf.downloads"],
-  expiresAt: "2099-01-01T00:00:00.000Z",
+  expiresAt: new Date(Date.now() + 300_000).toISOString(),
   csrfToken: "c".repeat(42) + "A",
 };
 const replacementSession = {
@@ -142,7 +144,9 @@ describe("TF auth boundary", () => {
 
     renderAuth();
 
-    expect(await screen.findByRole("button", { name: "Повторить" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", {
+      name: error.kind === "forbidden" ? "Выйти из TF" : "Повторить",
+    })).toBeInTheDocument();
     expect(screen.queryByTestId("protected-canary")).not.toBeInTheDocument();
   });
 
@@ -187,7 +191,7 @@ describe("TF auth boundary", () => {
     expect(screen.queryByTestId("protected-canary")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Требуется вход" })).toBeInTheDocument();
     expect(() => tfRequestInit({ method: "POST" })).toThrowError(
-      expect.objectContaining({ code: "csrf_unavailable" }),
+      expect.objectContaining({ status: 401, code: "unauthorized" }),
     );
 
     remoteLogout.resolve();
@@ -231,7 +235,7 @@ describe("TF auth boundary", () => {
     expect(screen.getByRole("heading", { name: "Требуется вход" })).toBeInTheDocument();
     expect(screen.queryByTestId("protected-canary")).not.toBeInTheDocument();
     expect(() => tfRequestInit({ method: "POST" })).toThrowError(
-      expect.objectContaining({ code: "csrf_unavailable" }),
+      expect.objectContaining({ status: 401, code: "unauthorized" }),
     );
   });
 
@@ -262,10 +266,10 @@ describe("TF auth boundary", () => {
       expect(screen.getByRole("heading", { name: "Требуется вход" })).toBeInTheDocument();
     });
     expect(fetchTfSessionMock).toHaveBeenCalledOnce();
-    expect(cancelQueries).toHaveBeenCalledOnce();
+    expect(cancelQueries).toHaveBeenCalled();
   });
 
-  it("cancels and clears account A before one deduplicated policy refresh can mount account B", async () => {
+  it("suspends A on policy failure, ignores stale duplicate errors and clears A before mounting B", async () => {
     const refreshedSession = deferred<typeof session>();
     const transitionOrder: string[] = [];
     fetchTfSessionMock
@@ -287,23 +291,28 @@ describe("TF auth boundary", () => {
         });
       }),
     });
+    const cancellation = inFlight.then(
+      () => { throw new Error("protected query must be cancelled"); },
+      (error: unknown) => { expect(isCancelledError(error)).toBe(true); },
+    );
+    const generation = captureTfSecurityGeneration();
 
     act(() => {
       expect(reportTfAuthError(
-        new TfApiError(403, "module_access_denied", "forbidden"),
+        new TfApiError(403, "module_access_denied", "forbidden", false, generation),
       )).toBe(true);
       expect(reportTfAuthError(
-        new TfApiError(503, "policy_unavailable", "unavailable"),
-      )).toBe(true);
+        new TfApiError(503, "policy_unavailable", "unavailable", false, generation),
+      )).toBe(false);
       expect(reportTfAuthError(
-        new TfApiError(403, "policy_revoked", "forbidden"),
-      )).toBe(true);
+        new TfApiError(403, "policy_revoked", "forbidden", false, generation),
+      )).toBe(false);
     });
 
     expect(screen.queryByTestId("protected-canary")).not.toBeInTheDocument();
-    expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
+    expect(canUseTfProtectedActivity()).toBe(false);
     expect(transitionOrder).toContain("cancel-a");
-    await expect(inFlight).rejects.toBeDefined();
+    await cancellation;
     await waitFor(() => expect(fetchTfSessionMock).toHaveBeenCalledTimes(2));
     expect(transitionOrder).toEqual(["cancel-a", "fetch-b"]);
 
@@ -326,7 +335,7 @@ describe("TF auth boundary", () => {
       new TfApiError(503, "policy_unavailable", "unavailable"),
       "Сервис временно недоступен",
     ],
-  ])("keeps protected UI unmounted when policy refresh resolves to $kind", async (refreshError, heading) => {
+  ])("keeps protected UI inaccessible when policy refresh resolves to $kind", async (refreshError, heading) => {
     fetchTfSessionMock
       .mockResolvedValueOnce(session)
       .mockRejectedValueOnce(refreshError);
@@ -339,7 +348,12 @@ describe("TF auth boundary", () => {
     });
 
     expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
-    expect(screen.queryByTestId("protected-canary")).not.toBeInTheDocument();
+    if (refreshError.kind === "unauthenticated") {
+      expect(screen.queryByTestId("protected-canary")).not.toBeInTheDocument();
+    } else {
+      expect(screen.getByTestId("protected-canary")).not.toBeVisible();
+    }
+    expect(canUseTfProtectedActivity()).toBe(false);
     expect(fetchTfSessionMock).toHaveBeenCalledTimes(2);
   });
 
@@ -422,7 +436,7 @@ describe("TF auth boundary", () => {
     expect(screen.getByRole("heading", { name: "Требуется вход" })).toBeInTheDocument();
     expect(screen.queryByTestId("protected-canary")).not.toBeInTheDocument();
     expect(() => tfRequestInit({ method: "POST" })).toThrowError(
-      expect.objectContaining({ code: "csrf_unavailable" }),
+      expect.objectContaining({ status: 401, code: "unauthorized" }),
     );
   });
 
