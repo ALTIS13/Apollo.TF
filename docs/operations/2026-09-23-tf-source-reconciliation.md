@@ -1,6 +1,6 @@
 # TF F-to-successor source reconciliation
 
-Status: source-only. No release selection, publication, deploy, provider login, or live runtime acceptance.
+Status: **COMPOSED_SOURCE_CANDIDATE / REVIEW_PENDING / NOT_RELEASED**. Branch `codex/tf-next-source-composed` merges accepted successor `3b68aaa` with the reviewed no-demo admin change at `ac7dcde`. No publication, deploy, provider login, or live runtime acceptance.
 
 ## Frozen and accepted checkpoints
 
@@ -10,7 +10,7 @@ Status: source-only. No release selection, publication, deploy, provider login, 
 | `85f67b6` successor (`094448e`, `7df3dda`) | Spotify confidential Basic exchange/refresh, truthful failure of `liked-all`, correct pagination offset after filtering. | Source accepted, not in F or released. |
 | `aed21b0` successor (`5751e22`) | Rejects legacy Deezer preview/cache substitution when a full track cannot be resolved. | Source accepted, not in F or released. |
 | `3b68aaa` successor (`435f5bb`) | Invalid-grant expiration handling with generation/envelope-guarded credential removal; provider reconnect state without logging out the Apollo account. | Source accepted, not in F or released. |
-| This branch | Production HTTP admin starts without a demo snapshot; development demo remains unchanged. | Independently reviewed and integrated into an isolated TF branch; not released or live-validated. |
+| Composed candidate | Includes the accepted Spotify pagination/expiry and direct-preview refusal source plus production HTTP admin without a demo initial snapshot; development demo remains unchanged. | Source composition needs independent review. No release selection or live validation. |
 
 The admin dashboard UI itself is **not** a successor-only source change: `artifacts/admin-dashboard` has no F-to-`3b68aaa` diff. The later dashboard handoff describes evidence and remaining runtime obligations, not a new admin UI release.
 
@@ -27,8 +27,10 @@ The admin dashboard UI itself is **not** a successor-only source change: `artifa
 
 This does not prove real dashboard data is available. `admin` still needs an authenticated live API and Platform-backed account/connection data. No Platform Auth/API, release metadata, private carrier, or HomeNode state was changed.
 
+Composition check: `git diff --name-only 42c78b8 ac7dcde` shows only this handoff; the code tree matches the previously accepted `3b68aaa` plus reviewed no-demo admin branch. Focused validation on the composed tree: 219 tests across 10 affected files passed; API, integrations, integrations DB, player and admin typechecks passed after building only the API/player TypeScript references; API, integrations, player and admin builds passed. The player build reported non-fatal sourcemap and chunk-size warnings.
+
 ## Next handoff
 
-1. Keep the reviewed admin change in its isolated integration branch until release selection; do not absorb it into the frozen F artifact. Main checkout's unrelated dirty state was preserved.
-2. Root continues B's `HANDSHAKE/STATUS_EOF` diagnosis. Read-only journals found no matching namespace/LSM denial, and a separate zero-stdin non-publisher `unshare` with the launcher flags and `/usr/bin/true` exited 0. This confirms current flag availability, not B's historical inner/status-protocol cause or cleanup. A and B remain `NO_REPLAY`; root is preparing a separately reviewed C diagnostic design. Validate F's first runtime only after a justified fresh publication gate actually succeeds; this branch does not authorize publication.
+1. Independently review the isolated composition merge and the focused validation. Keep frozen F and the dirty main checkout unchanged; do not select or publish this source as a release yet.
+2. Root separately owns the B diagnosis, fresh publication gate and F first-runtime validation under the current Platform resume. A/B remain `NO_REPLAY`; the non-publisher `unshare` check did not establish B's cause or cleanup. This source branch grants no runtime authority.
 3. After first runtime, choose a new successor release explicitly containing the accepted Spotify, preview, expiry, and this admin truthfulness change. Validate provider `/v1/me`, playlist schema, rate-limit and ID durability, and the four expiry obligations against real PostgreSQL/provider sessions. Source tests alone do not close those items.
