@@ -6,6 +6,7 @@ import { TfAuthProvider, useTfAuth, type TfAuthContextValue } from "./tf-auth";
 import { TfSessionBoundary } from "./TfSessionBoundary";
 import { PlayerProvider, usePlayer } from "@/hooks/use-player";
 import { clearTfSessionSecurityState } from "@/lib/tf-session-client";
+import { writeQueueSnapshot } from "@/lib/queue-persistence";
 const A = "11111111-1111-4111-8111-111111111111",
   B = "33333333-3333-4333-8333-333333333333",
   token = "a".repeat(42) + "A";
@@ -47,6 +48,7 @@ class SocketDouble {
   static CLOSING = 2;
   static CLOSED = 3;
   readyState = 0;
+  sent: string[] = [];
   onopen: (() => void) | null = null;
   onclose: ((e: CloseEvent) => void) | null = null;
   onmessage: ((e: MessageEvent) => void) | null = null;
@@ -54,7 +56,7 @@ class SocketDouble {
   constructor() {
     SocketDouble.all.push(this);
   }
-  send() {}
+  send(message: string) { this.sent.push(message); }
   close() {
     this.readyState = 3;
   }
@@ -101,6 +103,7 @@ beforeEach(() => {
   ticketReply = null;
   AudioDouble.all = [];
   SocketDouble.all = [];
+  window.localStorage.clear();
   vi.stubGlobal("Audio", AudioDouble);
   vi.stubGlobal("WebSocket", SocketDouble);
   vi.stubGlobal("fetch", async (url: string) => {
@@ -164,6 +167,43 @@ async function setup(enabled: boolean) {
 it("two-sided client opt-in is off unless explicitly enabled", async () => {
   await setup(false);
   expect(paths.some((p) => p.endsWith("/ws/tickets"))).toBe(false);
+});
+it("restores a paused local queue without broadcasting and can apply same-track remote playback", async () => {
+  const track = {
+    id: "yt_restored", title: "Restored", artist: "Artist", duration: 300,
+    source: "youtube" as const, type: "original" as const,
+    thumbnailUrl: null, quality: [], score: 0,
+  };
+  expect(writeQueueSnapshot(window.localStorage, {
+    accountId: A, installationId: "22222222-2222-4222-8222-222222222222",
+  }, [track], 0, 42)).toBe(true);
+  await setup(true);
+  const socket = SocketDouble.all[0];
+  socket.open();
+  await flush();
+  expect(player.currentTrack?.id).toBe(track.id);
+  expect(player.isPlaying).toBe(false);
+  expect(streamRequests).toHaveLength(0);
+  expect(socket.sent).toHaveLength(0);
+
+  await act(async () => {
+    socket.onmessage?.(new MessageEvent("message", { data: JSON.stringify({
+      type: "player_state", track, position: 91, isPlaying: false,
+    }) }));
+  });
+  await flush();
+  expect(streamRequests).toHaveLength(0);
+  expect(player.progress).toBe(91);
+
+  await act(async () => {
+    socket.onmessage?.(new MessageEvent("message", { data: JSON.stringify({
+      type: "player_state", track, position: 95, isPlaying: true,
+    }) }));
+  });
+  await flush();
+  expect(streamRequests).toHaveLength(1);
+  expect(AudioDouble.all[0].currentTime).toBe(95);
+  expect(AudioDouble.all[0].paused).toBe(false);
 });
 it("passes Deezer fallback metadata and expected full duration to stream admission", async () => {
   await setup(true);

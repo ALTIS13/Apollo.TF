@@ -19,6 +19,7 @@ import {
 import { TfSessionBoundary } from "./TfSessionBoundary";
 import { TfAuthProvider } from "./tf-auth";
 import type { TrackResult } from "@workspace/api-client-react";
+import { writeQueueSnapshot } from "@/lib/queue-persistence";
 
 const runtime = vi.hoisted(() => ({
   fetchSession: vi.fn(),
@@ -146,11 +147,12 @@ function PlayerActions({
 }
 
 function PlaylistPlaybackActions() {
-  const { playCollection, queue, currentTrack, isPlaying } = usePlayer();
+  const { playCollection, togglePlayPause, queue, currentTrack, isPlaying } = usePlayer();
   const second = { ...track, id: "track-2", title: "Second Track" };
   return <div>
     <output data-testid="playlist-queue" data-ids={queue.map((item) => item.id).join(",")} data-current={currentTrack?.id ?? ""} data-playing={isPlaying} />
     <button type="button" onClick={() => void playCollection([track, second])}>Play playlist</button>
+    <button type="button" onClick={togglePlayPause}>Resume queue</button>
   </div>;
 }
 
@@ -190,6 +192,7 @@ beforeEach(() => {
   runtime.lifecycleStarts = 0;
   runtime.lifecycleStops = 0;
   FakeAudio.instances = [];
+  window.localStorage.clear();
   vi.stubGlobal("Audio", FakeAudio);
 });
 
@@ -458,4 +461,25 @@ it("replaces the queue with the full playlist and restarts its first track on re
   await waitFor(() => expect(FakeAudio.instances[0].play).toHaveBeenCalledTimes(2));
   expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-playing", "true");
   expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-current", "track-1");
+});
+
+it("restores an account queue paused and resolves a fresh stream only on resume", async () => {
+  const restoredTrack = { ...track, id: "yt_restored", title: "Restored" };
+  expect(writeQueueSnapshot(window.localStorage, session, [restoredTrack], 0, 42)).toBe(true);
+  runtime.fetchSession.mockResolvedValueOnce(session);
+  runtime.streamQuery.mockResolvedValue({ streamUrl: "https://example.test/fresh-audio" });
+  renderProtectedRuntime(<PlaylistPlaybackActions />);
+
+  await waitFor(() => expect(screen.getByTestId("playlist-queue"))
+    .toHaveAttribute("data-ids", "yt_restored"));
+  expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-current", "yt_restored");
+  expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-playing", "false");
+  expect(runtime.streamQuery).not.toHaveBeenCalled();
+  expect(runtime.tfFetch).not.toHaveBeenCalled();
+
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Resume queue" })); });
+  await waitFor(() => expect(runtime.streamQuery).toHaveBeenCalledTimes(1));
+  expect(FakeAudio.instances[0].currentTime).toBe(42);
+  expect(FakeAudio.instances[0].src).toBe("https://example.test/fresh-audio");
+  expect(runtime.tfFetch).toHaveBeenCalledWith("/tracks/play", expect.anything());
 });

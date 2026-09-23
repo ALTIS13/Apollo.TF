@@ -19,7 +19,9 @@ import {
 import { useTfAuth } from "@/auth/tf-auth";
 import { TfWebSocketLifecycle } from "@/lib/tf-websocket";
 import { successorWebSocketEnabled } from "@/lib/tf-successor-ws-config";
-import { clearUpcoming, insertNext, moveUpcoming } from "@/lib/queue-operations";
+import { clearUpcoming, getNextQueueIndex, insertNext, moveUpcoming, reorderUpcoming, shuffleUpcomingIds } from "@/lib/queue-operations";
+import type { RepeatMode } from "@/lib/queue-operations";
+import { readQueueSnapshot, writeQueueSnapshot } from "@/lib/queue-persistence";
 
 interface PlayerContextType {
   currentTrack: TrackResult | null;
@@ -30,6 +32,10 @@ interface PlayerContextType {
   volume: number;
   queue: TrackResult[];
   queueIndex: number;
+  repeatMode: RepeatMode;
+  shuffleEnabled: boolean;
+  cycleRepeatMode: () => void;
+  toggleShuffle: () => void;
   playTrack: (track: TrackResult) => Promise<void>;
   playCollection: (tracks: readonly TrackResult[]) => Promise<void>;
   playFromQueue: (index: number) => Promise<void>;
@@ -87,6 +93,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const [queue, setQueue] = useState<TrackResult[]>([]);
   const [queueIndex, setQueueIndex] = useState(0);
+  const [repeatMode, setRepeatMode] = useState<RepeatMode>("off");
+  const [shuffleEnabled, setShuffleEnabled] = useState(false);
+  const [queueHydrated, setQueueHydrated] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const loadGeneration = useRef(0);
@@ -102,9 +111,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const applyingRemoteRef = useRef(false);
   const queueRef = useRef<TrackResult[]>([]);
   const queueIndexRef = useRef(0);
+  const queueIdsRef = useRef<number[]>([]);
+  const originalOrderRef = useRef<number[]>([]);
+  const nextQueueIdRef = useRef(0);
+  const repeatModeRef = useRef<RepeatMode>("off");
+  const shuffleEnabledRef = useRef(false);
+  const hydratedIdentityRef = useRef<string | null>(null);
+  const restoredAwaitingPlaybackRef = useRef(false);
 
   const playTrackRef = useRef<(track: TrackResult, originLive?: () => boolean) => Promise<void>>(async () => {});
-  const playNextRef = useRef<() => Promise<void>>(async () => {});
+  const playNextRef = useRef<(reason: "ended" | "next") => Promise<void>>(async () => {});
 
   useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
@@ -133,7 +149,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const handleEnded = () => {
       setIsPlaying(false);
       setProgress(0);
-      playNextRef.current();
+      void playNextRef.current("ended");
     };
     const handlePlay = () => {
       if (!canUseTfProtectedActivity()) { audio.pause(); return; }
@@ -166,17 +182,46 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (!currentTrack) return;
-    tfFetch<void>("/tracks/play", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        trackId: currentTrack.id,
-        artist: currentTrack.artist,
-        title: currentTrack.title,
-      }),
-    }).catch(() => {});
-  }, [currentTrack?.id]);
+    if (status !== "authenticated" || !session) return;
+    const identity = `${session.accountId}:${session.installationId}`;
+    if (hydratedIdentityRef.current === identity) return;
+    hydratedIdentityRef.current = identity;
+    let restored = null;
+    try { restored = readQueueSnapshot(window.localStorage, session); } catch { /* storage may be disabled */ }
+    if (restored) {
+      const ids = restored.queue.map(() => ++nextQueueIdRef.current);
+      queueRef.current = restored.queue;
+      queueIdsRef.current = ids;
+      originalOrderRef.current = ids;
+      queueIndexRef.current = restored.index;
+      setQueue(restored.queue);
+      setQueueIndex(restored.index);
+      if (restored.index >= 0) {
+        const track = restored.queue[restored.index];
+        currentTrackRef.current = track;
+        restoredAwaitingPlaybackRef.current = true;
+        suspendedPosition.current = restored.positionSeconds;
+        progressRef.current = restored.positionSeconds;
+        setCurrentTrack(track);
+        setProgress(restored.positionSeconds);
+        setDuration(track.duration);
+      }
+    }
+    setQueueHydrated(true);
+  }, [session?.accountId, session?.installationId, status]);
+
+  useEffect(() => {
+    if (!queueHydrated || status !== "authenticated" || !session || !canUseTfProtectedActivity()) return;
+    try {
+      writeQueueSnapshot(
+        window.localStorage,
+        session,
+        queue,
+        currentTrack ? queueIndex : -1,
+        Number.isFinite(progress) ? progress : 0,
+      );
+    } catch { /* storage may be disabled */ }
+  }, [queueHydrated, session?.accountId, session?.installationId, status, queue, queueIndex, currentTrack?.id, Math.floor(progress / 5)]);
 
   // ── Internal load helper (no toggle check, no queue reset) ────────────────
 
@@ -211,7 +256,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       await audioRef.current.play();
       if (!live()) return;
       appliedLoadGeneration.current = load;
+      restoredAwaitingPlaybackRef.current = false;
       setIsPlaying(true);
+      void tfFetch<void>("/tracks/play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trackId: track.id, artist: track.artist, title: track.title }),
+      }).catch(() => {});
     } catch (err) {
       if (!live()) return;
       reportTfAuthError(err);
@@ -239,6 +290,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setQueueIndex(0);
     queueRef.current = [track];
     queueIndexRef.current = 0;
+    const id = ++nextQueueIdRef.current;
+    queueIdsRef.current = [id];
+    originalOrderRef.current = [id];
     await _loadTrackRef.current(track, originLive);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrack?.id]);
@@ -247,12 +301,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const playCollection = useCallback(async (tracks: readonly TrackResult[]) => {
     if (!audioRef.current || !canUseTfProtectedActivity() || tracks.length === 0) return;
-    const nextQueue = [...tracks];
-    queueRef.current = nextQueue;
+    const ids = tracks.map(() => ++nextQueueIdRef.current);
+    originalOrderRef.current = ids;
+    const shuffledIds = shuffleEnabledRef.current ? shuffleUpcomingIds(ids, 0) : ids;
+    const nextQueue = reorderUpcoming(tracks, ids, 0, shuffledIds);
+    queueRef.current = nextQueue.queue;
+    queueIdsRef.current = nextQueue.ids;
     queueIndexRef.current = 0;
-    setQueue(nextQueue);
+    setQueue(nextQueue.queue);
     setQueueIndex(0);
-    await _loadTrackRef.current(nextQueue[0]);
+    await _loadTrackRef.current(nextQueue.queue[0]);
   }, []);
 
   const playFromQueue = useCallback(async (index: number) => {
@@ -264,17 +322,41 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     await _loadTrackRef.current(q[index]);
   }, []);
 
-  const playNext = useCallback(async () => {
+  const advance = useCallback(async (reason: "ended" | "next") => {
     if (!canUseTfProtectedActivity()) return;
     const q = queueRef.current;
-    const nextIdx = queueIndexRef.current + 1;
-    if (nextIdx >= q.length) return;
+    const nextIdx = getNextQueueIndex(q.length, queueIndexRef.current, repeatModeRef.current, reason);
+    if (nextIdx === null) return;
     queueIndexRef.current = nextIdx;
     setQueueIndex(nextIdx);
     await _loadTrackRef.current(q[nextIdx]);
   }, []);
 
-  playNextRef.current = playNext;
+  playNextRef.current = advance;
+  const playNext = useCallback(() => advance("next"), [advance]);
+
+  const cycleRepeatMode = useCallback(() => {
+    const next = repeatModeRef.current === "off" ? "all" : repeatModeRef.current === "all" ? "one" : "off";
+    repeatModeRef.current = next;
+    setRepeatMode(next);
+  }, []);
+
+  const toggleShuffle = useCallback(() => {
+    const enabled = !shuffleEnabledRef.current;
+    shuffleEnabledRef.current = enabled;
+    setShuffleEnabled(enabled);
+    const ids = queueIdsRef.current;
+    const index = currentTrackRef.current ? queueIndexRef.current : -1;
+    const first = Math.max(0, index + 1);
+    const upcoming = new Set(ids.slice(first));
+    const orderedIds = enabled
+      ? shuffleUpcomingIds(ids, index)
+      : [...ids.slice(0, first), ...originalOrderRef.current.filter((id) => upcoming.has(id))];
+    const updated = reorderUpcoming(queueRef.current, ids, index, orderedIds);
+    queueRef.current = updated.queue;
+    queueIdsRef.current = updated.ids;
+    setQueue(updated.queue);
+  }, []);
 
   const playPrev = useCallback(async () => {
     if (!canUseTfProtectedActivity()) return;
@@ -294,22 +376,31 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addToQueue = useCallback((track: TrackResult) => {
-    setQueue((prev) => {
-      const updated = [...prev, track];
-      queueRef.current = updated;
-      return updated;
-    });
+    const id = ++nextQueueIdRef.current;
+    originalOrderRef.current = [...originalOrderRef.current, id];
+    queueIdsRef.current = [...queueIdsRef.current, id];
+    queueRef.current = [...queueRef.current, track];
+    setQueue(queueRef.current);
   }, []);
 
   const addNextToQueue = useCallback((track: TrackResult) => {
-    const updated = insertNext(queueRef.current, currentTrackRef.current ? queueIndexRef.current : -1, track);
+    const index = currentTrackRef.current ? queueIndexRef.current : -1;
+    const id = ++nextQueueIdRef.current;
+    const currentId = queueIdsRef.current[index];
+    const originalIndex = currentId === undefined ? -1 : originalOrderRef.current.indexOf(currentId);
+    originalOrderRef.current = insertNext(originalOrderRef.current, originalIndex, id);
+    queueIdsRef.current = insertNext(queueIdsRef.current, index, id);
+    const updated = insertNext(queueRef.current, index, track);
     queueRef.current = updated;
     setQueue(updated);
   }, []);
 
   const moveQueuedTrack = useCallback((from: number, to: number) => {
-    const updated = moveUpcoming(queueRef.current, currentTrackRef.current ? queueIndexRef.current : -1, from, to);
+    const index = currentTrackRef.current ? queueIndexRef.current : -1;
+    const updated = moveUpcoming(queueRef.current, index, from, to);
     if (updated === queueRef.current) return;
+    queueIdsRef.current = [...moveUpcoming(queueIdsRef.current, index, from, to)];
+    if (!shuffleEnabledRef.current) originalOrderRef.current = [...queueIdsRef.current];
     queueRef.current = [...updated];
     setQueue(queueRef.current);
   }, []);
@@ -318,6 +409,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     // Compute new queue and side-effects before state update to avoid async calls inside updater
     const prev = queueRef.current;
     const updated = prev.filter((_, i) => i !== index);
+    const removedId = queueIdsRef.current[index];
+    queueIdsRef.current = queueIdsRef.current.filter((_, i) => i !== index);
+    originalOrderRef.current = originalOrderRef.current.filter((id) => id !== removedId);
     const curIdx = queueIndexRef.current;
 
     queueRef.current = updated;
@@ -349,6 +443,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const clearQueue = useCallback(() => {
     const updated = clearUpcoming(queueRef.current, queueIndexRef.current, currentTrackRef.current !== null);
+    const removed = new Set(queueIdsRef.current.slice(updated.length));
+    queueIdsRef.current = queueIdsRef.current.slice(0, updated.length);
+    originalOrderRef.current = originalOrderRef.current.filter((id) => !removed.has(id));
     queueRef.current = [...updated];
     setQueue(queueRef.current);
     if (currentTrackRef.current !== null) return;
@@ -411,6 +508,25 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (!msg.track) return;
 
       const local = currentTrackRef.current;
+
+      if (local?.id === msg.track.id && suspendedPosition.current !== null) {
+        if (!msg.isPlaying) {
+          suspendedPosition.current = msg.position;
+          setProgress(msg.position);
+          return;
+        }
+        suppressSendUntilRef.current = Date.now() + 10_000;
+        const work = _loadTrackRef.current(local, originLive);
+        const load = loadGeneration.current;
+        work.then(() => {
+          if (!originLive() || load !== loadGeneration.current || appliedLoadGeneration.current !== load) return;
+          if (audioRef.current) {
+            audioRef.current.currentTime = msg.position;
+            setProgress(msg.position);
+          }
+        }).catch(() => {});
+        return;
+      }
 
       if (local?.id !== msg.track.id) {
         suppressSendUntilRef.current = Date.now() + 10_000;
@@ -499,6 +615,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const sendWsState = useCallback(() => {
     if (!canUseTfProtectedActivity()) return;
+    if (restoredAwaitingPlaybackRef.current) return;
     if (applyingRemoteRef.current) return;
     if (Date.now() < suppressSendUntilRef.current) return;
     const ws = wsRef.current;
@@ -526,7 +643,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     <PlayerContext.Provider
       value={{
         currentTrack, isPlaying, isLoading, progress, duration, volume,
-        queue, queueIndex,
+        queue, queueIndex, repeatMode, shuffleEnabled, cycleRepeatMode, toggleShuffle,
         playTrack, playCollection, playFromQueue, addToQueue, addNextToQueue, moveQueuedTrack, removeFromQueue, clearQueue,
         playNext, playPrev,
         togglePlayPause, seekTo, seekBy, setVolume,

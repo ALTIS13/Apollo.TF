@@ -4,6 +4,7 @@ import {
   Play, Pause, SkipBack, SkipForward,
   Volume2, VolumeX, Volume1,
   Music, Loader2, ScrollText,
+  Shuffle, Repeat, Repeat1,
 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import type { KeyboardEvent } from "react";
@@ -21,6 +22,7 @@ export function Player() {
     togglePlayPause, seekTo, setVolume,
     playNext, playPrev,
     queue, queueIndex,
+    repeatMode, shuffleEnabled, cycleRepeatMode, toggleShuffle,
   } = usePlayer();
 
   const seekBarRef = useRef<HTMLDivElement>(null);
@@ -31,7 +33,7 @@ export function Player() {
     if (!currentTrack) setLyricsOpen(false);
   }, [currentTrack]);
 
-  const hasNext = queueIndex < queue.length - 1;
+  const hasNext = queueIndex < queue.length - 1 || (repeatMode === "all" && queue.length > 0);
   const hasPrev = queueIndex > 0 || progress > 3;
   const progressPct = duration > 0 ? (progress / duration) * 100 : 0;
 
@@ -56,6 +58,7 @@ export function Player() {
   }, [isDragging, seekTo]);
 
   const VolumeIcon = volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
+  const repeatLabel = repeatMode === "off" ? "Повтор: выключен" : repeatMode === "all" ? "Повтор: все треки" : "Повтор: один трек";
 
   return (
     <div className="border-t border-white/5 bg-black/80 backdrop-blur-xl flex-shrink-0">
@@ -92,7 +95,18 @@ export function Player() {
         {/* Center: controls + seek */}
         <div className="contents sm:mx-auto sm:flex sm:max-w-[400px] sm:min-w-[120px] sm:flex-1 sm:flex-col sm:items-center sm:gap-1.5">
           {/* Buttons */}
-          <div className="col-start-2 row-start-1 flex items-center gap-2 sm:gap-5">
+          <div className="col-start-2 row-start-1 flex shrink-0 items-center gap-0.5 sm:gap-3">
+            <button
+              type="button"
+              onClick={toggleShuffle}
+              onKeyDown={keepSpaceOnButton}
+              aria-label={shuffleEnabled ? "Не перемешивать" : "Перемешать"}
+              aria-pressed={shuffleEnabled}
+              title={shuffleEnabled ? "Не перемешивать" : "Перемешать"}
+              className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:text-foreground ${shuffleEnabled ? "text-primary" : "text-muted-foreground"}`}
+            >
+              <Shuffle className="h-4 w-4" />
+            </button>
             <button
               onClick={playPrev}
               onKeyDown={keepSpaceOnButton}
@@ -119,6 +133,17 @@ export function Player() {
               title="Следующий"
             >
               <SkipForward className="w-5 h-5 fill-current" />
+            </button>
+            <button
+              type="button"
+              onClick={cycleRepeatMode}
+              onKeyDown={keepSpaceOnButton}
+              aria-label={repeatLabel}
+              aria-pressed={repeatMode !== "off"}
+              title={repeatLabel}
+              className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:text-foreground ${repeatMode !== "off" ? "text-primary" : "text-muted-foreground"}`}
+            >
+              {repeatMode === "one" ? <Repeat1 className="h-4 w-4" /> : <Repeat className="h-4 w-4" />}
             </button>
           </div>
 

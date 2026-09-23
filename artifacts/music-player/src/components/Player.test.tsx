@@ -12,6 +12,10 @@ const player = vi.hoisted(() => ({
   volume: 0.8,
   queue: [{ id: "yt_first" }, { id: "yt_second" }],
   queueIndex: 0,
+  repeatMode: "off" as "off" | "all" | "one",
+  shuffleEnabled: false,
+  cycleRepeatMode: vi.fn(),
+  toggleShuffle: vi.fn(),
   togglePlayPause: vi.fn(),
   seekTo: vi.fn(),
   setVolume: vi.fn(),
@@ -39,6 +43,9 @@ beforeEach(() => {
   player.isLoading = false;
   player.progress = 30;
   player.queue = [{ id: "yt_first" }, { id: "yt_second" }];
+  player.queueIndex = 0;
+  player.repeatMode = "off";
+  player.shuffleEnabled = false;
   window.addEventListener("keydown", handleGlobalKey);
 });
 afterEach(() => {
@@ -78,12 +85,42 @@ it("keeps disabled transport controls inactive and out of the tab order", async 
     await user.click(button);
   }
   await user.tab();
-  expect(screen.getByRole("button", { name: "Текст песни" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: "Перемешать" })).toHaveFocus();
   await user.tab();
-  expect(screen.getByRole("button", { name: "Выключить звук" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: "Повтор: выключен" })).toHaveFocus();
   expect(player.playPrev).not.toHaveBeenCalled();
   expect(player.playNext).not.toHaveBeenCalled();
   expect(player.togglePlayPause).not.toHaveBeenCalled();
+});
+
+it("exposes shuffle and repeat modes with accessible state and native keyboard activation", async () => {
+  const user = userEvent.setup();
+  render(<Player />);
+  const shuffle = screen.getByRole("button", { name: "Перемешать" });
+  expect(shuffle).toHaveAttribute("aria-pressed", "false");
+  shuffle.focus();
+  await user.keyboard(" ");
+  expect(player.toggleShuffle).toHaveBeenCalledTimes(1);
+  expect(globalShortcut).not.toHaveBeenCalled();
+
+  const repeat = screen.getByRole("button", { name: "Повтор: выключен" });
+  await user.click(repeat);
+  expect(player.cycleRepeatMode).toHaveBeenCalledTimes(1);
+  cleanup();
+  player.shuffleEnabled = true;
+  player.repeatMode = "one";
+  player.queueIndex = 1;
+  render(<Player />);
+  expect(screen.getByRole("button", { name: "Не перемешивать" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Повтор: один трек" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Следующий" })).toBeDisabled();
+});
+
+it("enables next at queue end only for repeat-all", () => {
+  player.queueIndex = 1;
+  player.repeatMode = "all";
+  render(<Player />);
+  expect(screen.getByRole("button", { name: "Следующий" })).toBeEnabled();
 });
 
 it("opens and closes the lyrics panel without changing playback", async () => {

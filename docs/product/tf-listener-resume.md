@@ -1,7 +1,7 @@
 # TF listener checkpoint
 
 - Owner: Apollo.TF (web player and TF API); Platform remains identity and entitlement authority.
-- Stage: source candidate for account-scoped playlists, play-all and track reorder on `codex/tf-listener-experience`.
-- Evidence: focused API/player tests, both typechecks and builds, plus mocked desktop/mobile browser layout. Details: [listener experience audit](2026-09-23-listener-experience-audit.md).
-- Blocker to runtime acceptance: no live Postgres transaction proof or end-to-end TF service validation; no deploy or HomeNode change.
-- Next action: validate playlist mutations against an isolated database, then implement repeat/shuffle and account-scoped queue resume.
+- Stage: playlist PostgreSQL proof and source candidate for repeat/shuffle with device-local account-scoped queue resume on `codex/tf-listener-experience`.
+- Evidence: focused real-store test on disposable local PostgreSQL 18.4, player/WS tests and mocked 1280/320px browser interaction. Details: [listener experience audit](2026-09-23-listener-experience-audit.md).
+- Blocker to release acceptance: no target PostgreSQL 17, authenticated HTTP/Coolify or live provider proof; no deploy or HomeNode change.
+- Next action: run the marked disposable PostgreSQL 17 playlist proof, then validate the integrated web/API deployment and define cross-device queue ownership with Platform before server persistence.
