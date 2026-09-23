@@ -193,6 +193,16 @@ describe("tf download contract", () => {
     expect(downloadJobDataSchema.parse(downloadJobData)).toEqual(
       downloadJobData,
     );
+    expect(downloadJobDataSchema.parse({
+      ...downloadJobData,
+      expectedDurationSeconds: 210,
+    }).expectedDurationSeconds).toBe(210);
+    for (const expectedDurationSeconds of [0, -1, 86_401, 30.5, "210"]) {
+      expect(downloadJobDataSchema.safeParse({
+        ...downloadJobData,
+        expectedDurationSeconds,
+      }).success).toBe(false);
+    }
     expect(() =>
       downloadJobDataSchema.parse({
         schemaVersion: 1,

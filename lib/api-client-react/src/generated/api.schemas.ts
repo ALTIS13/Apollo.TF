@@ -153,6 +153,12 @@ export interface DownloadQueueTrack {
    */
   title: string;
   quality: DownloadQuality;
+  /**
+   * Expected full recording duration from the selected candidate, when known.
+   * @minimum 1
+   * @maximum 86400
+   */
+  expectedDurationSeconds?: number;
 }
 
 export interface DownloadQueueRequest {
@@ -209,6 +215,14 @@ export const DownloadJobState = {
   canceled: "canceled",
 } as const;
 
+export type DownloadFailureCode =
+  (typeof DownloadFailureCode)[keyof typeof DownloadFailureCode];
+
+export const DownloadFailureCode = {
+  preview_rejected: "preview_rejected",
+  duration_unverified: "duration_unverified",
+} as const;
+
 export interface DownloadJobStatus {
   status: DownloadJobState;
   /**
@@ -226,6 +240,7 @@ export interface DownloadJobStatus {
    * @maximum 1073741824
    */
   fileSize?: number;
+  failureCode?: DownloadFailureCode;
 }
 
 export interface DownloadJob {
@@ -246,6 +261,7 @@ export interface DownloadJob {
    * @maximum 1073741824
    */
   fileSize?: number;
+  failureCode?: DownloadFailureCode;
 }
 
 export interface DownloadJobListResponse {

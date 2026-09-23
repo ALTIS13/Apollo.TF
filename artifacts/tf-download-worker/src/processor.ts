@@ -14,6 +14,10 @@ import {
   type DownloaderProcess,
   type SpawnDownload,
 } from "./downloader";
+import {
+  probeSourceDuration,
+  type DurationProbeOptions,
+} from "./duration-probe";
 import { noopDownloadLogger, type DownloadLogger } from "./logger";
 import {
   DownloadStorageError,
@@ -38,7 +42,9 @@ export type DownloadProcessingErrorCode =
   | "output_too_large"
   | "deadline_exceeded"
   | "storage_quota_exceeded"
-  | "storage_unavailable";
+  | "storage_unavailable"
+  | "preview_rejected"
+  | "duration_unverified";
 
 export class DownloadProcessingError extends Error {
   readonly code: DownloadProcessingErrorCode;
@@ -83,6 +89,7 @@ export interface CreateDownloadProcessorOptions {
   readonly storage: StorageBoundary;
   readonly cancellationStore: DownloadCancellationStore;
   readonly spawnDownload?: SpawnDownload;
+  readonly probeDuration?: (options: DurationProbeOptions) => Promise<number>;
   readonly logger?: DownloadLogger;
   readonly downloaderExecutable?: string;
   readonly deadlineMs?: number;
@@ -96,6 +103,7 @@ export function createDownloadProcessor(
   options: CreateDownloadProcessorOptions,
 ): DownloadProcessor {
   const spawnDownload = options.spawnDownload ?? spawnYtDlpDownload;
+  const probeDuration = options.probeDuration ?? probeSourceDuration;
   const logger = options.logger ?? noopDownloadLogger;
   const downloaderExecutable = options.downloaderExecutable ?? "yt-dlp";
   const deadlineMs = boundedPositiveInteger(
@@ -190,6 +198,45 @@ export function createDownloadProcessor(
         onFailure: abortWith,
       });
       await raceWithAbort(cancellationMonitor.ready, controller.signal);
+
+      const expectedDurationSeconds = parsed.data.expectedDurationSeconds;
+      if (
+        expectedDurationSeconds !== undefined &&
+        expectedDurationSeconds >= 90
+      ) {
+        let actualDurationSeconds: number;
+        try {
+          actualDurationSeconds = await raceWithAbort(
+            probeDuration({
+              executable: downloaderExecutable,
+              sourceUrl: sourceUrl.href,
+              signal: controller.signal,
+            }),
+            controller.signal,
+          );
+        } catch {
+          throwSignalReason(controller.signal);
+          throw new DownloadProcessingError("duration_unverified", {
+            retriable: false,
+          });
+        }
+        if (
+          !Number.isFinite(actualDurationSeconds) ||
+          actualDurationSeconds <= 0
+        ) {
+          throw new DownloadProcessingError("duration_unverified", {
+            retriable: false,
+          });
+        }
+        if (
+          actualDurationSeconds <= 90 &&
+          actualDurationSeconds <= expectedDurationSeconds * 0.55
+        ) {
+          throw new DownloadProcessingError("preview_rejected", {
+            retriable: false,
+          });
+        }
+      }
 
       const extension: DownloadExtension =
         parsed.data.quality === "flac" ? "flac" : "mp3";

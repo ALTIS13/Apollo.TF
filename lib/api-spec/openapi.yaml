@@ -723,6 +723,11 @@ components:
           maxLength: 500
         quality:
           $ref: "#/components/schemas/DownloadQuality"
+        expectedDurationSeconds:
+          type: integer
+          minimum: 1
+          maximum: 86400
+          description: Expected full recording duration from the selected candidate, when known.
       required: [trackId, artist, title, quality]
 
     DownloadQueueRequest:
@@ -788,6 +793,10 @@ components:
       type: string
       enum: [waiting, active, completed, failed, canceled]
 
+    DownloadFailureCode:
+      type: string
+      enum: [preview_rejected, duration_unverified]
+
     DownloadJobStatus:
       type: object
       additionalProperties: false
@@ -806,6 +815,8 @@ components:
           type: integer
           minimum: 1
           maximum: 1073741824
+        failureCode:
+          $ref: "#/components/schemas/DownloadFailureCode"
       required: [status, progress]
 
     DownloadJob:
@@ -829,6 +840,8 @@ components:
           type: integer
           minimum: 1
           maximum: 1073741824
+        failureCode:
+          $ref: "#/components/schemas/DownloadFailureCode"
       required: [jobId, status, progress]
 
     DownloadJobListResponse:

@@ -1006,6 +1006,25 @@ describe("track account ownership", () => {
     expect(dependencies.enqueueDownload).toHaveBeenCalledOnce();
   });
 
+  it("forwards a bounded expected duration to the worker and rejects invalid values", async () => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies);
+    const send = (expectedDurationSeconds: unknown) => fetch(`${baseUrl}/tracks/download/queue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tracks: [queueTrack({ expectedDurationSeconds })] }),
+    });
+
+    expect((await send(210)).status).toBe(200);
+    expect(dependencies.enqueueDownload).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedDurationSeconds: 210 }),
+    );
+    for (const invalid of [0, 86_401, 30.5, "210"]) {
+      expect((await send(invalid)).status).toBe(400);
+    }
+    expect(dependencies.enqueueDownload).toHaveBeenCalledTimes(1);
+  });
+
   it("resolves a Deezer download through tf-search only with live tf.search access", async () => {
     const gateway = searchGateway();
     const resolvedSourceUrl =

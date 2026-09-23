@@ -6,6 +6,7 @@ import {
   queueTrackDownloads,
   cancelDownloadJob,
   type DownloadJobCancelResponse,
+  type DownloadJobStatus,
   type TrackResult,
 } from "@workspace/api-client-react";
 import { apiUrl } from "@/lib/api-config";
@@ -22,6 +23,7 @@ export type TrackDownloadState =
 export interface TrackDownloadController {
   readonly state: TrackDownloadState;
   readonly progress: number;
+  readonly failureCode?: DownloadJobStatus["failureCode"];
   readonly start: (
     track: TrackResult,
     quality?: DownloadQuality,
@@ -32,6 +34,7 @@ export interface TrackDownloadController {
 interface DownloadSnapshot {
   state: TrackDownloadState;
   progress: number;
+  failureCode?: DownloadJobStatus["failureCode"];
 }
 
 interface PendingQueueGeneration {
@@ -141,7 +144,13 @@ export function useTrackDownload(): TrackDownloadController {
                 window.location.assign(fileNavigationUrl(jobId));
               }
             } else {
-              commit(generation, { state: status.status, progress });
+              commit(generation, {
+                state: status.status,
+                progress,
+                ...(status.status === "failed" && status.failureCode
+                  ? { failureCode: status.failureCode }
+                  : {}),
+              });
             }
           }
         } catch (error) {
@@ -261,6 +270,9 @@ export function useTrackDownload(): TrackDownloadController {
                 artist: track.artist,
                 title: track.title,
                 quality,
+                ...(Number.isInteger(track.duration) && track.duration >= 1 && track.duration <= 86_400
+                  ? { expectedDurationSeconds: track.duration }
+                  : {}),
               },
             ],
           },

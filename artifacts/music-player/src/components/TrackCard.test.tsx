@@ -147,6 +147,26 @@ describe("TrackCard download action", () => {
     expect(screen.getByRole("button", { name: "Скачать" })).not.toBeDisabled();
   });
 
+  it("explains a rejected preview without showing internal worker details", async () => {
+    vi.mocked(queueTrackDownloads).mockResolvedValue({
+      results: [{ trackId: track.id, jobId: "job-1", position: 1 }],
+    });
+    vi.mocked(getDownloadJobStatus).mockResolvedValue({
+      status: "failed",
+      progress: 0,
+      failureCode: "preview_rejected",
+    });
+    render(<TrackCard track={track} index={0} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Скачать" }));
+
+    await screen.findByText("Только фрагмент трека.");
+    expectReservedTerminalRow("Только фрагмент трека.");
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({
+      description: "Источник содержит только фрагмент трека. Выберите другую запись.",
+    }));
+  });
+
   it("renders canceled feedback in the reserved non-overlapping row", async () => {
     vi.mocked(queueTrackDownloads).mockImplementation(
       () => new Promise(() => {}),

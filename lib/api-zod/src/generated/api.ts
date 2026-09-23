@@ -138,6 +138,8 @@ export const queueTrackDownloadsBodyTracksItemArtistMax = 300;
 
 export const queueTrackDownloadsBodyTracksItemTitleMax = 500;
 
+export const queueTrackDownloadsBodyTracksItemExpectedDurationSecondsMax = 86400;
+
 export const queueTrackDownloadsBodyTracksMax = 50;
 
 export const QueueTrackDownloadsBody = zod.object({
@@ -157,6 +159,14 @@ export const QueueTrackDownloadsBody = zod.object({
           .min(1)
           .max(queueTrackDownloadsBodyTracksItemTitleMax),
         quality: zod.enum(["128", "192", "256", "320", "flac"]),
+        expectedDurationSeconds: zod
+          .number()
+          .min(1)
+          .max(queueTrackDownloadsBodyTracksItemExpectedDurationSecondsMax)
+          .optional()
+          .describe(
+            "Expected full recording duration from the selected candidate, when known.",
+          ),
       }),
     )
     .min(1)
@@ -237,6 +247,9 @@ export const ListDownloadJobsResponse = zod.object({
           .min(1)
           .max(listDownloadJobsResponseJobsItemFileSizeMax)
           .optional(),
+        failureCode: zod
+          .enum(["preview_rejected", "duration_unverified"])
+          .optional(),
       }),
     )
     .max(listDownloadJobsResponseJobsMax),
@@ -276,6 +289,7 @@ export const GetDownloadJobStatusResponse = zod.object({
     .min(1)
     .max(getDownloadJobStatusResponseFileSizeMax)
     .optional(),
+  failureCode: zod.enum(["preview_rejected", "duration_unverified"]).optional(),
 });
 
 /**

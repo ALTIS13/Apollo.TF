@@ -114,6 +114,7 @@ describe("useTrackDownload", () => {
             artist: track.artist,
             title: track.title,
             quality: "320",
+            expectedDurationSeconds: track.duration,
           },
         ],
       },
@@ -153,7 +154,7 @@ describe("useTrackDownload", () => {
     vi.mocked(getDownloadJobStatus)
       .mockReturnValueOnce(firstPoll.promise)
       .mockResolvedValueOnce(active)
-      .mockResolvedValueOnce({ status: "failed", progress: 64 });
+      .mockResolvedValueOnce({ status: "failed", progress: 64, failureCode: "preview_rejected" });
     const { result } = renderHook(() => useTrackDownload());
 
     await act(async () => {
@@ -188,6 +189,7 @@ describe("useTrackDownload", () => {
     expect(getDownloadJobStatus).toHaveBeenCalledTimes(3);
     await flushMicrotasks();
     expect(result.current.state).toBe("failed");
+    expect(result.current.failureCode).toBe("preview_rejected");
   });
 
   it("clamps progress and initiates exactly one authenticated file navigation after completion", async () => {

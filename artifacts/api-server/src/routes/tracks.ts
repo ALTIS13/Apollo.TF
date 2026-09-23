@@ -77,6 +77,7 @@ const downloadQueueRequestSchema = z
             artist: z.string().trim().min(1).max(300),
             title: z.string().trim().min(1).max(500),
             quality: downloadQualitySchema,
+            expectedDurationSeconds: z.number().int().min(1).max(86_400).optional(),
           })
           .strict(),
       )
@@ -955,6 +956,7 @@ export function createTracksRouter(
       readonly artist: string;
       readonly title: string;
       readonly quality: AudioQuality;
+      readonly expectedDurationSeconds?: number;
       readonly sourceUrl: string;
     }>;
     for (const track of parsedBody.data.tracks) {

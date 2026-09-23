@@ -10,6 +10,7 @@ export * from "./collectionErrorResponse";
 export * from "./collectionErrorResponseError";
 export * from "./downloadErrorResponse";
 export * from "./downloadErrorResponseError";
+export * from "./downloadFailureCode";
 export * from "./downloadJob";
 export * from "./downloadJobCancelResponse";
 export * from "./downloadJobListResponse";

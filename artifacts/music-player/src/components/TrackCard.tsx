@@ -37,7 +37,7 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
   } = usePlayer();
   const [queueAdded, setQueueAdded] = useState(false);
   const { toast } = useToast();
-  const { state: downloadState, progress, start, cancel } = useTrackDownload();
+  const { state: downloadState, progress, failureCode, start, cancel } = useTrackDownload();
   const previousDownloadStateRef = useRef(downloadState);
 
   const isCurrentTrack = currentTrack?.id === track.id;
@@ -77,13 +77,17 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
     } else if (downloadState === "failed") {
       toast({
         title: "Ошибка загрузки",
-        description: "Не удалось начать загрузку.",
+        description: failureCode === "preview_rejected"
+          ? "Источник содержит только фрагмент трека. Выберите другую запись."
+          : failureCode === "duration_unverified"
+            ? "Не удалось проверить длительность записи. Попробуйте другой источник."
+            : "Не удалось начать загрузку.",
         variant: "destructive",
       });
     } else if (downloadState === "canceled") {
       toast({ title: "Загрузка отменена", description: track.title });
     }
-  }, [downloadState, toast, track.title]);
+  }, [downloadState, failureCode, toast, track.title]);
 
   const isDownloadPending =
     downloadState === "waiting" || downloadState === "active";
@@ -93,7 +97,11 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
       : "Подготовка загрузки";
   const terminalDownloadStatus =
     downloadState === "failed"
-      ? "Не удалось начать загрузку."
+      ? failureCode === "preview_rejected"
+        ? "Только фрагмент трека."
+        : failureCode === "duration_unverified"
+          ? "Длительность не проверена."
+          : "Не удалось начать загрузку."
       : downloadState === "canceled"
         ? "Загрузка отменена"
         : downloadState === "completed"
