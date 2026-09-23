@@ -20,6 +20,8 @@ let spotifyConnected: boolean;
 let spotifyUnavailable: boolean;
 let spotifyNetworkError: boolean;
 let spotifyGrantExpired: boolean;
+let candidateFixture: boolean;
+let candidateFailure: boolean;
 let calls: { path: string; init?: RequestInit }[];
 class FixtureAudio extends EventTarget {
   currentTime = 0;
@@ -41,6 +43,8 @@ beforeEach(() => {
   spotifyUnavailable = false;
   spotifyNetworkError = false;
   spotifyGrantExpired = false;
+  candidateFixture = false;
+  candidateFailure = false;
   calls = [];
   vi.stubGlobal("Audio", FixtureAudio);
   vi.stubGlobal(
@@ -75,6 +79,8 @@ beforeEach(() => {
       }
       if (path.endsWith("/collections/liked"))
         return json({ items: [], nextCursor: null });
+      if (path.endsWith("/collections/liked/lookup"))
+        return json({ likedTrackIds: [] });
       if (path.endsWith("/spotify/liked") && spotifyGrantExpired) {
         spotifyConnected = false;
         return json({ error: "not_connected" }, 401);
@@ -97,7 +103,15 @@ beforeEach(() => {
           limit: 50,
         });
       if (path.endsWith("/tracks/search"))
-        return json({ results: [], cached: false, sources: ["yt"] });
+        return candidateFailure
+          ? json({ error: "search_unavailable" }, 503)
+          : candidateFixture
+          ? json({ query: "Fixture Artist Saved Fixture Track", results: [{
+              id: "yt_candidate", title: "Independent Recording", artist: "Fixture Artist",
+              type: "original", duration: 180, source: "youtube", thumbnailUrl: null,
+              quality: ["128"], viewCount: 10, score: 82,
+            }], cached: false, sources: ["yt"], fallbackAvailable: false })
+          : json({ results: [], cached: false, sources: ["yt"] });
       throw new Error(`Unexpected fixture request: ${path}`);
     },
   );
@@ -247,6 +261,7 @@ it("hands an old Favorites OAuth return to Integrations without treating query t
 it("keeps source selections and keyboard search submission in the compact Home form", async () => {
   const user = userEvent.setup();
   await open("/");
+  await user.click(screen.getByRole("button", { name: "Точный" }));
   const artist = screen.getByRole("textbox", { name: "Исполнитель" });
   await user.click(artist);
   await user.type(artist, "Fixture Artist");
@@ -255,7 +270,7 @@ it("keeps source selections and keyboard search submission in the compact Home f
   await user.click(screen.getByRole("checkbox", { name: "SoundCloud" }));
   await user.click(screen.getByRole("checkbox", { name: "Bandcamp" }));
   await user.click(screen.getByRole("checkbox", { name: "Deezer" }));
-  await user.click(screen.getByRole("textbox", { name: "Название трека" }));
+  await user.click(screen.getByRole("combobox", { name: "Название трека" }));
   await user.keyboard("{Enter}");
   await screen.findByText("No tracks found");
   const search = calls.find(({ path }) => path.endsWith("/tracks/search"));
@@ -266,4 +281,37 @@ it("keeps source selections and keyboard search submission in the compact Home f
     sources: ["yt"],
   });
   expect(screen.getByRole("checkbox", { name: "YouTube" })).toBeChecked();
+});
+
+it("resolves a provider-library track in place into playable and savable TF candidates", async () => {
+  candidateFixture = true;
+  const user = userEvent.setup();
+  await open("/favorites");
+  await user.click(screen.getByRole("button", { name: "Spotify" }));
+  await screen.findByText("Saved Fixture Track");
+  await user.click(screen.getByRole("button", { name: "Найти в TF: Saved Fixture Track" }));
+  expect(window.location.pathname).toBe("/favorites");
+  expect(await screen.findByText("Independent Recording")).toBeInTheDocument();
+  const search = calls.find(({ path }) => path.endsWith("/tracks/search"));
+  expect(JSON.parse(String(search?.init?.body))).toEqual({
+    artist: "Fixture Artist", title: "Saved Fixture Track", mode: "auto", maxResults: 6,
+  });
+  expect(screen.getByRole("button", { name: "Воспроизвести: Independent Recording" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Сохранить в избранное" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Yandex Music" }));
+  expect(screen.queryByRole("region", { name: "Подбор записи TF" })).toBeNull();
+});
+
+it("keeps the provider library visible when candidate search fails and allows retry", async () => {
+  candidateFixture = true;
+  candidateFailure = true;
+  const user = userEvent.setup();
+  await open("/favorites");
+  await user.click(screen.getByRole("button", { name: "Spotify" }));
+  await user.click(await screen.findByRole("button", { name: "Найти в TF: Saved Fixture Track" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Поиск сейчас недоступен");
+  expect(screen.getByText("Saved Fixture Track")).toBeInTheDocument();
+  candidateFailure = false;
+  await user.click(screen.getByRole("button", { name: "Повторить" }));
+  expect(await screen.findByText("Independent Recording")).toBeInTheDocument();
 });

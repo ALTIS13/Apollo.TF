@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link, useLocation } from "wouter";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import {
@@ -11,7 +11,7 @@ import {
   Loader2,
   AlertCircle,
   ExternalLink,
-  Play,
+  Search,
 } from "lucide-react";
 import {
   useSpotifyStatus,
@@ -32,6 +32,7 @@ import {
 } from "@/hooks/use-yandex";
 import { useTfAuth } from "@/auth/tf-auth";
 import { LikedCollection } from "@/components/LikedCollection";
+import { ProviderCandidatePanel } from "@/components/ProviderCandidatePanel";
 
 const SPOTIFY_GREEN = "#1DB954";
 const YANDEX_YELLOW = "#FFCC00";
@@ -112,14 +113,7 @@ function TrackList({ tracks, offset, accentColor, onSearchVariants }: {
           transition={{ delay: Math.min(i * 0.025, 0.4) }}
           className="group flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition-all"
         >
-          <span className="w-6 text-center text-white/25 text-xs shrink-0 group-hover:hidden">{offset + i + 1}</span>
-          <button
-            className="w-6 h-6 shrink-0 hidden group-hover:flex items-center justify-center text-white/50 hover:text-white transition-colors"
-            onClick={() => onSearchVariants(track.title, track.artist)}
-            title="Find variants"
-          >
-            <Play className="w-3.5 h-3.5" />
-          </button>
+          <span className="w-6 shrink-0 text-center text-xs text-white/25">{offset + i + 1}</span>
 
           {track.thumbnailUrl ? (
             <img src={track.thumbnailUrl} alt={track.album} className="w-10 h-10 rounded-md object-cover shrink-0" />
@@ -140,18 +134,22 @@ function TrackList({ tracks, offset, accentColor, onSearchVariants }: {
               href={track.externalUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="opacity-0 group-hover:opacity-100 text-white/35 hover:text-white/70 transition-opacity"
+              className="text-white/35 hover:text-white/70 focus-visible:outline-2 focus-visible:outline-white"
               onClick={(e) => e.stopPropagation()}
-              title="Open in streaming service"
+              title="Открыть в музыкальном сервисе"
+              aria-label={`Открыть в музыкальном сервисе: ${track.title}`}
             >
               <ExternalLink className="w-3.5 h-3.5" />
             </a>
             <button
-              className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold transition-all hover:scale-105 active:scale-95"
-              style={{ background: accentColor, color: "#000" }}
+              type="button"
+              className="flex h-9 w-9 items-center justify-center gap-2 rounded-md border border-white/15 text-xs font-medium text-white hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-white sm:w-auto sm:px-3"
+              style={{ borderColor: accentColor }}
               onClick={() => onSearchVariants(track.title, track.artist)}
+              aria-label={`Найти в TF: ${track.title}`}
             >
-              Find variants
+              <Search className="h-4 w-4 shrink-0" />
+              <span className="hidden sm:inline">Найти в TF</span>
             </button>
           </div>
         </motion.div>
@@ -175,19 +173,19 @@ function SpotifyCatalog({ onSearchVariants }: { onSearchVariants: (title: string
   const [activeTab, setActiveTab] = useState<CatalogTab>("liked");
 
   const tabs = [
-    { id: "liked" as CatalogTab, label: "Liked Songs", icon: <Heart className="w-4 h-4" /> },
-    { id: "playlists" as CatalogTab, label: "Playlists", icon: <List className="w-4 h-4" /> },
-    { id: "top" as CatalogTab, label: "Top Tracks", icon: <TrendingUp className="w-4 h-4" /> },
+    { id: "liked" as CatalogTab, label: "Любимые", icon: <Heart className="w-4 h-4" /> },
+    { id: "playlists" as CatalogTab, label: "Плейлисты", icon: <List className="w-4 h-4" /> },
+    { id: "top" as CatalogTab, label: "Топ", icon: <TrendingUp className="w-4 h-4" /> },
   ];
 
   return (
     <div>
-      <div className="flex gap-1 mb-5 p-1 rounded-xl bg-white/5 w-fit">
+      <div className="mb-5 flex w-full gap-1 rounded-md bg-white/5 p-1 sm:w-fit">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all"
+            className="flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-2 text-xs font-medium transition-colors sm:flex-none sm:px-4 sm:text-sm"
             style={activeTab === tab.id ? { background: "rgba(255,255,255,0.12)", color: "#fff" } : { color: "rgba(255,255,255,0.45)" }}
           >
             {tab.icon}
@@ -342,18 +340,18 @@ function YandexCatalog({ onSearchVariants }: { onSearchVariants: (title: string,
   const [activeTab, setActiveTab] = useState<"liked" | "playlists">("liked");
 
   const tabs = [
-    { id: "liked" as const, label: "Liked Songs", icon: <Heart className="w-4 h-4" /> },
-    { id: "playlists" as const, label: "Playlists", icon: <List className="w-4 h-4" /> },
+    { id: "liked" as const, label: "Любимые", icon: <Heart className="w-4 h-4" /> },
+    { id: "playlists" as const, label: "Плейлисты", icon: <List className="w-4 h-4" /> },
   ];
 
   return (
     <div>
-      <div className="flex gap-1 mb-5 p-1 rounded-xl bg-white/5 w-fit">
+      <div className="mb-5 flex w-full gap-1 rounded-md bg-white/5 p-1 sm:w-fit">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all"
+            className="flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-2 text-xs font-medium transition-colors sm:flex-none sm:px-4 sm:text-sm"
             style={activeTab === tab.id ? { background: "rgba(255,255,255,0.12)", color: "#fff" } : { color: "rgba(255,255,255,0.45)" }}
           >
             {tab.icon}
@@ -475,6 +473,8 @@ export default function Favorites() {
   const reduceMotion = useReducedMotion();
   const [, navigate] = useLocation();
   const [service, setService] = useState<ServiceTab>("apollo");
+  const [selectedTrack, setSelectedTrack] = useState<{ title: string; artist: string } | null>(null);
+  const candidateRef = useRef<HTMLDivElement>(null);
   const { hasEntitlement } = useTfAuth();
   const integrationsAllowed = hasEntitlement("tf.integrations");
   const callbackQuery = new URLSearchParams(window.location.search);
@@ -490,8 +490,12 @@ export default function Favorites() {
   }, [callback, navigate]);
 
   const handleSearchVariants = (title: string, artist: string) => {
-    navigate(`/?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`);
+    setSelectedTrack({ title, artist });
   };
+
+  useEffect(() => {
+    if (selectedTrack) candidateRef.current?.scrollIntoView?.({ behavior: reduceMotion ? "auto" : "smooth", block: "nearest" });
+  }, [selectedTrack, reduceMotion]);
 
   const services = [
     { id: "apollo" as ServiceTab, label: "Apollo", color: "#8b5cf6", connected: false },
@@ -530,7 +534,7 @@ export default function Favorites() {
                 {services.map((svc) => (
                   <button
                     key={svc.id}
-                    onClick={() => setService(svc.id)}
+                    onClick={() => { setService(svc.id); setSelectedTrack(null); }}
                     className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all relative"
                     style={service === svc.id ? { background: "rgba(255,255,255,0.12)", color: "#fff" } : { color: "rgba(255,255,255,0.4)" }}
                   >
@@ -548,6 +552,16 @@ export default function Favorites() {
       </div>
 
       <div className="max-w-5xl mx-auto px-4 py-6">
+        {selectedTrack && service !== "apollo" && integrationsAllowed && (
+          <div ref={candidateRef} className="mb-6 scroll-mt-16">
+            <ProviderCandidatePanel
+              key={`${service}:${selectedTrack.artist}:${selectedTrack.title}`}
+              artist={selectedTrack.artist}
+              title={selectedTrack.title}
+              onClose={() => setSelectedTrack(null)}
+            />
+          </div>
+        )}
         <AnimatePresence mode="wait">
           <motion.div
             key={service}
