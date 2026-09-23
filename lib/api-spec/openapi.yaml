@@ -40,7 +40,7 @@ paths:
           schema:
             type: string
             minLength: 2
-            maxLength: 500
+            maxLength: 200
       responses:
         "200":
           description: Up to five search suggestions
@@ -48,6 +48,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TrackSuggestionsResponse"
+        "400":
+          description: Invalid suggestion query
         "503":
           description: Search module unavailable
           content:

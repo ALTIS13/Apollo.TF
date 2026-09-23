@@ -88,6 +88,7 @@ function createParserRollingTelemetry(): ParserRollingTelemetry {
 
 function cacheIdentity(command: TfSearchCommand): SearchCacheIdentity {
   return {
+    accountId: command.accountId,
     artist: command.artist,
     title: command.title,
     mode: command.mode,
@@ -151,6 +152,9 @@ class SearchServiceImpl implements RuntimeSearchService {
     if (cacheable) {
       const cached = this.cache.get(cacheIdentity(command));
       if (cached) {
+        if (command.accountId && cached.length > 0) {
+          this.cache.observe(command.accountId, command.artist, command.title);
+        }
         return {
           schemaVersion: 1,
           requestId: command.requestId,
@@ -204,6 +208,10 @@ class SearchServiceImpl implements RuntimeSearchService {
       mode: command.mode,
       queryText: query,
     }).slice(0, command.maxResults);
+
+    if (command.accountId && ranked.length > 0) {
+      this.cache.observe(command.accountId, command.artist, command.title);
+    }
 
     if (cacheable && failedProviders === 0) {
       this.cache.set(cacheIdentity(command), ranked);
@@ -284,7 +292,9 @@ class SearchServiceImpl implements RuntimeSearchService {
     return {
       schemaVersion: 1,
       requestId: command.requestId,
-      suggestions: [...this.cache.suggestions(command.query, command.limit)],
+      suggestions: command.accountId
+        ? [...this.cache.suggestions(command.accountId, command.query, command.limit)]
+        : [],
     };
   }
 

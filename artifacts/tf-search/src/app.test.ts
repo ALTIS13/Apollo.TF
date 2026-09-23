@@ -173,6 +173,7 @@ describe("TF search HTTP boundary", () => {
     const suggestionsBody = Buffer.from(JSON.stringify({
       schemaVersion: 1,
       requestId,
+      accountId: "11111111-1111-4111-8111-111111111111",
       query: "Artist",
       limit: 1,
     }));
@@ -288,6 +289,7 @@ describe("TF search HTTP boundary", () => {
     const suggestionCommand: TfSearchSuggestionsCommand = {
       schemaVersion: 1,
       requestId,
+      accountId: "11111111-1111-4111-8111-111111111111",
       query: "Artist",
       limit: 1,
     };

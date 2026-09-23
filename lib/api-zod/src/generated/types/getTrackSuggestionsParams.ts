@@ -9,7 +9,7 @@
 export type GetTrackSuggestionsParams = {
   /**
    * @minLength 2
-   * @maxLength 500
+   * @maxLength 200
    */
   q: string;
 };

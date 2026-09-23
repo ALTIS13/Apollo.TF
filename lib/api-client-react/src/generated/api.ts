@@ -172,7 +172,7 @@ export const getGetTrackSuggestionsQueryKey = (
 
 export const getGetTrackSuggestionsQueryOptions = <
   TData = Awaited<ReturnType<typeof getTrackSuggestions>>,
-  TError = ErrorType<SearchUnavailableResponse>,
+  TError = ErrorType<void | SearchUnavailableResponse>,
 >(
   params: GetTrackSuggestionsParams,
   options?: {
@@ -205,7 +205,7 @@ export type GetTrackSuggestionsQueryResult = NonNullable<
   Awaited<ReturnType<typeof getTrackSuggestions>>
 >;
 export type GetTrackSuggestionsQueryError =
-  ErrorType<SearchUnavailableResponse>;
+  ErrorType<void | SearchUnavailableResponse>;
 
 /**
  * @summary Suggest artist and title pairs for a search query
@@ -213,7 +213,7 @@ export type GetTrackSuggestionsQueryError =
 
 export function useGetTrackSuggestions<
   TData = Awaited<ReturnType<typeof getTrackSuggestions>>,
-  TError = ErrorType<SearchUnavailableResponse>,
+  TError = ErrorType<void | SearchUnavailableResponse>,
 >(
   params: GetTrackSuggestionsParams,
   options?: {

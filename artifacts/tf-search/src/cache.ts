@@ -12,6 +12,7 @@ const MAX_SUGGESTIONS = 5;
 const SOURCE_ORDER: readonly TfSearchSource[] = ["yt", "sc", "bc", "dz"];
 
 export interface SearchCacheIdentity {
+  readonly accountId?: string;
   readonly artist: string;
   readonly title: string;
   readonly mode: TfSearchCommand["mode"];
@@ -26,6 +27,13 @@ interface CacheEntry {
   readonly results: readonly TfSearchResult[];
 }
 
+interface SuggestionEntry {
+  readonly accountId: string;
+  readonly artist: string;
+  readonly title: string;
+  readonly expiresAt: number;
+}
+
 function normalize(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -33,6 +41,7 @@ function normalize(value: string): string {
 function keyFor(identity: SearchCacheIdentity): string {
   const canonicalSources = SOURCE_ORDER.filter((source) => identity.sources.includes(source));
   return JSON.stringify([
+    identity.accountId ?? null,
     normalize(identity.artist),
     normalize(identity.title),
     identity.mode,
@@ -43,6 +52,7 @@ function keyFor(identity: SearchCacheIdentity): string {
 
 export class BoundedSearchCache {
   private readonly entries = new Map<string, CacheEntry>();
+  private readonly suggestionEntries = new Map<string, SuggestionEntry>();
   private readonly maxEntries: number;
   private readonly ttlMs: number;
   private readonly now: () => number;
@@ -98,18 +108,33 @@ export class BoundedSearchCache {
     });
   }
 
-  suggestions(query: string, limit: number): readonly TfSearchSuggestion[] {
+  observe(accountId: string, artist: string, title: string): void {
+    const normalizedArtist = normalize(artist);
+    const normalizedTitle = normalize(title);
+    const key = JSON.stringify([accountId, normalizedArtist, normalizedTitle]);
+    this.removeExpired();
+    this.suggestionEntries.delete(key);
+    while (this.suggestionEntries.size >= this.maxEntries) {
+      const oldestKey = this.suggestionEntries.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      this.suggestionEntries.delete(oldestKey);
+    }
+    this.suggestionEntries.set(key, {
+      accountId,
+      artist: normalizedArtist,
+      title: normalizedTitle,
+      expiresAt: this.now() + this.ttlMs,
+    });
+  }
+
+  suggestions(accountId: string, query: string, limit: number): readonly TfSearchSuggestion[] {
     this.removeExpired();
     const normalizedQuery = normalize(query);
     const maxSuggestions = Math.min(MAX_SUGGESTIONS, Math.max(0, Math.floor(limit)));
     const matches: TfSearchSuggestion[] = [];
-    const projectedPairs = new Set<string>();
-
-    for (const entry of this.entries.values()) {
+    for (const entry of this.suggestionEntries.values()) {
+      if (entry.accountId !== accountId) continue;
       if (!entry.artist.includes(normalizedQuery) && !entry.title.includes(normalizedQuery)) continue;
-      const projectedPair = JSON.stringify([entry.artist, entry.title]);
-      if (projectedPairs.has(projectedPair)) continue;
-      projectedPairs.add(projectedPair);
       matches.push({ artist: entry.artist, title: entry.title });
       if (matches.length === maxSuggestions) break;
     }
@@ -121,6 +146,9 @@ export class BoundedSearchCache {
     const now = this.now();
     for (const [key, entry] of this.entries) {
       if (entry.expiresAt <= now) this.entries.delete(key);
+    }
+    for (const [key, entry] of this.suggestionEntries) {
+      if (entry.expiresAt <= now) this.suggestionEntries.delete(key);
     }
   }
 }

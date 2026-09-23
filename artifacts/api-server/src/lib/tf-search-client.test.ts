@@ -297,7 +297,7 @@ describe("HttpTfSearchClient", () => {
     );
     const gateway = client(fetchImplementation);
 
-    await expect(gateway.suggestions("artist", 5)).resolves.toEqual(
+    await expect(gateway.suggestions(FIRST_REQUEST_ID, "artist", 5)).resolves.toEqual(
       suggestionsResponse(FIRST_REQUEST_ID),
     );
     const [url, init] = fetchImplementation.mock.calls[0]!;
@@ -308,6 +308,7 @@ describe("HttpTfSearchClient", () => {
     expect(JSON.parse(rawBody.toString("utf8"))).toEqual({
       schemaVersion: 1,
       requestId: FIRST_REQUEST_ID,
+      accountId: FIRST_REQUEST_ID,
       query: "artist",
       limit: 5,
     });

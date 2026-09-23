@@ -362,6 +362,7 @@ export function createTracksRouter(
       const response = await routeDependencies.searchGateway.search({
         artist,
         title,
+        accountId: req.tfPrincipal!.accountId,
         mode: mode ?? "auto",
         sources: enabledSources,
         maxResults,
@@ -977,9 +978,17 @@ export function createTracksRouter(
       res.json({ suggestions: [] });
       return;
     }
+    if (q.length > 200) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
 
     try {
-      const response = await routeDependencies.searchGateway.suggestions(q, 5);
+      const response = await routeDependencies.searchGateway.suggestions(
+        req.tfPrincipal!.accountId,
+        q,
+        5,
+      );
       res.json({ suggestions: response.suggestions });
     } catch {
       res.status(503).json({ error: "search_unavailable" });

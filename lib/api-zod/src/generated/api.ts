@@ -19,7 +19,7 @@ export const HealthCheckResponse = zod.object({
  * @summary Suggest artist and title pairs for a search query
  */
 export const getTrackSuggestionsQueryQMin = 2;
-export const getTrackSuggestionsQueryQMax = 500;
+export const getTrackSuggestionsQueryQMax = 200;
 
 export const GetTrackSuggestionsQueryParams = zod.object({
   q: zod.coerce

@@ -279,6 +279,7 @@ describe("TF search module routing", () => {
     expect(gateway.search).toHaveBeenCalledWith({
       artist: "Artist",
       title: "Track",
+      accountId: ACCOUNT_ID,
       mode: "manual",
       sources: ["yt"],
       maxResults: 7,
@@ -464,6 +465,7 @@ describe("TF search module routing", () => {
     const gateway = searchGateway();
     const baseUrl = await startTracksServer(
       routeDependencies({ searchGateway: gateway }),
+      { ...principal, accountId: OTHER_ACCOUNT_ID },
     );
 
     const response = await fetch(`${baseUrl}/tracks/suggest?q=%20ArTiSt%20`);
@@ -472,7 +474,17 @@ describe("TF search module routing", () => {
     await expect(response.json()).resolves.toEqual({
       suggestions: [{ artist: "Artist", title: "Track" }],
     });
-    expect(gateway.suggestions).toHaveBeenCalledWith("artist", 5);
+    expect(gateway.suggestions).toHaveBeenCalledWith(OTHER_ACCOUNT_ID, "artist", 5);
+  });
+
+  it("rejects an overlong suggestion query before calling the module", async () => {
+    const gateway = searchGateway();
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+
+    const response = await fetch(`${baseUrl}/tracks/suggest?q=${"a".repeat(201)}`);
+
+    expect(response.status).toBe(400);
+    expect(gateway.suggestions).not.toHaveBeenCalled();
   });
 
   it("keeps recommendation personalization in the API and strips private candidates", async () => {

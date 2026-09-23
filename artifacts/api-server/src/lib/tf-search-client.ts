@@ -51,6 +51,7 @@ export interface TfSearchGateway {
     >,
   ): Promise<TfSearchArtistDiscoveryResponse>;
   suggestions(
+    accountId: string,
     query: string,
     limit: number,
   ): Promise<TfSearchSuggestionsResponse>;
@@ -219,6 +220,7 @@ export class HttpTfSearchClient implements TfSearchGateway {
   }
 
   suggestions(
+    accountId: string,
     query: string,
     limit: number,
   ): Promise<TfSearchSuggestionsResponse> {
@@ -227,6 +229,7 @@ export class HttpTfSearchClient implements TfSearchGateway {
       {
         schemaVersion: 1,
         requestId: this.randomUuid(),
+        accountId,
         query,
         limit,
       },

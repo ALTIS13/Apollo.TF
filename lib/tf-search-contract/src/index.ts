@@ -67,6 +67,7 @@ const tfSearchCommandObjectSchema = z
     requestId: canonicalUuidSchema,
     artist: z.string().trim().min(1).max(200),
     title: z.string().trim().min(1).max(300),
+    accountId: canonicalUuidSchema.optional(),
     mode: z.enum(["auto", "manual"]),
     sources: tfSearchSourcesSchema,
     maxResults: z.number().finite().int().min(1).max(40),
@@ -97,6 +98,7 @@ const tfSearchSuggestionsCommandObjectSchema = z
   .object({
     schemaVersion: z.literal(1),
     requestId: canonicalUuidSchema,
+    accountId: canonicalUuidSchema.optional(),
     query: z.string().trim().min(2).max(200),
     limit: z.number().finite().int().min(1).max(5),
   })
