@@ -22,7 +22,7 @@ import {
 export const likedCollectionKey = (accountId: string | null) =>
   ["tf", "liked", accountId] as const;
 
-function useCollectionAccess() {
+export function useCollectionAccess() {
   const { status, session, hasEntitlement } = useTfAuth();
   const accountId =
     status === "authenticated" ? (session?.accountId ?? null) : null;

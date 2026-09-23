@@ -17,7 +17,13 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  AddPlaylistTrackRequest,
+  CollectionBadRequestResponse,
   CollectionErrorResponse,
+  CollectionForbiddenResponse,
+  CollectionUnauthorizedResponse,
+  CollectionUnavailableResponse,
+  CreatePlaylistRequest,
   DownloadErrorResponse,
   DownloadJobCancelResponse,
   DownloadJobListResponse,
@@ -36,6 +42,11 @@ import type {
   LikedTrackMutationResponse,
   LikedTrackPage,
   ListLikedTracksParams,
+  PlaylistDetailResponse,
+  PlaylistListResponse,
+  PlaylistMutationResponse,
+  PlaylistNotFoundResponse,
+  PlaylistTrackMutationResponse,
   SaveLikedTrackRequest,
   SearchRequest,
   SearchResponse,
@@ -1424,4 +1435,616 @@ export const useRemoveLikedTrack = <
   TContext
 > => {
   return useMutation(getRemoveLikedTrackMutationOptions(options));
+};
+
+/**
+ * @summary List playlists owned by the current TF account
+ */
+export const getListPlaylistsUrl = () => {
+  return `/api/collections/playlists`;
+};
+
+export const listPlaylists = async (
+  options?: RequestInit,
+): Promise<PlaylistListResponse> => {
+  return customFetch<PlaylistListResponse>(getListPlaylistsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListPlaylistsQueryKey = () => {
+  return [`/api/collections/playlists`] as const;
+};
+
+export const getListPlaylistsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listPlaylists>>,
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | CollectionUnavailableResponse
+  >,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listPlaylists>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListPlaylistsQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof listPlaylists>>> = ({
+    signal,
+  }) => listPlaylists({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listPlaylists>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListPlaylistsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listPlaylists>>
+>;
+export type ListPlaylistsQueryError = ErrorType<
+  | CollectionBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | CollectionUnavailableResponse
+>;
+
+/**
+ * @summary List playlists owned by the current TF account
+ */
+
+export function useListPlaylists<
+  TData = Awaited<ReturnType<typeof listPlaylists>>,
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | CollectionUnavailableResponse
+  >,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listPlaylists>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListPlaylistsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Create a playlist for the current TF account
+ */
+export const getCreatePlaylistUrl = () => {
+  return `/api/collections/playlists`;
+};
+
+export const createPlaylist = async (
+  createPlaylistRequest: CreatePlaylistRequest,
+  options?: RequestInit,
+): Promise<PlaylistMutationResponse> => {
+  return customFetch<PlaylistMutationResponse>(getCreatePlaylistUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(createPlaylistRequest),
+  });
+};
+
+export const getCreatePlaylistMutationOptions = <
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createPlaylist>>,
+    TError,
+    { data: BodyType<CreatePlaylistRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createPlaylist>>,
+  TError,
+  { data: BodyType<CreatePlaylistRequest> },
+  TContext
+> => {
+  const mutationKey = ["createPlaylist"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createPlaylist>>,
+    { data: BodyType<CreatePlaylistRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createPlaylist(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreatePlaylistMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createPlaylist>>
+>;
+export type CreatePlaylistMutationBody = BodyType<CreatePlaylistRequest>;
+export type CreatePlaylistMutationError = ErrorType<
+  | CollectionBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | CollectionUnavailableResponse
+>;
+
+/**
+ * @summary Create a playlist for the current TF account
+ */
+export const useCreatePlaylist = <
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createPlaylist>>,
+    TError,
+    { data: BodyType<CreatePlaylistRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createPlaylist>>,
+  TError,
+  { data: BodyType<CreatePlaylistRequest> },
+  TContext
+> => {
+  return useMutation(getCreatePlaylistMutationOptions(options));
+};
+
+/**
+ * @summary Get an owned playlist and its ordered tracks
+ */
+export const getGetPlaylistUrl = (playlistId: number) => {
+  return `/api/collections/playlists/${playlistId}`;
+};
+
+export const getPlaylist = async (
+  playlistId: number,
+  options?: RequestInit,
+): Promise<PlaylistDetailResponse> => {
+  return customFetch<PlaylistDetailResponse>(getGetPlaylistUrl(playlistId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetPlaylistQueryKey = (playlistId: number) => {
+  return [`/api/collections/playlists/${playlistId}`] as const;
+};
+
+export const getGetPlaylistQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPlaylist>>,
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+>(
+  playlistId: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPlaylist>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetPlaylistQueryKey(playlistId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getPlaylist>>> = ({
+    signal,
+  }) => getPlaylist(playlistId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!playlistId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPlaylist>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetPlaylistQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPlaylist>>
+>;
+export type GetPlaylistQueryError = ErrorType<
+  | CollectionBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | PlaylistNotFoundResponse
+  | CollectionUnavailableResponse
+>;
+
+/**
+ * @summary Get an owned playlist and its ordered tracks
+ */
+
+export function useGetPlaylist<
+  TData = Awaited<ReturnType<typeof getPlaylist>>,
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+>(
+  playlistId: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPlaylist>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetPlaylistQueryOptions(playlistId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Delete an owned playlist and its tracks
+ */
+export const getRemovePlaylistUrl = (playlistId: number) => {
+  return `/api/collections/playlists/${playlistId}`;
+};
+
+export const removePlaylist = async (
+  playlistId: number,
+  options?: RequestInit,
+): Promise<void> => {
+  return customFetch<void>(getRemovePlaylistUrl(playlistId), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getRemovePlaylistMutationOptions = <
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof removePlaylist>>,
+    TError,
+    { playlistId: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof removePlaylist>>,
+  TError,
+  { playlistId: number },
+  TContext
+> => {
+  const mutationKey = ["removePlaylist"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof removePlaylist>>,
+    { playlistId: number }
+  > = (props) => {
+    const { playlistId } = props ?? {};
+
+    return removePlaylist(playlistId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RemovePlaylistMutationResult = NonNullable<
+  Awaited<ReturnType<typeof removePlaylist>>
+>;
+
+export type RemovePlaylistMutationError = ErrorType<
+  | CollectionBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | PlaylistNotFoundResponse
+  | CollectionUnavailableResponse
+>;
+
+/**
+ * @summary Delete an owned playlist and its tracks
+ */
+export const useRemovePlaylist = <
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof removePlaylist>>,
+    TError,
+    { playlistId: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof removePlaylist>>,
+  TError,
+  { playlistId: number },
+  TContext
+> => {
+  return useMutation(getRemovePlaylistMutationOptions(options));
+};
+
+/**
+ * @summary Add a TF track once to an owned playlist
+ */
+export const getAddPlaylistTrackUrl = (playlistId: number) => {
+  return `/api/collections/playlists/${playlistId}/tracks`;
+};
+
+export const addPlaylistTrack = async (
+  playlistId: number,
+  addPlaylistTrackRequest: AddPlaylistTrackRequest,
+  options?: RequestInit,
+): Promise<PlaylistTrackMutationResponse> => {
+  return customFetch<PlaylistTrackMutationResponse>(
+    getAddPlaylistTrackUrl(playlistId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(addPlaylistTrackRequest),
+    },
+  );
+};
+
+export const getAddPlaylistTrackMutationOptions = <
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof addPlaylistTrack>>,
+    TError,
+    { playlistId: number; data: BodyType<AddPlaylistTrackRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof addPlaylistTrack>>,
+  TError,
+  { playlistId: number; data: BodyType<AddPlaylistTrackRequest> },
+  TContext
+> => {
+  const mutationKey = ["addPlaylistTrack"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof addPlaylistTrack>>,
+    { playlistId: number; data: BodyType<AddPlaylistTrackRequest> }
+  > = (props) => {
+    const { playlistId, data } = props ?? {};
+
+    return addPlaylistTrack(playlistId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AddPlaylistTrackMutationResult = NonNullable<
+  Awaited<ReturnType<typeof addPlaylistTrack>>
+>;
+export type AddPlaylistTrackMutationBody = BodyType<AddPlaylistTrackRequest>;
+export type AddPlaylistTrackMutationError = ErrorType<
+  | CollectionBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | PlaylistNotFoundResponse
+  | CollectionUnavailableResponse
+>;
+
+/**
+ * @summary Add a TF track once to an owned playlist
+ */
+export const useAddPlaylistTrack = <
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof addPlaylistTrack>>,
+    TError,
+    { playlistId: number; data: BodyType<AddPlaylistTrackRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof addPlaylistTrack>>,
+  TError,
+  { playlistId: number; data: BodyType<AddPlaylistTrackRequest> },
+  TContext
+> => {
+  return useMutation(getAddPlaylistTrackMutationOptions(options));
+};
+
+/**
+ * @summary Remove a TF track from an owned playlist
+ */
+export const getRemovePlaylistTrackUrl = (
+  playlistId: number,
+  trackId: string,
+) => {
+  return `/api/collections/playlists/${playlistId}/tracks/${trackId}`;
+};
+
+export const removePlaylistTrack = async (
+  playlistId: number,
+  trackId: string,
+  options?: RequestInit,
+): Promise<void> => {
+  return customFetch<void>(getRemovePlaylistTrackUrl(playlistId, trackId), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getRemovePlaylistTrackMutationOptions = <
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof removePlaylistTrack>>,
+    TError,
+    { playlistId: number; trackId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof removePlaylistTrack>>,
+  TError,
+  { playlistId: number; trackId: string },
+  TContext
+> => {
+  const mutationKey = ["removePlaylistTrack"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof removePlaylistTrack>>,
+    { playlistId: number; trackId: string }
+  > = (props) => {
+    const { playlistId, trackId } = props ?? {};
+
+    return removePlaylistTrack(playlistId, trackId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RemovePlaylistTrackMutationResult = NonNullable<
+  Awaited<ReturnType<typeof removePlaylistTrack>>
+>;
+
+export type RemovePlaylistTrackMutationError = ErrorType<
+  | CollectionBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | PlaylistNotFoundResponse
+  | CollectionUnavailableResponse
+>;
+
+/**
+ * @summary Remove a TF track from an owned playlist
+ */
+export const useRemovePlaylistTrack = <
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof removePlaylistTrack>>,
+    TError,
+    { playlistId: number; trackId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof removePlaylistTrack>>,
+  TError,
+  { playlistId: number; trackId: string },
+  TContext
+> => {
+  return useMutation(getRemovePlaylistTrackMutationOptions(options));
 };

@@ -16,6 +16,7 @@ import { createSpotifyRouter } from "./spotify.js";
 import { createTracksRouter } from "./tracks.js";
 import { createYandexRouter } from "./yandex.js";
 import { createCollectionsRouter } from "./collections.js";
+import { createPlaylistsRouter } from "./playlists.js";
 
 vi.hoisted(() => {
   process.env["DATABASE_URL"] ??= "postgres://unused:unused@127.0.0.1:1/unused";
@@ -58,6 +59,15 @@ function exactInventory(): TfProtectedRoute[] {
     { method: "POST", path: "/api/collections/liked/lookup" },
     { method: "PUT", path: "/api/collections/liked/:trackId" },
     { method: "DELETE", path: "/api/collections/liked/:trackId" },
+    { method: "GET", path: "/api/collections/playlists" },
+    { method: "POST", path: "/api/collections/playlists" },
+    { method: "GET", path: "/api/collections/playlists/:playlistId" },
+    { method: "POST", path: "/api/collections/playlists/:playlistId/tracks" },
+    {
+      method: "DELETE",
+      path: "/api/collections/playlists/:playlistId/tracks/:trackId",
+    },
+    { method: "DELETE", path: "/api/collections/playlists/:playlistId" },
     { method: "GET", path: "/api/tracks/suggest" },
     { method: "GET", path: "/api/tracks/lyrics" },
     { method: "POST", path: "/api/tracks/download/queue" },
@@ -143,6 +153,7 @@ describe("protected route policy coverage", () => {
   it("discovers the exact protected route inventory", async () => {
     const trackRoutes = discoverRoutes(createTracksRouter());
     const collectionRoutes = discoverRoutes(createCollectionsRouter());
+    const playlistRoutes = discoverRoutes(createPlaylistsRouter());
     const spotifyRoutes = discoverRoutes(createSpotifyRouter());
     const yandexRoutes = discoverRoutes(createYandexRouter());
     const { createWebSocketTicketRouter } =
@@ -155,6 +166,7 @@ describe("protected route policy coverage", () => {
     const discovered = [
       ...trackRoutes,
       ...collectionRoutes,
+      ...playlistRoutes,
       ...spotifyRoutes,
       ...yandexRoutes,
       ...websocketTicketRoutes,
@@ -162,6 +174,7 @@ describe("protected route policy coverage", () => {
 
     expect(trackRoutes).toHaveLength(16);
     expect(collectionRoutes).toHaveLength(4);
+    expect(playlistRoutes).toHaveLength(6);
     expect(spotifyRoutes).toHaveLength(9);
     expect(yandexRoutes).toHaveLength(6);
     expect(websocketTicketRoutes).toHaveLength(1);
@@ -181,6 +194,16 @@ describe("protected route policy coverage", () => {
     expect(() =>
       assertProtectedRouteCoverage(discovered, TF_ROUTE_POLICIES),
     ).not.toThrow();
+    for (const route of playlistRoutes) {
+      const policy = TF_ROUTE_POLICIES.find(
+        (candidate) =>
+          candidate.method === route.method && candidate.path === route.path,
+      );
+      expect(policy).toMatchObject({
+        capability: "tf.collections",
+        live: true,
+      });
+    }
   });
 
   it("rejects missing, stale, duplicate, and method-mismatched policies", () => {
@@ -240,15 +263,17 @@ describe("direct protected endpoints", () => {
         headers: { "x-client-session": canary },
       }),
       fetch(`${origin}/api/collections/liked`),
+      fetch(`${origin}/api/collections/playlists`),
     ]);
 
     expect(responses.map((response) => response.status)).toEqual([
-      403, 401, 401, 401,
+      403, 401, 401, 401, 401,
     ]);
     await expect(
       Promise.all(responses.map((response) => response.json())),
     ).resolves.toEqual([
       { error: "forbidden" },
+      { error: "unauthorized" },
       { error: "unauthorized" },
       { error: "unauthorized" },
       { error: "unauthorized" },

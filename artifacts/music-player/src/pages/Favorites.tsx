@@ -32,6 +32,7 @@ import {
 } from "@/hooks/use-yandex";
 import { useTfAuth } from "@/auth/tf-auth";
 import { LikedCollection } from "@/components/LikedCollection";
+import { PlaylistsCollection } from "@/components/PlaylistsCollection";
 import { ProviderCandidatePanel } from "@/components/ProviderCandidatePanel";
 
 const SPOTIFY_GREEN = "#1DB954";
@@ -473,6 +474,7 @@ export default function Favorites() {
   const reduceMotion = useReducedMotion();
   const [, navigate] = useLocation();
   const [service, setService] = useState<ServiceTab>("apollo");
+  const [apolloTab, setApolloTab] = useState<"liked" | "playlists">("liked");
   const [selectedTrack, setSelectedTrack] = useState<{ title: string; artist: string } | null>(null);
   const candidateRef = useRef<HTMLDivElement>(null);
   const { hasEntitlement } = useTfAuth();
@@ -570,7 +572,13 @@ export default function Favorites() {
             exit={{ opacity: 0 }}
             transition={{ duration: reduceMotion ? 0 : 0.15 }}
           >
-            {service === "apollo" ? <LikedCollection /> : !integrationsAllowed ? (
+            {service === "apollo" ? <>
+              <div role="tablist" aria-label="Коллекция Apollo" className="mb-6 flex gap-1 border-b border-white/10">
+                <button type="button" role="tab" aria-selected={apolloTab === "liked"} onClick={() => setApolloTab("liked")} className={`border-b-2 px-4 py-2 text-sm ${apolloTab === "liked" ? "border-[#a78bfa] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Любимые</button>
+                <button type="button" role="tab" aria-selected={apolloTab === "playlists"} onClick={() => setApolloTab("playlists")} className={`border-b-2 px-4 py-2 text-sm ${apolloTab === "playlists" ? "border-[#a78bfa] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Плейлисты</button>
+              </div>
+              {apolloTab === "liked" ? <LikedCollection /> : <PlaylistsCollection />}
+            </> : !integrationsAllowed ? (
               <div className="py-8 text-sm text-muted-foreground">Подключение музыкальных сервисов недоступно для этого аккаунта.</div>
             ) : activeLoading ? (
               <LoadingState label="Checking connection..." color={activeService.color} />

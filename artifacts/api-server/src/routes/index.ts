@@ -20,6 +20,10 @@ import {
   createCollectionsRouter,
   type CollectionRouteDependencies,
 } from "./collections.js";
+import {
+  createPlaylistsRouter,
+  type PlaylistRouteDependencies,
+} from "./playlists.js";
 
 export interface ApiRouterOptions {
   readonly familyWebSocket?: TfFamilyWebSocket;
@@ -32,6 +36,7 @@ export interface ApiRouterOptions {
   readonly integrationsGateway?: TfIntegrationsGateway;
   readonly tracks?: Partial<TrackRouteDependencies>;
   readonly collections?: Partial<CollectionRouteDependencies>;
+  readonly playlists?: Partial<PlaylistRouteDependencies>;
   readonly readiness?: () => Promise<boolean>;
 }
 
@@ -83,6 +88,7 @@ export function createApiRouter(options: ApiRouterOptions = {}): IRouter {
   }
   router.use(createTracksRouter(options.tracks));
   router.use(createCollectionsRouter(options.collections));
+  router.use(createPlaylistsRouter(options.playlists));
   router.use(
     createSpotifyRouter({
       ...options.spotify,

@@ -417,10 +417,105 @@ export const CollectionErrorResponseError = {
   module_access_denied: "module_access_denied",
   policy_unavailable: "policy_unavailable",
   internal_error: "internal_error",
+  playlist_not_found: "playlist_not_found",
 } as const;
 
 export interface CollectionErrorResponse {
   error: CollectionErrorResponseError;
+}
+
+export interface Playlist {
+  /** @minimum 1 */
+  id: number;
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  name: string;
+  description: string | null;
+  /** @minimum 0 */
+  trackCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlaylistTrack {
+  /**
+   * @minLength 4
+   * @maxLength 4096
+   * @pattern ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+   */
+  trackId: string;
+  artist: string;
+  title: string;
+  /**
+   * @maxLength 2048
+   * @pattern ^https?:[/][/]
+   */
+  thumbnailUrl: string | null;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   */
+  durationSeconds: number | null;
+  /** @minimum 0 */
+  position: number;
+  addedAt: string;
+}
+
+export interface PlaylistListResponse {
+  playlists: Playlist[];
+}
+
+export interface PlaylistMutationResponse {
+  playlist: Playlist;
+}
+
+export interface PlaylistDetailResponse {
+  playlist: Playlist;
+  tracks: PlaylistTrack[];
+}
+
+export interface CreatePlaylistRequest {
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  name: string;
+}
+
+export interface AddPlaylistTrackRequest {
+  /**
+   * @minLength 4
+   * @maxLength 4096
+   * @pattern ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+   */
+  trackId: string;
+  /**
+   * @minLength 1
+   * @maxLength 300
+   */
+  artist: string;
+  /**
+   * @minLength 1
+   * @maxLength 500
+   */
+  title: string;
+  /**
+   * @maxLength 2048
+   * @pattern ^https?:[/][/]
+   */
+  thumbnailUrl?: string | null;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   */
+  durationSeconds?: number | null;
+}
+
+export interface PlaylistTrackMutationResponse {
+  track: PlaylistTrack;
+  added: boolean;
 }
 
 export interface ErrorResponse {
@@ -449,6 +544,31 @@ export const SearchUnavailableResponseValue = {
   error: "search_unavailable",
 } as const;
 export type SearchUnavailableResponse = typeof SearchUnavailableResponseValue;
+
+/**
+ * Invalid playlist input
+ */
+export type CollectionBadRequestResponse = CollectionErrorResponse;
+
+/**
+ * TF session is missing or expired
+ */
+export type CollectionUnauthorizedResponse = CollectionErrorResponse;
+
+/**
+ * Current account lacks tf.collections
+ */
+export type CollectionForbiddenResponse = CollectionErrorResponse;
+
+/**
+ * Playlist missing or owned by another account
+ */
+export type PlaylistNotFoundResponse = CollectionErrorResponse;
+
+/**
+ * Live Platform policy could not be confirmed
+ */
+export type CollectionUnavailableResponse = CollectionErrorResponse;
 
 export type GetTrackSuggestionsParams = {
   /**

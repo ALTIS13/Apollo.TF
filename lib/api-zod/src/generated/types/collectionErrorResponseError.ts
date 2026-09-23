@@ -16,4 +16,5 @@ export const CollectionErrorResponseError = {
   module_access_denied: "module_access_denied",
   policy_unavailable: "policy_unavailable",
   internal_error: "internal_error",
+  playlist_not_found: "playlist_not_found",
 } as const;

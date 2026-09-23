@@ -3,7 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { freeSearchTracks, getTrackSuggestions, searchTracks } from "@workspace/api-client-react";
 import type { FreeSearchRequest, SearchRequest, TrackSuggestionsResponse, TrackType } from "@workspace/api-client-react";
 import { TrackCard } from "@/components/TrackCard";
-import { SaveLikedTrackButton } from "@/components/LikedCollection";
+import { CollectionActions } from "@/components/PlaylistAction";
 import { useLikedTrackLookup } from "@/hooks/use-liked-collection";
 import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, reportTfAuthError, TfApiError, tfRequestInit } from "@/lib/tf-session-client";
 import { useTfAuth } from "@/auth/tf-auth";
@@ -559,7 +559,7 @@ export default function Home() {
                     track={track}
                     index={i}
                     compact
-                    collectionAction={<SaveLikedTrackButton
+                    collectionAction={<CollectionActions
                       track={track}
                       saved={likedLookup.data?.likedTrackIds.includes(track.id) ?? false}
                       checking={likedLookup.isFetching && !likedLookup.data}

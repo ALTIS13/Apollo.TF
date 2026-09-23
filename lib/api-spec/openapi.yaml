@@ -673,8 +673,155 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CollectionErrorResponse"
+  /collections/playlists:
+    get:
+      operationId: listPlaylists
+      tags: [collections]
+      summary: List playlists owned by the current TF account
+      responses:
+        "200":
+          description: Account playlists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistListResponse"
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+    post:
+      operationId: createPlaylist
+      tags: [collections]
+      summary: Create a playlist for the current TF account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlaylistRequest"
+      responses:
+        "201":
+          description: Created playlist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistMutationResponse"
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+  /collections/playlists/{playlistId}:
+    get:
+      operationId: getPlaylist
+      tags: [collections]
+      summary: Get an owned playlist and its ordered tracks
+      parameters:
+        - $ref: "#/components/parameters/PlaylistId"
+      responses:
+        "200":
+          description: Playlist detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistDetailResponse"
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+    delete:
+      operationId: removePlaylist
+      tags: [collections]
+      summary: Delete an owned playlist and its tracks
+      parameters:
+        - $ref: "#/components/parameters/PlaylistId"
+      responses:
+        "204":
+          description: Playlist deleted
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+  /collections/playlists/{playlistId}/tracks:
+    post:
+      operationId: addPlaylistTrack
+      tags: [collections]
+      summary: Add a TF track once to an owned playlist
+      parameters:
+        - $ref: "#/components/parameters/PlaylistId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddPlaylistTrackRequest"
+      responses:
+        "200":
+          description: Existing or newly added track
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistTrackMutationResponse"
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+  /collections/playlists/{playlistId}/tracks/{trackId}:
+    delete:
+      operationId: removePlaylistTrack
+      tags: [collections]
+      summary: Remove a TF track from an owned playlist
+      parameters:
+        - $ref: "#/components/parameters/PlaylistId"
+        - $ref: "#/components/parameters/LikedTrackId"
+      responses:
+        "204":
+          description: Track absent from playlist
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
 components:
   parameters:
+    PlaylistId:
+      name: playlistId
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 2147483647
     DownloadJobId:
       name: jobId
       in: path
@@ -692,6 +839,37 @@ components:
         minLength: 4
         maxLength: 4096
         pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+  responses:
+    CollectionBadRequest:
+      description: Invalid playlist input
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CollectionErrorResponse"
+    CollectionUnauthorized:
+      description: TF session is missing or expired
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CollectionErrorResponse"
+    CollectionForbidden:
+      description: Current account lacks tf.collections
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CollectionErrorResponse"
+    PlaylistNotFound:
+      description: Playlist missing or owned by another account
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CollectionErrorResponse"
+    CollectionUnavailable:
+      description: Live Platform policy could not be confirmed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CollectionErrorResponse"
   schemas:
     TrackSuggestionsResponse:
       type: object
@@ -1212,7 +1390,145 @@ components:
             - module_access_denied
             - policy_unavailable
             - internal_error
+            - playlist_not_found
       required: [error]
+
+    Playlist:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          nullable: true
+        trackCount:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, name, description, trackCount, createdAt, updatedAt]
+
+    PlaylistTrack:
+      type: object
+      additionalProperties: false
+      properties:
+        trackId:
+          type: string
+          minLength: 4
+          maxLength: 4096
+          pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+        artist:
+          type: string
+        title:
+          type: string
+        thumbnailUrl:
+          type: string
+          format: uri
+          pattern: '^https?:[/][/]'
+          nullable: true
+          maxLength: 2048
+        durationSeconds:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 86400
+        position:
+          type: integer
+          minimum: 0
+        addedAt:
+          type: string
+          format: date-time
+      required: [trackId, artist, title, thumbnailUrl, durationSeconds, position, addedAt]
+
+    PlaylistListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        playlists:
+          type: array
+          items:
+            $ref: "#/components/schemas/Playlist"
+      required: [playlists]
+
+    PlaylistMutationResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        playlist:
+          $ref: "#/components/schemas/Playlist"
+      required: [playlist]
+
+    PlaylistDetailResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        playlist:
+          $ref: "#/components/schemas/Playlist"
+        tracks:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlaylistTrack"
+      required: [playlist, tracks]
+
+    CreatePlaylistRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+      required: [name]
+
+    AddPlaylistTrackRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        trackId:
+          type: string
+          minLength: 4
+          maxLength: 4096
+          pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+        artist:
+          type: string
+          minLength: 1
+          maxLength: 300
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+        thumbnailUrl:
+          type: string
+          format: uri
+          pattern: '^https?:[/][/]'
+          nullable: true
+          maxLength: 2048
+        durationSeconds:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 86400
+      required: [trackId, artist, title]
+
+    PlaylistTrackMutationResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        track:
+          $ref: "#/components/schemas/PlaylistTrack"
+        added:
+          type: boolean
+      required: [track, added]
 
     ErrorResponse:
       type: object

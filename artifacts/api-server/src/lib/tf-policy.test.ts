@@ -162,14 +162,14 @@ afterEach(async () => {
 });
 
 describe("TF route policy map", () => {
-  it("contains the exact 35 anchored capability policies", () => {
-    expect(TF_ROUTE_POLICIES).toHaveLength(35);
+  it("contains the exact 42 anchored capability policies", () => {
+    expect(TF_ROUTE_POLICIES).toHaveLength(42);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === false),
-    ).toHaveLength(6);
+    ).toHaveLength(7);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === true),
-    ).toHaveLength(29);
+    ).toHaveLength(35);
 
     expect(
       requiredPolicyForRequest("POST", "/api/tracks/search?ignored=1"),
@@ -207,6 +207,12 @@ describe("TF route policy map", () => {
     ["POST", "/api/collections/liked/lookup"],
     ["PUT", "/api/collections/liked/yt_track-id"],
     ["DELETE", "/api/collections/liked/yt_track-id"],
+    ["GET", "/api/collections/playlists"],
+    ["POST", "/api/collections/playlists"],
+    ["GET", "/api/collections/playlists/7"],
+    ["POST", "/api/collections/playlists/7/tracks"],
+    ["DELETE", "/api/collections/playlists/7/tracks/yt_track-id"],
+    ["DELETE", "/api/collections/playlists/7"],
   ])("requires live tf.collections for %s %s", (method, path) => {
     expect(requiredPolicyForRequest(method, path)).toMatchObject({
       capability: "tf.collections",
