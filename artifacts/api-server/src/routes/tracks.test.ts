@@ -24,6 +24,13 @@ const ytdlpMocks = vi.hoisted(() => ({
   spawnAudioDownload: vi.fn(),
 }));
 
+const durationProbeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@workspace/tf-download-contract/duration-probe", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@workspace/tf-download-contract/duration-probe")>()),
+  probeSourceDuration: durationProbeMock,
+}));
+
 vi.mock("../lib/ytdlp.js", () => ({
   getStreamUrl: ytdlpMocks.getStreamUrl,
   spawnAudioDownload: ytdlpMocks.spawnAudioDownload,
@@ -227,6 +234,7 @@ beforeEach(() => {
   streamCacheMocks.getCachedStreamUrl.mockReset().mockResolvedValue(null);
   streamCacheMocks.setCachedStreamUrl.mockReset().mockResolvedValue(undefined);
   ytdlpMocks.getStreamUrl.mockReset();
+  durationProbeMock.mockReset();
 });
 
 afterEach(async () => {
@@ -579,6 +587,7 @@ describe("TF search module routing", () => {
       url: "https://media.example.test/audio",
       mimeType: "audio/mpeg",
     });
+    durationProbeMock.mockResolvedValue(210);
     ytdlpMocks.spawnAudioDownload.mockImplementation(() => {
       const process = new EventEmitter() as EventEmitter & {
         stdout: PassThrough;
@@ -601,7 +610,7 @@ describe("TF search module routing", () => {
     const trackId = `dz_${Buffer.from(deezerUrl).toString("base64url")}`;
     const query = "artist=Artist&title=Track";
 
-    const stream = await fetch(`${baseUrl}/tracks/${trackId}/stream?${query}`);
+    const stream = await fetch(`${baseUrl}/tracks/${trackId}/stream?${query}&expectedDurationSeconds=205`);
     expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
     expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
     const download = await fetch(
@@ -613,6 +622,7 @@ describe("TF search module routing", () => {
     await Promise.all([download.arrayBuffer(), audioStream.arrayBuffer()]);
 
     expect(stream.status).toBe(200);
+    expect(durationProbeMock).toHaveBeenCalledWith(expect.objectContaining({ sourceUrl }));
     await expect(stream.json()).resolves.toMatchObject({
       streamUrl: "https://media.example.test/audio",
     });
@@ -634,6 +644,75 @@ describe("TF search module routing", () => {
 describe("stream preview boundary", () => {
   const previewUrl = "https://cdns-preview-e.dzcdn.net/stream/c-test-preview";
   const deezerId = trackIdFor("dz", previewUrl);
+
+  it("does not probe or resolve a Deezer fallback outside its declared provider host", async () => {
+    const gateway = searchGateway();
+    gateway.search.mockResolvedValue(searchResponse({
+      results: [result(0, {
+        source: "youtube",
+        sourceUrl: "https://www.youtube.com.evil.example/watch?v=private",
+      })],
+    }));
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+
+    const response = await fetch(
+      `${baseUrl}/tracks/${deezerId}/stream?artist=Artist&title=Track&expectedDurationSeconds=210`,
+    );
+
+    expect(response.status).toBe(500);
+    expect(durationProbeMock).not.toHaveBeenCalled();
+    expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+  });
+
+  it("rejects a preview before reading an existing non-Deezer stream cache", async () => {
+    const sourceUrl = "https://www.youtube.com/watch?v=preview";
+    const id = trackIdFor("yt", sourceUrl);
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({
+      url: "https://media.example.test/cached-preview",
+      mimeType: "audio/webm",
+    });
+    durationProbeMock.mockResolvedValue(30);
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=210`);
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ error: "preview_rejected" });
+    expect(durationProbeMock).toHaveBeenCalledWith(expect.objectContaining({ sourceUrl }));
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+    expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid expected duration without probing or reading the cache", async () => {
+    const id = trackIdFor("yt", "https://www.youtube.com/watch?v=bad-duration");
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=0`);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "bad_request" });
+    expect(durationProbeMock).not.toHaveBeenCalled();
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+  });
+
+  it("keeps a verified full-length cache hit and fails closed on unavailable duration", async () => {
+    const sourceUrl = "https://www.youtube.com/watch?v=complete";
+    const id = trackIdFor("yt", sourceUrl);
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({
+      url: "https://media.example.test/full",
+      mimeType: "audio/webm",
+    });
+    durationProbeMock.mockResolvedValueOnce(205).mockRejectedValueOnce(new Error("private provider text"));
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const full = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=210`);
+    expect(full.status).toBe(200);
+    await expect(full.json()).resolves.toMatchObject({ cached: true });
+    const unknown = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=210`);
+    expect(unknown.status).toBe(503);
+    await expect(unknown.json()).resolves.toEqual({ error: "duration_unverified" });
+    expect(streamCacheMocks.getCachedStreamUrl).toHaveBeenCalledTimes(1);
+  });
 
   it.each([
     ["ID only", ""],

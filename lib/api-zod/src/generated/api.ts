@@ -105,6 +105,31 @@ export const GetTrackStreamParams = zod.object({
     ),
 });
 
+export const getTrackStreamQueryArtistMax = 300;
+
+export const getTrackStreamQueryTitleMax = 500;
+
+export const getTrackStreamQueryExpectedDurationSecondsMax = 86400;
+
+export const GetTrackStreamQueryParams = zod.object({
+  artist: zod.coerce
+    .string()
+    .max(getTrackStreamQueryArtistMax)
+    .optional()
+    .describe("Artist metadata required for a Deezer fallback."),
+  title: zod.coerce
+    .string()
+    .max(getTrackStreamQueryTitleMax)
+    .optional()
+    .describe("Track metadata required for a Deezer fallback."),
+  expectedDurationSeconds: zod.coerce
+    .number()
+    .min(1)
+    .max(getTrackStreamQueryExpectedDurationSecondsMax)
+    .optional()
+    .describe("Full recording duration from the selected result, when known."),
+});
+
 export const GetTrackStreamResponse = zod.object({
   id: zod.string(),
   streamUrl: zod.string(),

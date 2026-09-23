@@ -78,6 +78,28 @@ paths:
           schema:
             type: string
           description: "Track ID from search results. Format: yt_<base64url> or sc_<base64url>."
+        - name: artist
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 300
+          description: Artist metadata required for a Deezer fallback.
+        - name: title
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 500
+          description: Track metadata required for a Deezer fallback.
+        - name: expectedDurationSeconds
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 86400
+          description: Full recording duration from the selected result, when known.
       responses:
         "200":
           description: Stream URL
@@ -85,12 +107,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StreamResponse"
+        "400":
+          description: Invalid expected duration or track ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamBadRequest"
         "404":
           description: Track not found
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Resolved source is a short preview of a known full recording
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamAdmissionError"
+        "503":
+          description: Source duration could not be verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamAdmissionError"
         "500":
           description: Server error
           content:
@@ -1025,6 +1065,24 @@ components:
       required:
         - error
         - message
+
+    StreamAdmissionError:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum: [preview_rejected, duration_unverified]
+      required: [error]
+
+    StreamBadRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          const: bad_request
+      required: [error]
 
     SearchUnavailableResponse:
       type: object

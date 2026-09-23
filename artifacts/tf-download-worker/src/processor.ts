@@ -15,6 +15,7 @@ import {
   type SpawnDownload,
 } from "./downloader";
 import {
+  isPreviewLength,
   probeSourceDuration,
   type DurationProbeOptions,
 } from "./duration-probe";
@@ -228,10 +229,7 @@ export function createDownloadProcessor(
             retriable: false,
           });
         }
-        if (
-          actualDurationSeconds <= 90 &&
-          actualDurationSeconds <= expectedDurationSeconds * 0.55
-        ) {
+        if (isPreviewLength(actualDurationSeconds, expectedDurationSeconds)) {
           throw new DownloadProcessingError("preview_rejected", {
             retriable: false,
           });

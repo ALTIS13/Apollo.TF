@@ -12,7 +12,8 @@ const A = "11111111-1111-4111-8111-111111111111",
 let auth: TfAuthContextValue,
   player: ReturnType<typeof usePlayer>,
   identity: string,
-  paths: string[];
+  paths: string[],
+  streamRequests: URL[];
 let heldRenew: (() => Promise<Response>) | null;
 let heldStream: (() => Promise<Response>) | null;
 let heldPlay: (() => Promise<void>) | null;
@@ -93,6 +94,7 @@ beforeEach(() => {
   clearTfSessionSecurityState();
   identity = A;
   paths = [];
+  streamRequests = [];
   heldRenew = null;
   heldStream = null;
   heldPlay = null;
@@ -121,10 +123,12 @@ beforeEach(() => {
       return heldRenew ? heldRenew() : new Response(null, { status: 204 });
     if (path.endsWith("/ws/tickets"))
       return ticketReply ? ticketReply() : json({ ticket: token }, 201);
-    if (path.endsWith("/stream"))
+    if (path.endsWith("/stream")) {
+      streamRequests.push(new URL(url, "https://tf.apollot.ru"));
       return heldStream
         ? heldStream()
         : json({ streamUrl: "https://media.invalid/test", expiresAt: null });
+    }
     return new Response(null, { status: 204 });
   });
 });
@@ -160,6 +164,27 @@ async function setup(enabled: boolean) {
 it("two-sided client opt-in is off unless explicitly enabled", async () => {
   await setup(false);
   expect(paths.some((p) => p.endsWith("/ws/tickets"))).toBe(false);
+});
+it("passes Deezer fallback metadata and expected full duration to stream admission", async () => {
+  await setup(true);
+  SocketDouble.all[0].open();
+  await act(async () => {
+    await player.playTrack({
+      id: "dz_existing-library-track",
+      title: "Track / Live",
+      artist: "Artist & Guest",
+      duration: 205,
+      thumbnailUrl: null,
+      source: "deezer",
+      type: "original",
+      quality: [],
+      score: 1,
+    });
+  });
+  expect(streamRequests).toHaveLength(1);
+  expect(streamRequests[0]!.searchParams.get("artist")).toBe("Artist & Guest");
+  expect(streamRequests[0]!.searchParams.get("title")).toBe("Track / Live");
+  expect(streamRequests[0]!.searchParams.get("expectedDurationSeconds")).toBe("205");
 });
 it("actual same-account short renewal replaces only the socket and preserves Audio/cache/queue", async () => {
   const cache = await setup(true);

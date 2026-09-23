@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Response } from "express";
 import { z } from "zod";
 import {
   getStreamUrl,
@@ -31,6 +31,10 @@ import {
   downloadQualitySchema,
   parseAllowedDownloadSourceUrl,
 } from "@workspace/tf-download-contract";
+import {
+  isPreviewLength,
+  probeSourceDuration,
+} from "@workspace/tf-download-contract/duration-probe";
 import {
   TfDownloadWorkerError,
   type TfDownloadWorkerGateway,
@@ -67,6 +71,37 @@ export interface TrackRouteDependencies {
 }
 
 const ALL_SEARCH_SOURCES: readonly TfSearchSource[] = ["yt", "sc", "bc", "dz"];
+const expectedDurationQuerySchema = z.string()
+  .regex(/^[1-9]\d*$/)
+  .transform(Number)
+  .pipe(z.number().int().min(1).max(86_400))
+  .optional();
+
+async function streamDurationError(
+  sourceUrl: string,
+  expectedDurationSeconds: number | undefined,
+  response: Response,
+): Promise<"preview_rejected" | "duration_unverified" | null> {
+  if (expectedDurationSeconds === undefined || expectedDurationSeconds < 90) return null;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  response.once("close", abort);
+  try {
+    const actual = await probeSourceDuration({
+      executable: "yt-dlp",
+      sourceUrl,
+      signal: controller.signal,
+    });
+    if (!Number.isFinite(actual) || actual <= 0) return "duration_unverified";
+    return isPreviewLength(actual, expectedDurationSeconds)
+      ? "preview_rejected"
+      : null;
+  } catch {
+    return "duration_unverified";
+  } finally {
+    response.off("close", abort);
+  }
+}
 const downloadQueueRequestSchema = z
   .object({
     tracks: z
@@ -118,21 +153,12 @@ function preferredSourceUrl(
   results: readonly TfSearchResult[],
   sources: readonly TfSearchResult["source"][],
 ): string | null {
-  for (const source of sources) {
-    const match = results.find((result) => result.source === source);
-    if (match !== undefined) return match.sourceUrl;
-  }
-  return null;
-}
-
-function trustedFallbackSourceUrl(
-  results: readonly TfSearchResult[],
-): string | null {
   const allowedHosts = {
     youtube: "youtube.com",
     soundcloud: "soundcloud.com",
   } as const;
-  for (const source of ["youtube", "soundcloud"] as const) {
+  for (const source of sources) {
+    if (source !== "youtube" && source !== "soundcloud") continue;
     for (const result of results) {
       if (result.source !== source) continue;
       const parsed = parseAllowedDownloadSourceUrl(result.sourceUrl);
@@ -140,14 +166,19 @@ function trustedFallbackSourceUrl(
       if (
         parsed !== null &&
         parsed.href === result.sourceUrl &&
-        (parsed.hostname === allowedHost ||
-          parsed.hostname.endsWith(`.${allowedHost}`))
+        (parsed.hostname === allowedHost || parsed.hostname.endsWith(`.${allowedHost}`))
       ) {
         return result.sourceUrl;
       }
     }
   }
   return null;
+}
+
+function trustedFallbackSourceUrl(
+  results: readonly TfSearchResult[],
+): string | null {
+  return preferredSourceUrl(results, ["youtube", "soundcloud"]);
 }
 
 function hasTfSearchAccess(entitlements: readonly string[]): boolean {
@@ -423,6 +454,23 @@ export function createTracksRouter(
       return;
     }
 
+    const expected = expectedDurationQuerySchema.safeParse(
+      req.query["expectedDurationSeconds"],
+    );
+    if (!expected.success) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
+
+    const admit = async (sourceUrl: string): Promise<boolean> => {
+      const error = await streamDurationError(sourceUrl, expected.data, res);
+      if (error === null) return true;
+      if (!res.headersSent) {
+        res.status(error === "preview_rejected" ? 422 : 503).json({ error });
+      }
+      return false;
+    };
+
     try {
       if (decoded.source === "dz") {
         // Legacy Deezer URLs may be previews; neither they nor opaque cache hits prove a full source.
@@ -446,11 +494,13 @@ export function createTracksRouter(
         if (sourceUrl === null) {
           throw new Error("Deezer full-source candidate is unavailable");
         }
+        if (!(await admit(sourceUrl))) return;
         const { url, mimeType } = await getStreamUrl(sourceUrl);
         res.json({ id, streamUrl: url, mimeType: mimeType ?? "audio/mpeg" });
         return;
       }
 
+      if (!(await admit(decoded.url))) return;
       const cached = await getCachedStreamUrl(id);
       if (cached) {
         res.json({

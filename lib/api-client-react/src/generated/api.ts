@@ -26,6 +26,7 @@ import type {
   DownloadQueueResponse,
   DownloadResponse,
   ErrorResponse,
+  GetTrackStreamParams,
   HealthStatus,
   LikedTrackLookupRequest,
   LikedTrackLookupResponse,
@@ -36,6 +37,8 @@ import type {
   SearchRequest,
   SearchResponse,
   SearchUnavailableResponse,
+  StreamAdmissionError,
+  StreamBadRequest,
   StreamResponse,
 } from "./api.schemas";
 
@@ -217,29 +220,49 @@ export const useSearchTracks = <
  * Returns a direct audio stream URL for playback. URL may expire.
  * @summary Get stream URL for a track
  */
-export const getGetTrackStreamUrl = (id: string) => {
-  return `/api/tracks/${id}/stream`;
+export const getGetTrackStreamUrl = (
+  id: string,
+  params?: GetTrackStreamParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/tracks/${id}/stream?${stringifiedParams}`
+    : `/api/tracks/${id}/stream`;
 };
 
 export const getTrackStream = async (
   id: string,
+  params?: GetTrackStreamParams,
   options?: RequestInit,
 ): Promise<StreamResponse> => {
-  return customFetch<StreamResponse>(getGetTrackStreamUrl(id), {
+  return customFetch<StreamResponse>(getGetTrackStreamUrl(id, params), {
     ...options,
     method: "GET",
   });
 };
 
-export const getGetTrackStreamQueryKey = (id: string) => {
-  return [`/api/tracks/${id}/stream`] as const;
+export const getGetTrackStreamQueryKey = (
+  id: string,
+  params?: GetTrackStreamParams,
+) => {
+  return [`/api/tracks/${id}/stream`, ...(params ? [params] : [])] as const;
 };
 
 export const getGetTrackStreamQueryOptions = <
   TData = Awaited<ReturnType<typeof getTrackStream>>,
-  TError = ErrorType<ErrorResponse>,
+  TError = ErrorType<StreamBadRequest | ErrorResponse | StreamAdmissionError>,
 >(
   id: string,
+  params?: GetTrackStreamParams,
   options?: {
     query?: UseQueryOptions<
       Awaited<ReturnType<typeof getTrackStream>>,
@@ -251,11 +274,12 @@ export const getGetTrackStreamQueryOptions = <
 ) => {
   const { query: queryOptions, request: requestOptions } = options ?? {};
 
-  const queryKey = queryOptions?.queryKey ?? getGetTrackStreamQueryKey(id);
+  const queryKey =
+    queryOptions?.queryKey ?? getGetTrackStreamQueryKey(id, params);
 
   const queryFn: QueryFunction<Awaited<ReturnType<typeof getTrackStream>>> = ({
     signal,
-  }) => getTrackStream(id, { signal, ...requestOptions });
+  }) => getTrackStream(id, params, { signal, ...requestOptions });
 
   return {
     queryKey,
@@ -272,7 +296,9 @@ export const getGetTrackStreamQueryOptions = <
 export type GetTrackStreamQueryResult = NonNullable<
   Awaited<ReturnType<typeof getTrackStream>>
 >;
-export type GetTrackStreamQueryError = ErrorType<ErrorResponse>;
+export type GetTrackStreamQueryError = ErrorType<
+  StreamBadRequest | ErrorResponse | StreamAdmissionError
+>;
 
 /**
  * @summary Get stream URL for a track
@@ -280,9 +306,10 @@ export type GetTrackStreamQueryError = ErrorType<ErrorResponse>;
 
 export function useGetTrackStream<
   TData = Awaited<ReturnType<typeof getTrackStream>>,
-  TError = ErrorType<ErrorResponse>,
+  TError = ErrorType<StreamBadRequest | ErrorResponse | StreamAdmissionError>,
 >(
   id: string,
+  params?: GetTrackStreamParams,
   options?: {
     query?: UseQueryOptions<
       Awaited<ReturnType<typeof getTrackStream>>,
@@ -292,7 +319,7 @@ export function useGetTrackStream<
     request?: SecondParameter<typeof customFetch>;
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
-  const queryOptions = getGetTrackStreamQueryOptions(id, options);
+  const queryOptions = getGetTrackStreamQueryOptions(id, params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

@@ -192,6 +192,25 @@ afterEach(() => {
 });
 
 describe("protected generated API auth failures", () => {
+  it.each([
+    [422, "preview_rejected", "Источник содержит только фрагмент трека. Выберите другую запись."],
+    [503, "duration_unverified", "Не удалось проверить длительность записи. Попробуйте другой источник."],
+  ])("keeps the session active after media admission %s %s", async (status, code, description) => {
+    runtime.fetchSession.mockResolvedValueOnce(session);
+    runtime.streamQuery.mockRejectedValueOnce(generatedError(status, code));
+    renderProtectedRuntime();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Play generated stream" }));
+
+    await waitFor(() => expect(runtime.toast).toHaveBeenCalledWith({
+      title: "Ошибка воспроизведения",
+      description,
+      variant: "destructive",
+    }));
+    expect(canUseTfProtectedActivity()).toBe(true);
+    expect(screen.getByTestId("protected-runtime")).toBeInTheDocument();
+  });
+
   it("keeps the authenticated player stopped after stream_error 500", async () => {
     runtime.fetchSession.mockResolvedValueOnce(session);
     runtime.streamQuery.mockRejectedValueOnce({

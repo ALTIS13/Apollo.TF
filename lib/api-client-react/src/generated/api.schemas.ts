@@ -381,10 +381,46 @@ export interface ErrorResponse {
   message: string;
 }
 
+export type StreamAdmissionErrorError =
+  (typeof StreamAdmissionErrorError)[keyof typeof StreamAdmissionErrorError];
+
+export const StreamAdmissionErrorError = {
+  preview_rejected: "preview_rejected",
+  duration_unverified: "duration_unverified",
+} as const;
+
+export interface StreamAdmissionError {
+  error: StreamAdmissionErrorError;
+}
+
+export const StreamBadRequestValue = {
+  error: "bad_request",
+} as const;
+export type StreamBadRequest = typeof StreamBadRequestValue;
+
 export const SearchUnavailableResponseValue = {
   error: "search_unavailable",
 } as const;
 export type SearchUnavailableResponse = typeof SearchUnavailableResponseValue;
+
+export type GetTrackStreamParams = {
+  /**
+   * Artist metadata required for a Deezer fallback.
+   * @maxLength 300
+   */
+  artist?: string;
+  /**
+   * Track metadata required for a Deezer fallback.
+   * @maxLength 500
+   */
+  title?: string;
+  /**
+   * Full recording duration from the selected result, when known.
+   * @minimum 1
+   * @maximum 86400
+   */
+  expectedDurationSeconds?: number;
+};
 
 export type ListLikedTracksParams = {
   /**

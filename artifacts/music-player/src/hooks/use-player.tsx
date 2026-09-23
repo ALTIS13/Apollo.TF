@@ -61,6 +61,20 @@ interface PlayerSyncState {
 
 const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
 
+function playbackErrorDescription(error: unknown): string {
+  const data = typeof error === "object" && error !== null && "data" in error
+    ? error.data
+    : null;
+  const code = typeof data === "object" && data !== null && "error" in data
+    ? data.error
+    : null;
+  if (code === "preview_rejected")
+    return "Источник содержит только фрагмент трека. Выберите другую запись.";
+  if (code === "duration_unverified")
+    return "Не удалось проверить длительность записи. Попробуйте другой источник.";
+  return "Не удалось загрузить трек.";
+}
+
 export function PlayerProvider({ children }: { children: ReactNode }) {
   const { session, status, webSocketRecoveryBudget } = useTfAuth();
   const [currentTrack, setCurrentTrack] = useState<TrackResult | null>(null);
@@ -180,7 +194,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setDuration(track.duration || 0);
       audioRef.current.pause();
       audioRef.current.src = "";
-      const res = await queryClient.fetchQuery(getGetTrackStreamQueryOptions(track.id, {
+      const params = {
+        ...(track.source === "deezer" ? { artist: track.artist, title: track.title } : {}),
+        ...(Number.isInteger(track.duration) && track.duration >= 1 && track.duration <= 86_400
+          ? { expectedDurationSeconds: track.duration }
+          : {}),
+      };
+      const res = await queryClient.fetchQuery(getGetTrackStreamQueryOptions(track.id, params, {
         request: tfRequestInit({ method: "GET" }),
       }));
       if (!live()) return;
@@ -196,7 +216,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       reportTfAuthError(err);
       setCurrentTrack(null);
       setIsPlaying(false);
-      toast({ title: "Ошибка воспроизведения", description: "Не удалось загрузить трек.", variant: "destructive" });
+      toast({ title: "Ошибка воспроизведения", description: playbackErrorDescription(err), variant: "destructive" });
     } finally {
       if (mountedRef.current && load === loadGeneration.current) setIsLoading(false);
     }
