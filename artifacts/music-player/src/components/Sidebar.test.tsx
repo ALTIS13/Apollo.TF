@@ -65,6 +65,7 @@ it.each([false, true])(
     expect(screen.getAllByText(queueLabel)).toHaveLength(1);
     expect(screen.getAllByRole("link", { name: queueLabel })).toHaveLength(1);
     expect(screen.getByRole("link", { name: queueLabel })).toHaveAttribute("href", "/queue");
+    expect(screen.getByRole("link", { name: "Коллекция" })).toHaveAttribute("href", "/favorites");
     expect(screen.getAllByRole("button")).toHaveLength(1);
     expect(screen.getByText("10000000...")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: logoutLabel }));

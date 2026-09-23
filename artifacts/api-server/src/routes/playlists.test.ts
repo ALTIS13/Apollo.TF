@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TfPrincipal } from "../lib/tf-policy.js";
 import {
   createPlaylistsRouter,
+  isExactPlaylistPermutation,
   type PlaylistCollectionStore,
   type PlaylistRecord,
   type PlaylistTrackRecord,
@@ -53,6 +54,7 @@ function store(
     create: vi.fn().mockResolvedValue({ ...playlist, trackCount: 0 }),
     get: vi.fn().mockResolvedValue({ playlist, tracks: [track] }),
     addTrack: vi.fn().mockResolvedValue({ track, added: true }),
+    reorder: vi.fn().mockResolvedValue({ playlist, tracks: [track] }),
     removeTrack: vi.fn().mockResolvedValue(true),
     remove: vi.fn().mockResolvedValue(true),
     ...overrides,
@@ -87,6 +89,99 @@ afterEach(async () => {
 });
 
 describe("TF playlists", () => {
+  it("validates a reorder before storage and maps scoped outcomes", async () => {
+    const secondTrack: PlaylistTrackRecord = {
+      ...track,
+      trackId: "sc_second",
+      position: 1,
+    };
+    const reordered = {
+      playlist: { ...playlist, trackCount: 2 },
+      tracks: [
+        { ...secondTrack, position: 0 },
+        { ...track, position: 1 },
+      ],
+    };
+    const reorder = vi
+      .fn()
+      .mockResolvedValueOnce(reordered)
+      .mockResolvedValueOnce({
+        playlist: { ...playlist, trackCount: 0 },
+        tracks: [],
+      })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce("invalid_order");
+    const origin = await startServer(store({ reorder }));
+    const path = `${origin}/collections/playlists/7/tracks/order`;
+    const patch = (url: string, body: unknown) =>
+      fetch(url, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    for (const body of [
+      {},
+      { trackIds: ["yt_track-1", "yt_track-1"] },
+      { trackIds: ["sp_song"] },
+      { trackIds: ["yt_track-1"], accountId: "foreign" },
+      { trackIds: Array.from({ length: 501 }, (_, index) => `yt_${index}`) },
+    ]) {
+      const response = await patch(path, body);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "bad_request" });
+    }
+    expect(reorder).not.toHaveBeenCalled();
+
+    const invalidId = await patch(
+      `${origin}/collections/playlists/1e0/tracks/order`,
+      { trackIds: [] },
+    );
+    expect(invalidId.status).toBe(400);
+    expect(reorder).not.toHaveBeenCalled();
+
+    const success = await patch(path, {
+      trackIds: ["sc_second", "yt_track-1"],
+    });
+    expect(success.status).toBe(200);
+    await expect(success.json()).resolves.toEqual(reordered);
+    expect(reorder).toHaveBeenNthCalledWith(1, accountId, 7, [
+      "sc_second",
+      "yt_track-1",
+    ]);
+
+    const empty = await patch(path, { trackIds: [] });
+    expect(empty.status).toBe(200);
+    await expect(empty.json()).resolves.toEqual({
+      playlist: { ...playlist, trackCount: 0 },
+      tracks: [],
+    });
+
+    const missing = await patch(path, { trackIds: ["yt_track-1"] });
+    expect(missing.status).toBe(404);
+    await expect(missing.json()).resolves.toEqual({
+      error: "playlist_not_found",
+    });
+
+    const mismatch = await patch(path, { trackIds: ["yt_track-1"] });
+    expect(mismatch.status).toBe(400);
+    await expect(mismatch.json()).resolves.toEqual({ error: "bad_request" });
+  });
+
+  it.each([
+    [[], [], true],
+    [["yt_a", "sc_b"], ["sc_b", "yt_a"], true],
+    [["yt_a"], [], false],
+    [["yt_a"], ["yt_a", "sc_b"], false],
+    [["yt_a", "sc_b"], ["yt_a", "yt_a"], false],
+    [["yt_a", "sc_b"], ["yt_a", "bc_c"], false],
+  ])(
+    "accepts only exact playlist membership permutations",
+    (existing, requested, expected) => {
+      expect(isExactPlaylistPermutation(existing, requested)).toBe(expected);
+    },
+  );
+
   it("lists account-owned playlists with track counts", async () => {
     const currentStore = store();
     const origin = await startServer(currentStore);

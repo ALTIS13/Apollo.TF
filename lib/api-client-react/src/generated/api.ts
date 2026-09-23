@@ -47,6 +47,7 @@ import type {
   PlaylistMutationResponse,
   PlaylistNotFoundResponse,
   PlaylistTrackMutationResponse,
+  ReorderPlaylistTracksRequest,
   SaveLikedTrackRequest,
   SearchRequest,
   SearchResponse,
@@ -1941,6 +1942,115 @@ export const useAddPlaylistTrack = <
   TContext
 > => {
   return useMutation(getAddPlaylistTrackMutationOptions(options));
+};
+
+/**
+ * @summary Reorder all tracks in an owned playlist
+ */
+export const getReorderPlaylistTracksUrl = (playlistId: number) => {
+  return `/api/collections/playlists/${playlistId}/tracks/order`;
+};
+
+export const reorderPlaylistTracks = async (
+  playlistId: number,
+  reorderPlaylistTracksRequest: ReorderPlaylistTracksRequest,
+  options?: RequestInit,
+): Promise<PlaylistDetailResponse> => {
+  return customFetch<PlaylistDetailResponse>(
+    getReorderPlaylistTracksUrl(playlistId),
+    {
+      ...options,
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(reorderPlaylistTracksRequest),
+    },
+  );
+};
+
+export const getReorderPlaylistTracksMutationOptions = <
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof reorderPlaylistTracks>>,
+    TError,
+    { playlistId: number; data: BodyType<ReorderPlaylistTracksRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof reorderPlaylistTracks>>,
+  TError,
+  { playlistId: number; data: BodyType<ReorderPlaylistTracksRequest> },
+  TContext
+> => {
+  const mutationKey = ["reorderPlaylistTracks"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof reorderPlaylistTracks>>,
+    { playlistId: number; data: BodyType<ReorderPlaylistTracksRequest> }
+  > = (props) => {
+    const { playlistId, data } = props ?? {};
+
+    return reorderPlaylistTracks(playlistId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ReorderPlaylistTracksMutationResult = NonNullable<
+  Awaited<ReturnType<typeof reorderPlaylistTracks>>
+>;
+export type ReorderPlaylistTracksMutationBody =
+  BodyType<ReorderPlaylistTracksRequest>;
+export type ReorderPlaylistTracksMutationError = ErrorType<
+  | CollectionBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | PlaylistNotFoundResponse
+  | CollectionUnavailableResponse
+>;
+
+/**
+ * @summary Reorder all tracks in an owned playlist
+ */
+export const useReorderPlaylistTracks = <
+  TError = ErrorType<
+    | CollectionBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof reorderPlaylistTracks>>,
+    TError,
+    { playlistId: number; data: BodyType<ReorderPlaylistTracksRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof reorderPlaylistTracks>>,
+  TError,
+  { playlistId: number; data: BodyType<ReorderPlaylistTracksRequest> },
+  TContext
+> => {
+  return useMutation(getReorderPlaylistTracksMutationOptions(options));
 };
 
 /**

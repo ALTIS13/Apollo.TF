@@ -52,6 +52,7 @@ export * from "./playlistMutationResponse";
 export * from "./playlistNotFoundResponse";
 export * from "./playlistTrack";
 export * from "./playlistTrackMutationResponse";
+export * from "./reorderPlaylistTracksRequest";
 export * from "./saveLikedTrackRequest";
 export * from "./searchRequest";
 export * from "./searchRequestMode";

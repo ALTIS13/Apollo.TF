@@ -31,6 +31,7 @@ interface PlayerContextType {
   queue: TrackResult[];
   queueIndex: number;
   playTrack: (track: TrackResult) => Promise<void>;
+  playCollection: (tracks: readonly TrackResult[]) => Promise<void>;
   playFromQueue: (index: number) => Promise<void>;
   addToQueue: (track: TrackResult) => void;
   addNextToQueue: (track: TrackResult) => void;
@@ -243,6 +244,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [currentTrack?.id]);
 
   playTrackRef.current = playTrack;
+
+  const playCollection = useCallback(async (tracks: readonly TrackResult[]) => {
+    if (!audioRef.current || !canUseTfProtectedActivity() || tracks.length === 0) return;
+    const nextQueue = [...tracks];
+    queueRef.current = nextQueue;
+    queueIndexRef.current = 0;
+    setQueue(nextQueue);
+    setQueueIndex(0);
+    await _loadTrackRef.current(nextQueue[0]);
+  }, []);
 
   const playFromQueue = useCallback(async (index: number) => {
     if (!canUseTfProtectedActivity()) return;
@@ -516,7 +527,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       value={{
         currentTrack, isPlaying, isLoading, progress, duration, volume,
         queue, queueIndex,
-        playTrack, playFromQueue, addToQueue, addNextToQueue, moveQueuedTrack, removeFromQueue, clearQueue,
+        playTrack, playCollection, playFromQueue, addToQueue, addNextToQueue, moveQueuedTrack, removeFromQueue, clearQueue,
         playNext, playPrev,
         togglePlayPause, seekTo, seekBy, setVolume,
       }}

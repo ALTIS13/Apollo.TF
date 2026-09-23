@@ -14,7 +14,7 @@ export function Sidebar({ onClose }: SidebarProps) {
     { to: "/", label: "Поиск", icon: <Search className="w-4 h-4" />, exact: true },
     { to: "/discover", label: "Рекомендации", icon: <Sparkles className="w-4 h-4" />, exact: false },
     { to: "/queue", label: "Очередь", icon: <ListMusic className="w-4 h-4" />, exact: false },
-    { to: "/favorites", label: "Избранное", icon: <Heart className="w-4 h-4" />, exact: false },
+    { to: "/favorites", label: "Коллекция", icon: <Heart className="w-4 h-4" />, exact: false },
     { to: "/integrations", label: "Подключения", icon: <Plug className="w-4 h-4" />, exact: false },
   ];
 

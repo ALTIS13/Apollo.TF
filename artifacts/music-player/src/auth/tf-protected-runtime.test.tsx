@@ -145,6 +145,15 @@ function PlayerActions({
   );
 }
 
+function PlaylistPlaybackActions() {
+  const { playCollection, queue, currentTrack, isPlaying } = usePlayer();
+  const second = { ...track, id: "track-2", title: "Second Track" };
+  return <div>
+    <output data-testid="playlist-queue" data-ids={queue.map((item) => item.id).join(",")} data-current={currentTrack?.id ?? ""} data-playing={isPlaying} />
+    <button type="button" onClick={() => void playCollection([track, second])}>Play playlist</button>
+  </div>;
+}
+
 function renderProtectedRuntime(children: ReactNode = <PlayerActions />) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -435,4 +444,18 @@ describe("pre-open WebSocket auth integration", () => {
       expect(runtime.lifecycleStops).toBe(1);
     },
   );
+});
+
+it("replaces the queue with the full playlist and restarts its first track on repeated play", async () => {
+  runtime.fetchSession.mockResolvedValueOnce(session);
+  runtime.streamQuery.mockResolvedValue({ streamUrl: "https://example.test/audio" });
+  renderProtectedRuntime(<PlaylistPlaybackActions />);
+  const button = await screen.findByRole("button", { name: "Play playlist" });
+  await act(async () => { fireEvent.click(button); });
+  await waitFor(() => expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-playing", "true"));
+  expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-ids", "track-1,track-2");
+  await act(async () => { fireEvent.click(button); });
+  await waitFor(() => expect(FakeAudio.instances[0].play).toHaveBeenCalledTimes(2));
+  expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-playing", "true");
+  expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-current", "track-1");
 });

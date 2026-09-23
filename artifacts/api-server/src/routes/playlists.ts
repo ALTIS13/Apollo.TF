@@ -32,6 +32,19 @@ const addTrackSchema = z
     durationSeconds: z.number().int().min(1).max(86_400).nullable().optional(),
   })
   .strict();
+const reorderSchema = z
+  .object({
+    trackIds: z
+      .array(trackIdSchema)
+      .max(500)
+      .refine(
+        (trackIds) =>
+          new Set(trackIds).size === trackIds.length &&
+          trackIds.reduce((length, trackId) => length + trackId.length, 0) <=
+            50_000,
+      ),
+  })
+  .strict();
 
 export interface PlaylistRecord {
   readonly id: number;
@@ -60,16 +73,32 @@ export interface AddPlaylistTrackInput {
   readonly durationSeconds: number | null;
 }
 
+export interface PlaylistDetailRecord {
+  readonly playlist: PlaylistRecord;
+  readonly tracks: readonly PlaylistTrackRecord[];
+}
+
+export function isExactPlaylistPermutation(
+  existingTrackIds: readonly string[],
+  requestedTrackIds: readonly string[],
+): boolean {
+  if (existingTrackIds.length !== requestedTrackIds.length) return false;
+  const existing = new Set(existingTrackIds);
+  const requested = new Set(requestedTrackIds);
+  return (
+    existing.size === existingTrackIds.length &&
+    requested.size === requestedTrackIds.length &&
+    existingTrackIds.every((trackId) => requested.has(trackId))
+  );
+}
+
 export interface PlaylistCollectionStore {
   readonly list: (accountId: string) => Promise<readonly PlaylistRecord[]>;
   readonly create: (accountId: string, name: string) => Promise<PlaylistRecord>;
   readonly get: (
     accountId: string,
     playlistId: number,
-  ) => Promise<{
-    readonly playlist: PlaylistRecord;
-    readonly tracks: readonly PlaylistTrackRecord[];
-  } | null>;
+  ) => Promise<PlaylistDetailRecord | null>;
   readonly addTrack: (
     accountId: string,
     playlistId: number,
@@ -84,6 +113,11 @@ export interface PlaylistCollectionStore {
     trackId: string,
   ) => Promise<boolean>;
   readonly remove: (accountId: string, playlistId: number) => Promise<boolean>;
+  readonly reorder: (
+    accountId: string,
+    playlistId: number,
+    trackIds: readonly string[],
+  ) => Promise<PlaylistDetailRecord | "invalid_order" | null>;
 }
 
 export interface PlaylistRouteDependencies {
@@ -284,6 +318,70 @@ export const defaultPlaylistCollectionStore: PlaylistCollectionStore = {
       return true;
     });
   },
+
+  async reorder(accountId, playlistId, trackIds) {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(22023, ${playlistId})`);
+      const playlist = await ownedPlaylist(tx, accountId, playlistId);
+      if (!playlist) return null;
+      const rows = await tx
+        .select()
+        .from(playlistTracksTable)
+        .where(eq(playlistTracksTable.playlistId, playlistId))
+        .orderBy(
+          asc(playlistTracksTable.position),
+          asc(playlistTracksTable.id),
+        );
+      if (
+        !isExactPlaylistPermutation(
+          rows.map((row) => row.trackId),
+          trackIds,
+        )
+      ) {
+        return "invalid_order";
+      }
+
+      const byTrackId = new Map(rows.map((row) => [row.trackId, row]));
+      let changed = false;
+      const ordered = [] as PlaylistTrackRecord[];
+      for (const [position, trackId] of trackIds.entries()) {
+        const row = byTrackId.get(trackId)!;
+        if (row.position !== position) {
+          await tx
+            .update(playlistTracksTable)
+            .set({ position })
+            .where(
+              and(
+                eq(playlistTracksTable.id, row.id),
+                eq(playlistTracksTable.playlistId, playlistId),
+              ),
+            );
+          changed = true;
+        }
+        ordered.push(trackFromRow({ ...row, position }));
+      }
+
+      let currentPlaylist = playlist;
+      if (changed) {
+        const [updated] = await tx
+          .update(playlistsTable)
+          .set({ updatedAt: new Date() })
+          .where(
+            and(
+              eq(playlistsTable.id, playlistId),
+              eq(playlistsTable.sessionId, accountId),
+            ),
+          )
+          .returning();
+        if (!updated) throw new Error("playlist reorder returned no row");
+        currentPlaylist = updated;
+      }
+      return {
+        playlist: playlistFromRow(currentPlaylist, ordered.length),
+        tracks: ordered,
+      };
+    });
+  },
 };
 
 function badRequest(response: Response): void {
@@ -345,6 +443,23 @@ export function createPlaylistsRouter(
         },
       );
       if (!result) return notFound(response);
+      response.status(200).json(result);
+    },
+  );
+
+  router.patch(
+    "/collections/playlists/:playlistId/tracks/order",
+    async (request, response) => {
+      const id = playlistIdSchema.safeParse(request.params.playlistId);
+      const body = reorderSchema.safeParse(request.body);
+      if (!id.success || !body.success) return badRequest(response);
+      const result = await store.reorder(
+        request.tfPrincipal!.accountId,
+        id.data,
+        body.data.trackIds,
+      );
+      if (result === null) return notFound(response);
+      if (result === "invalid_order") return badRequest(response);
       response.status(200).json(result);
     },
   );

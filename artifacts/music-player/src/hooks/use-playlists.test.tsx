@@ -1,10 +1,14 @@
-import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { TfAuthProvider, useTfAuth } from "@/auth/tf-auth";
 import { PlaylistAction } from "@/components/PlaylistAction";
+import { PlaylistsCollection } from "@/components/PlaylistsCollection";
 import { useAddPlaylistTrack, useCreatePlaylist, usePlaylist, usePlaylists } from "./use-playlists";
+
+const playCollection = vi.hoisted(() => vi.fn());
+vi.mock("@/hooks/use-player", () => ({ usePlayer: () => ({ playTrack: vi.fn(), playCollection }) }));
 
 const accountA = "10000000-0000-4000-8000-000000000001";
 const accountB = "10000000-0000-4000-8000-000000000002";
@@ -83,7 +87,7 @@ it("creates a current-account playlist, adds an open-source track, and drops old
   expect(client.getQueryData(["tf", "playlists", accountA])).toBeUndefined();
 
   unmount();
-  render(<PlaylistAction track={{ id: "yt_recording", artist: "Artist", title: "Song", thumbnailUrl: null, duration: 180, source: "youtube", type: "original", quality: [], score: 1 }} />, { wrapper });
+  const actionView = render(<PlaylistAction track={{ id: "yt_recording", artist: "Artist", title: "Song", thumbnailUrl: null, duration: 180, source: "youtube", type: "original", quality: [], score: 1 }} />, { wrapper });
   const openButton = await screen.findByRole("button", { name: "Добавить Song в плейлист" });
   await waitFor(() => expect(openButton).toBeEnabled());
   fireEvent.click(openButton);
@@ -93,4 +97,55 @@ it("creates a current-account playlist, adds an open-source track, and drops old
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   expect(playlists[0]?.name).toBe("New set");
   expect(tracks[0]?.trackId).toBe("yt_recording");
+  actionView.unmount();
+  render(<PlaylistsCollection />, { wrapper });
+  fireEvent.click(await screen.findByRole("button", { name: /New set/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "Воспроизвести плейлист" }));
+  expect(playCollection).toHaveBeenCalledWith([expect.objectContaining({ id: "yt_recording", title: "Song" })]);
+});
+
+it("moves a playlist track through the account API and renders the confirmed order", async () => {
+  const playlist = { id: 9, name: "Focus", description: null, trackCount: 2, createdAt: "2026-09-23T00:00:00Z", updatedAt: "2026-09-23T00:00:00Z" };
+  let tracks = [
+    { trackId: "yt_first", artist: "Artist", title: "First", thumbnailUrl: null, durationSeconds: 180, position: 0, addedAt: "2026-09-23T00:00:00Z" },
+    { trackId: "sc_second", artist: "Artist", title: "Second", thumbnailUrl: null, durationSeconds: 210, position: 1, addedAt: "2026-09-23T00:00:00Z" },
+  ];
+  let failNextReorder = true;
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(url);
+    if (path.endsWith("/auth/me")) return json({
+      accountId: accountA,
+      installationId: "20000000-0000-4000-8000-000000000001",
+      entitlements: ["tf.collections"],
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      csrfToken: "c".repeat(42) + "A",
+    });
+    if (path.endsWith("/collections/playlists")) return json({ playlists: [playlist] });
+    if (path.endsWith("/collections/playlists/9/tracks/order") && init?.method === "PATCH") {
+      if (failNextReorder) {
+        failNextReorder = false;
+        return json({ error: "storage_unavailable" }, 500);
+      }
+      const { trackIds } = JSON.parse(String(init.body)) as { trackIds: string[] };
+      tracks = trackIds.map((id, position) => ({ ...tracks.find((track) => track.trackId === id)!, position }));
+      return json({ playlist, tracks });
+    }
+    if (path.endsWith("/collections/playlists/9")) return json({ playlist, tracks });
+    throw Error(`Unexpected request: ${path}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}><TfAuthProvider>{children}</TfAuthProvider></QueryClientProvider>;
+  render(<PlaylistsCollection />, { wrapper });
+  fireEvent.click(await screen.findByRole("button", { name: /Focus/ }));
+  const items = await screen.findAllByRole("listitem");
+  expect(within(items[0]).getByText("First")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Переместить First ниже" }));
+  expect(await screen.findByText("Не удалось изменить порядок треков.")).toBeInTheDocument();
+  expect(within(screen.getAllByRole("listitem")[0]).getByText("First")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Переместить First ниже" }));
+  await waitFor(() => expect(within(screen.getAllByRole("listitem")[0]).getByText("Second")).toBeInTheDocument());
+  const patch = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/collections/playlists/9/tracks/order") && init?.method === "PATCH")!;
+  expect(JSON.parse(String(patch[1]?.body))).toEqual({ trackIds: ["sc_second", "yt_first"] });
+  expect(new Headers(patch[1]?.headers).get("X-CSRF-Token")).toBe("c".repeat(42) + "A");
 });

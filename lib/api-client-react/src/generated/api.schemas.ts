@@ -513,6 +513,14 @@ export interface AddPlaylistTrackRequest {
   durationSeconds?: number | null;
 }
 
+export interface ReorderPlaylistTracksRequest {
+  /**
+   * Exact playlist membership in final order; cumulative ID length at most 50000 characters
+   * @maxItems 500
+   */
+  trackIds: string[];
+}
+
 export interface PlaylistTrackMutationResponse {
   track: PlaylistTrack;
   added: boolean;

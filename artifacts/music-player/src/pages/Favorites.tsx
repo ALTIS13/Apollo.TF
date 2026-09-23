@@ -526,7 +526,7 @@ export default function Favorites() {
                 <Music2 className="w-4 h-4 text-black" />
               </div>
               <div>
-                <h1 className="text-xl font-bold tracking-normal text-white">Apollo TF <span className="font-normal text-white/30">|</span> Избранное</h1>
+                <h1 className="text-xl font-bold tracking-normal text-white">Apollo TF <span className="font-normal text-white/30">|</span> Коллекция</h1>
                 {displayName && <p className="text-white/35 text-xs">{displayName}</p>}
               </div>
             </div>
