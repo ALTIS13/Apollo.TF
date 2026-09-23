@@ -102,6 +102,24 @@ async function streamDurationError(
     response.off("close", abort);
   }
 }
+
+async function admitSourceDuration(
+  sourceUrl: string,
+  expectedDurationSeconds: number | undefined,
+  response: Response,
+): Promise<boolean> {
+  const error = await streamDurationError(
+    sourceUrl,
+    expectedDurationSeconds,
+    response,
+  );
+  if (error === null) return true;
+  if (!response.headersSent && !response.destroyed) {
+    response.status(error === "preview_rejected" ? 422 : 503).json({ error });
+  }
+  return false;
+}
+
 const downloadQueueRequestSchema = z
   .object({
     tracks: z
@@ -462,15 +480,6 @@ export function createTracksRouter(
       return;
     }
 
-    const admit = async (sourceUrl: string): Promise<boolean> => {
-      const error = await streamDurationError(sourceUrl, expected.data, res);
-      if (error === null) return true;
-      if (!res.headersSent) {
-        res.status(error === "preview_rejected" ? 422 : 503).json({ error });
-      }
-      return false;
-    };
-
     try {
       if (decoded.source === "dz") {
         // Legacy Deezer URLs may be previews; neither they nor opaque cache hits prove a full source.
@@ -494,13 +503,13 @@ export function createTracksRouter(
         if (sourceUrl === null) {
           throw new Error("Deezer full-source candidate is unavailable");
         }
-        if (!(await admit(sourceUrl))) return;
+        if (!(await admitSourceDuration(sourceUrl, expected.data, res))) return;
         const { url, mimeType } = await getStreamUrl(sourceUrl);
         res.json({ id, streamUrl: url, mimeType: mimeType ?? "audio/mpeg" });
         return;
       }
 
-      if (!(await admit(decoded.url))) return;
+      if (!(await admitSourceDuration(decoded.url, expected.data, res))) return;
       const cached = await getCachedStreamUrl(id);
       if (cached) {
         res.json({
@@ -540,6 +549,14 @@ export function createTracksRouter(
       return;
     }
 
+    const expected = expectedDurationQuerySchema.safeParse(
+      req.query["expectedDurationSeconds"],
+    );
+    if (!expected.success) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
+
     const rawQuality = String(req.query["quality"] ?? "256");
     const quality: AudioQuality = (
       ["128", "192", "256", "320", "flac"] as const
@@ -551,10 +568,6 @@ export function createTracksRouter(
 
     try {
       const filename = `track_${id.slice(0, 16)}.${ext}`;
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="${filename}"`,
-      );
 
       if (decoded.source === "dz") {
         const dzArtist = String(req.query["artist"] ?? "").trim();
@@ -565,6 +578,10 @@ export function createTracksRouter(
           req.log?.info(
             { id, artist: dzArtist, title: dzTitle },
             `Deezer→${label} download fallback`,
+          );
+          res.setHeader(
+            "Content-Disposition",
+            `attachment; filename="${filename}"`,
           );
           res.setHeader("Content-Type", mimeType);
           const proc = spawnAudioDownload(sourceUrl, quality);
@@ -603,6 +620,9 @@ export function createTracksRouter(
               "soundcloud",
             ]);
             if (sourceUrl !== null) {
+              if (!(await admitSourceDuration(sourceUrl, expected.data, res))) {
+                return;
+              }
               const source = candidates.results.find(
                 (candidate) => candidate.sourceUrl === sourceUrl,
               )?.source;
@@ -626,6 +646,11 @@ export function createTracksRouter(
         return;
       }
 
+      if (!(await admitSourceDuration(decoded.url, expected.data, res))) return;
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`,
+      );
       res.setHeader("Content-Type", mimeType);
 
       const proc = spawnAudioDownload(decoded.url, quality);
@@ -677,11 +702,18 @@ export function createTracksRouter(
       return;
     }
 
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Content-Disposition", "inline");
-    res.setHeader("Cache-Control", "no-cache");
+    const expected = expectedDurationQuerySchema.safeParse(
+      req.query["expectedDurationSeconds"],
+    );
+    if (!expected.success) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
 
     const pipeProc = (sourceUrl: string) => {
+      res.setHeader("Content-Type", "audio/mpeg");
+      res.setHeader("Content-Disposition", "inline");
+      res.setHeader("Cache-Control", "no-cache");
       const proc = spawnAudioDownload(sourceUrl, "128");
       proc.stdout.pipe(res);
       proc.stderr.on("data", () => {});
@@ -720,6 +752,9 @@ export function createTracksRouter(
               "soundcloud",
             ]);
             if (sourceUrl !== null) {
+              if (!(await admitSourceDuration(sourceUrl, expected.data, res))) {
+                return;
+              }
               req.log?.info(
                 { id, artist: dzArtist, title: dzTitle },
                 "Deezer audio-stream fallback",
@@ -739,6 +774,7 @@ export function createTracksRouter(
         return;
       }
 
+      if (!(await admitSourceDuration(decoded.url, expected.data, res))) return;
       pipeProc(decoded.url);
     } catch (err) {
       req.log.error({ err, id }, "Failed to start audio stream");

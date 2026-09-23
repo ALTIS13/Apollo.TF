@@ -393,10 +393,10 @@ export interface StreamAdmissionError {
   error: StreamAdmissionErrorError;
 }
 
-export const StreamBadRequestValue = {
-  error: "bad_request",
-} as const;
-export type StreamBadRequest = typeof StreamBadRequestValue;
+export interface StreamBadRequest {
+  error: "bad_request";
+  message?: string;
+}
 
 export const SearchUnavailableResponseValue = {
   error: "search_unavailable",
@@ -420,6 +420,31 @@ export type GetTrackStreamParams = {
    * @maximum 86400
    */
   expectedDurationSeconds?: number;
+};
+
+export type GetTrackDownloadParams = {
+  /**
+   * Artist metadata for a Deezer fallback.
+   */
+  artist?: string;
+  /**
+   * Track metadata for a Deezer fallback.
+   */
+  title?: string;
+  /**
+   * One of 128, 192, 256, 320 or flac. Unknown values fall back to 256.
+   */
+  quality?: string;
+  /**
+   * Full recording duration from the selected result, when known.
+   * @minimum 1
+   * @maximum 86400
+   */
+  expectedDurationSeconds?: number;
+};
+
+export type GetTrackDownload403 = {
+  error: "module_access_denied";
 };
 
 export type ListLikedTracksParams = {

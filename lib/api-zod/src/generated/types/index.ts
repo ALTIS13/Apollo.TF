@@ -25,6 +25,8 @@ export * from "./downloadQueueSuccessResult";
 export * from "./downloadQueueTrack";
 export * from "./downloadResponse";
 export * from "./errorResponse";
+export * from "./getTrackDownload403";
+export * from "./getTrackDownloadParams";
 export * from "./getTrackStreamParams";
 export * from "./healthStatus";
 export * from "./likedTrack";

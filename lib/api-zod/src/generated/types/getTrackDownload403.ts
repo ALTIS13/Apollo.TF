@@ -6,7 +6,6 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface StreamBadRequest {
-  error: "bad_request";
-  message?: string;
-}
+export type GetTrackDownload403 = {
+  error: "module_access_denied";
+};

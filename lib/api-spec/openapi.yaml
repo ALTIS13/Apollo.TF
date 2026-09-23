@@ -141,8 +141,9 @@ paths:
     get:
       operationId: getTrackDownload
       tags: [tracks]
-      summary: Get download URL for a track
-      description: Returns a direct download URL for the best quality audio. URL may expire.
+      summary: Download a track through the legacy binary route
+      description: Streams encoded audio for older clients. New clients should use the queued download API. A known full-track duration enables preview admission before streaming.
+      deprecated: true
       parameters:
         - name: id
           in: path
@@ -150,15 +151,82 @@ paths:
           schema:
             type: string
           description: "Track ID from search results. Format: yt_<base64url> or sc_<base64url>."
+        - name: artist
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Artist metadata for a Deezer fallback.
+        - name: title
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Track metadata for a Deezer fallback.
+        - name: quality
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "256"
+          description: One of 128, 192, 256, 320 or flac. Unknown values fall back to 256.
+        - name: expectedDurationSeconds
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 86400
+          description: Full recording duration from the selected result, when known.
       responses:
         "200":
-          description: Download URL
+          description: Encoded audio stream
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/flac:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Invalid track ID or expected duration
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DownloadResponse"
+                $ref: "#/components/schemas/StreamBadRequest"
+        "403":
+          description: Missing search entitlement for a Deezer fallback
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    const: module_access_denied
+                required: [error]
         "404":
           description: Track not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Resolved source is a short preview of a known full recording
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamAdmissionError"
+        "503":
+          description: Source duration could not be verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamAdmissionError"
+        "502":
+          description: Deezer fallback source unavailable
           content:
             application/json:
               schema:
@@ -1082,6 +1150,8 @@ components:
         error:
           type: string
           const: bad_request
+        message:
+          type: string
       required: [error]
 
     SearchUnavailableResponse:

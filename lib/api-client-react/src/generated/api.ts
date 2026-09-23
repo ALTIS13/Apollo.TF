@@ -24,8 +24,9 @@ import type {
   DownloadJobStatus,
   DownloadQueueRequest,
   DownloadQueueResponse,
-  DownloadResponse,
   ErrorResponse,
+  GetTrackDownload403,
+  GetTrackDownloadParams,
   GetTrackStreamParams,
   HealthStatus,
   LikedTrackLookupRequest,
@@ -329,32 +330,58 @@ export function useGetTrackStream<
 }
 
 /**
- * Returns a direct download URL for the best quality audio. URL may expire.
- * @summary Get download URL for a track
+ * Streams encoded audio for older clients. New clients should use the queued download API. A known full-track duration enables preview admission before streaming.
+ * @deprecated
+ * @summary Download a track through the legacy binary route
  */
-export const getGetTrackDownloadUrl = (id: string) => {
-  return `/api/tracks/${id}/download`;
+export const getGetTrackDownloadUrl = (
+  id: string,
+  params?: GetTrackDownloadParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/tracks/${id}/download?${stringifiedParams}`
+    : `/api/tracks/${id}/download`;
 };
 
 export const getTrackDownload = async (
   id: string,
+  params?: GetTrackDownloadParams,
   options?: RequestInit,
-): Promise<DownloadResponse> => {
-  return customFetch<DownloadResponse>(getGetTrackDownloadUrl(id), {
+): Promise<Blob> => {
+  return customFetch<Blob>(getGetTrackDownloadUrl(id, params), {
     ...options,
     method: "GET",
   });
 };
 
-export const getGetTrackDownloadQueryKey = (id: string) => {
-  return [`/api/tracks/${id}/download`] as const;
+export const getGetTrackDownloadQueryKey = (
+  id: string,
+  params?: GetTrackDownloadParams,
+) => {
+  return [`/api/tracks/${id}/download`, ...(params ? [params] : [])] as const;
 };
 
 export const getGetTrackDownloadQueryOptions = <
   TData = Awaited<ReturnType<typeof getTrackDownload>>,
-  TError = ErrorType<ErrorResponse>,
+  TError = ErrorType<
+    | StreamBadRequest
+    | GetTrackDownload403
+    | ErrorResponse
+    | StreamAdmissionError
+  >,
 >(
   id: string,
+  params?: GetTrackDownloadParams,
   options?: {
     query?: UseQueryOptions<
       Awaited<ReturnType<typeof getTrackDownload>>,
@@ -366,11 +393,13 @@ export const getGetTrackDownloadQueryOptions = <
 ) => {
   const { query: queryOptions, request: requestOptions } = options ?? {};
 
-  const queryKey = queryOptions?.queryKey ?? getGetTrackDownloadQueryKey(id);
+  const queryKey =
+    queryOptions?.queryKey ?? getGetTrackDownloadQueryKey(id, params);
 
   const queryFn: QueryFunction<
     Awaited<ReturnType<typeof getTrackDownload>>
-  > = ({ signal }) => getTrackDownload(id, { signal, ...requestOptions });
+  > = ({ signal }) =>
+    getTrackDownload(id, params, { signal, ...requestOptions });
 
   return {
     queryKey,
@@ -387,17 +416,26 @@ export const getGetTrackDownloadQueryOptions = <
 export type GetTrackDownloadQueryResult = NonNullable<
   Awaited<ReturnType<typeof getTrackDownload>>
 >;
-export type GetTrackDownloadQueryError = ErrorType<ErrorResponse>;
+export type GetTrackDownloadQueryError = ErrorType<
+  StreamBadRequest | GetTrackDownload403 | ErrorResponse | StreamAdmissionError
+>;
 
 /**
- * @summary Get download URL for a track
+ * @deprecated
+ * @summary Download a track through the legacy binary route
  */
 
 export function useGetTrackDownload<
   TData = Awaited<ReturnType<typeof getTrackDownload>>,
-  TError = ErrorType<ErrorResponse>,
+  TError = ErrorType<
+    | StreamBadRequest
+    | GetTrackDownload403
+    | ErrorResponse
+    | StreamAdmissionError
+  >,
 >(
   id: string,
+  params?: GetTrackDownloadParams,
   options?: {
     query?: UseQueryOptions<
       Awaited<ReturnType<typeof getTrackDownload>>,
@@ -407,7 +445,7 @@ export function useGetTrackDownload<
     request?: SecondParameter<typeof customFetch>;
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
-  const queryOptions = getGetTrackDownloadQueryOptions(id, options);
+  const queryOptions = getGetTrackDownloadQueryOptions(id, params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

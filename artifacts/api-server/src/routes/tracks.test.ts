@@ -617,11 +617,12 @@ describe("TF search module routing", () => {
       `${baseUrl}/tracks/${trackId}/download?${query}`,
     );
     const audioStream = await fetch(
-      `${baseUrl}/tracks/${trackId}/audio-stream?${query}`,
+      `${baseUrl}/tracks/${trackId}/audio-stream?${query}&expectedDurationSeconds=205`,
     );
     await Promise.all([download.arrayBuffer(), audioStream.arrayBuffer()]);
 
     expect(stream.status).toBe(200);
+    expect(durationProbeMock).toHaveBeenCalledTimes(2);
     expect(durationProbeMock).toHaveBeenCalledWith(expect.objectContaining({ sourceUrl }));
     await expect(stream.json()).resolves.toMatchObject({
       streamUrl: "https://media.example.test/audio",
@@ -835,6 +836,76 @@ describe("stream preview boundary", () => {
     );
     expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
     expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+  });
+});
+
+describe("legacy binary route preview admission", () => {
+  const sourceUrl = "https://www.youtube.com/watch?v=legacy-preview";
+  const id = trackIdFor("yt", sourceUrl);
+
+  it.each(["download", "audio-stream"])(
+    "rejects a known short source before starting %s output",
+    async (route) => {
+      durationProbeMock.mockResolvedValue(30);
+      const baseUrl = await startTracksServer(routeDependencies());
+
+      const response = await fetch(
+        `${baseUrl}/tracks/${id}/${route}?expectedDurationSeconds=210`,
+      );
+
+      expect(response.status).toBe(422);
+      await expect(response.json()).resolves.toEqual({ error: "preview_rejected" });
+      expect(durationProbeMock).toHaveBeenCalledWith(expect.objectContaining({ sourceUrl }));
+      expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["download", "audio-stream"])(
+    "does not start %s output when known duration cannot be checked",
+    async (route) => {
+      durationProbeMock.mockRejectedValue(new Error("private provider text"));
+      const baseUrl = await startTracksServer(routeDependencies());
+
+      const response = await fetch(
+        `${baseUrl}/tracks/${id}/${route}?expectedDurationSeconds=210`,
+      );
+
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "duration_unverified" });
+      expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+    },
+  );
+
+  it("checks the Deezer fallback source rather than its preview URL", async () => {
+    const previewId = trackIdFor("dz", "https://cdns-preview-e.dzcdn.net/stream/c-legacy");
+    const gateway = searchGateway();
+    gateway.search.mockResolvedValue(searchResponse({
+      results: [result(0, { sourceUrl })],
+    }));
+    durationProbeMock.mockResolvedValue(30);
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+
+    const response = await fetch(
+      `${baseUrl}/tracks/${previewId}/download?artist=Artist&title=Track&expectedDurationSeconds=210`,
+    );
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ error: "preview_rejected" });
+    expect(durationProbeMock).toHaveBeenCalledWith(expect.objectContaining({ sourceUrl }));
+    expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed expected duration before starting a legacy download", async () => {
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const response = await fetch(
+      `${baseUrl}/tracks/${id}/download?expectedDurationSeconds=0`,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "bad_request" });
+    expect(durationProbeMock).not.toHaveBeenCalled();
+    expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
   });
 });
 

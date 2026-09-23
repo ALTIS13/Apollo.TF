@@ -137,8 +137,9 @@ export const GetTrackStreamResponse = zod.object({
 });
 
 /**
- * Returns a direct download URL for the best quality audio. URL may expire.
- * @summary Get download URL for a track
+ * Streams encoded audio for older clients. New clients should use the queued download API. A known full-track duration enables preview admission before streaming.
+ * @deprecated
+ * @summary Download a track through the legacy binary route
  */
 export const GetTrackDownloadParams = zod.object({
   id: zod.coerce
@@ -148,10 +149,30 @@ export const GetTrackDownloadParams = zod.object({
     ),
 });
 
-export const GetTrackDownloadResponse = zod.object({
-  id: zod.string(),
-  downloadUrl: zod.string(),
-  filename: zod.string().nullish(),
+export const getTrackDownloadQueryQualityDefault = `256`;
+export const getTrackDownloadQueryExpectedDurationSecondsMax = 86400;
+
+export const GetTrackDownloadQueryParams = zod.object({
+  artist: zod.coerce
+    .string()
+    .optional()
+    .describe("Artist metadata for a Deezer fallback."),
+  title: zod.coerce
+    .string()
+    .optional()
+    .describe("Track metadata for a Deezer fallback."),
+  quality: zod.coerce
+    .string()
+    .default(getTrackDownloadQueryQualityDefault)
+    .describe(
+      "One of 128, 192, 256, 320 or flac. Unknown values fall back to 256.",
+    ),
+  expectedDurationSeconds: zod.coerce
+    .number()
+    .min(1)
+    .max(getTrackDownloadQueryExpectedDurationSecondsMax)
+    .optional()
+    .describe("Full recording duration from the selected result, when known."),
 });
 
 /**
