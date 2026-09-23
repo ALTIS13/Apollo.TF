@@ -10,6 +10,8 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 interface LyricsResponse {
   plainLyrics: string | null;
   syncedLyrics: string | null;
+  source?: "lrclib" | "lyrics.ovh" | null;
+  match?: "metadata" | "unverified" | null;
 }
 
 interface LyricsPanelProps {
@@ -108,6 +110,14 @@ export function LyricsPanel({
             <p className="text-sm text-white/60">Текст пока недоступен</p>
           )}
         </div>
+        {allowed && !lyrics.isError && lyrics.data?.source && (syncedLines.length > 0 || plainText) && (
+          <footer className="shrink-0 border-t border-white/10 px-5 py-3 text-xs text-white/50">
+            <p>Источник: {lyrics.data.source === "lrclib" ? "LRCLIB" : "lyrics.ovh"}</p>
+            {lyrics.data.match === "unverified" && (
+              <p className="mt-1 text-amber-200/80">Совпадение с записью не проверено</p>
+            )}
+          </footer>
+        )}
       </SheetContent>
     </Sheet>
   );

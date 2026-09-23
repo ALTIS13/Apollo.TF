@@ -88,3 +88,17 @@ it("does not retain the previous track's lyrics while a new track loads", async 
   resolveSecond({ plainLyrics: null, syncedLyrics: null });
   await waitFor(() => expect(screen.getByText("Текст пока недоступен")).toBeInTheDocument());
 });
+
+it("identifies an unverified lyrics fallback without presenting it as a matched recording", async () => {
+  tfFetch.mockResolvedValue({
+    plainLyrics: "Fallback line",
+    syncedLyrics: null,
+    source: "lyrics.ovh",
+    match: "unverified",
+  });
+  renderPanel();
+
+  expect(await screen.findByText("Fallback line")).toBeInTheDocument();
+  expect(screen.getByText("Источник: lyrics.ovh")).toBeInTheDocument();
+  expect(screen.getByText("Совпадение с записью не проверено")).toBeInTheDocument();
+});

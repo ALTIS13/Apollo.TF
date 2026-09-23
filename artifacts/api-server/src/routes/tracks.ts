@@ -821,14 +821,44 @@ export function createTracksRouter(
     }
   });
 
+  type LyricsResult = {
+    plainLyrics: string | null;
+    syncedLyrics: string | null;
+    source: "lrclib" | "lyrics.ovh";
+    match: "metadata" | "unverified";
+  };
+
+  function matchingLrclibLyrics(
+    record: {
+      trackName?: unknown;
+      artistName?: unknown;
+      duration?: unknown;
+      plainLyrics?: unknown;
+      syncedLyrics?: unknown;
+    },
+    artist: string,
+    title: string,
+    duration: number,
+  ): LyricsResult | null {
+    const normalize = (value: string) => value.normalize("NFKC").toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, " ").trim().replace(/\s+/g, " ");
+    if (typeof record.artistName !== "string" || typeof record.trackName !== "string" ||
+        normalize(record.artistName) !== normalize(artist) || normalize(record.trackName) !== normalize(title)) return null;
+    if (Number.isFinite(duration) && duration > 0 &&
+        (typeof record.duration !== "number" || !Number.isFinite(record.duration) ||
+          Math.abs(record.duration - duration) > Math.max(5, duration * 0.03))) return null;
+    const plainLyrics = typeof record.plainLyrics === "string" ? record.plainLyrics.trim() || null : null;
+    const syncedLyrics = typeof record.syncedLyrics === "string" ? record.syncedLyrics.trim() || null : null;
+    return plainLyrics || syncedLyrics
+      ? { plainLyrics, syncedLyrics, source: "lrclib", match: "metadata" }
+      : null;
+  }
+
   async function fetchLrclib(
     artist: string,
     title: string,
     duration: number,
-  ): Promise<{
-    plainLyrics: string | null;
-    syncedLyrics: string | null;
-  } | null> {
+  ): Promise<LyricsResult | null> {
     try {
       const params = new URLSearchParams({
         artist_name: artist,
@@ -839,16 +869,12 @@ export function createTracksRouter(
         headers: { "Lrclib-Client": "Apollo TrackFinder/1.0" },
         signal: AbortSignal.timeout(7000),
       });
-      if (r.status === 404) return { plainLyrics: null, syncedLyrics: null };
+      if (r.status === 404) return null;
       if (!r.ok) return null;
-      const d = (await r.json()) as {
-        plainLyrics?: string | null;
-        syncedLyrics?: string | null;
-      };
-      const plain = d.plainLyrics?.trim() ?? null;
-      const synced = d.syncedLyrics?.trim() ?? null;
-      if (!plain && !synced) return null;
-      return { plainLyrics: plain, syncedLyrics: synced };
+      const record = await r.json();
+      return record && typeof record === "object"
+        ? matchingLrclibLyrics(record, artist, title, duration)
+        : null;
     } catch {
       return null;
     }
@@ -857,10 +883,8 @@ export function createTracksRouter(
   async function fetchLrcLibSearch(
     artist: string,
     title: string,
-  ): Promise<{
-    plainLyrics: string | null;
-    syncedLyrics: string | null;
-  } | null> {
+    duration: number,
+  ): Promise<LyricsResult | null> {
     try {
       const params = new URLSearchParams({
         artist_name: artist,
@@ -872,15 +896,12 @@ export function createTracksRouter(
         signal: AbortSignal.timeout(7000),
       });
       if (!r.ok) return null;
-      const results = (await r.json()) as Array<{
-        plainLyrics?: string | null;
-        syncedLyrics?: string | null;
-      }>;
+      const results = await r.json();
+      if (!Array.isArray(results)) return null;
       for (const item of results) {
-        const plain = item.plainLyrics?.trim() ?? null;
-        const synced = item.syncedLyrics?.trim() ?? null;
-        if (plain || synced)
-          return { plainLyrics: plain, syncedLyrics: synced };
+        if (!item || typeof item !== "object") continue;
+        const lyrics = matchingLrclibLyrics(item, artist, title, duration);
+        if (lyrics) return lyrics;
       }
       return null;
     } catch {
@@ -891,14 +912,14 @@ export function createTracksRouter(
   async function fetchLyricsOvh(
     artist: string,
     title: string,
-  ): Promise<{ plainLyrics: string | null; syncedLyrics: null } | null> {
+  ): Promise<LyricsResult | null> {
     try {
       const url = `https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`;
       const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
       if (!r.ok) return null;
       const d = (await r.json()) as { lyrics?: string; error?: string };
       if (d.error || !d.lyrics?.trim()) return null;
-      return { plainLyrics: d.lyrics.trim(), syncedLyrics: null };
+      return { plainLyrics: d.lyrics.trim(), syncedLyrics: null, source: "lyrics.ovh", match: "unverified" };
     } catch {
       return null;
     }
@@ -1051,7 +1072,7 @@ export function createTracksRouter(
         return;
       }
 
-      const lrclibSearch = await fetchLrcLibSearch(artist, title);
+      const lrclibSearch = await fetchLrcLibSearch(artist, title, duration);
       if (lrclibSearch) {
         res.json(lrclibSearch);
         return;
@@ -1063,10 +1084,10 @@ export function createTracksRouter(
         return;
       }
 
-      res.json({ plainLyrics: null, syncedLyrics: null });
+      res.json({ plainLyrics: null, syncedLyrics: null, source: null, match: null });
     } catch (err) {
       req.log.warn({ err }, "Lyrics fetch failed");
-      res.json({ plainLyrics: null, syncedLyrics: null });
+      res.json({ plainLyrics: null, syncedLyrics: null, source: null, match: null });
     }
   });
 

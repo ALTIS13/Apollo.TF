@@ -675,6 +675,71 @@ describe("TF search module routing", () => {
   });
 });
 
+it("skips mismatched LRCLIB search records before returning lyrics", async () => {
+  const originalFetch = globalThis.fetch;
+  const record = (artistName: string, duration: number, plainLyrics: string) => ({
+    id: duration,
+    trackName: "First song",
+    artistName,
+    albumName: "Album",
+    duration,
+    instrumental: false,
+    plainLyrics,
+    syncedLyrics: null,
+    lyricsfile: null,
+  });
+  vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("https://lrclib.net/api/get?")) return Promise.resolve(new Response(null, { status: 404 }));
+    if (url.startsWith("https://lrclib.net/api/search?")) return Promise.resolve(Response.json([
+      record("Other artist", 180, "Wrong artist"),
+      record("Artist", 30, "Wrong version"),
+      record("Artist", 181, "Matching line"),
+    ]));
+    return originalFetch(input, init);
+  });
+  try {
+    const baseUrl = await startTracksServer(routeDependencies());
+    const response = await originalFetch(`${baseUrl}/tracks/lyrics?artist=Artist&title=First+song&duration=180`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      plainLyrics: "Matching line",
+      syncedLyrics: null,
+      source: "lrclib",
+      match: "metadata",
+    });
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("marks lyrics.ovh fallback as unverified when LRCLIB has no matching recording", async () => {
+  const originalFetch = globalThis.fetch;
+  vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("https://lrclib.net/api/get?")) return Promise.resolve(new Response(null, { status: 404 }));
+    if (url.startsWith("https://lrclib.net/api/search?")) return Promise.resolve(Response.json([{
+      id: 1, trackName: "Other song", artistName: "Artist", albumName: "Album", duration: 180,
+      instrumental: false, plainLyrics: "Wrong song", syncedLyrics: null, lyricsfile: null,
+    }]));
+    if (url.startsWith("https://api.lyrics.ovh/v1/")) return Promise.resolve(Response.json({ lyrics: "Unverified line" }));
+    return originalFetch(input, init);
+  });
+  try {
+    const baseUrl = await startTracksServer(routeDependencies());
+    const response = await originalFetch(`${baseUrl}/tracks/lyrics?artist=Artist&title=First+song&duration=180`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      plainLyrics: "Unverified line",
+      syncedLyrics: null,
+      source: "lyrics.ovh",
+      match: "unverified",
+    });
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
 describe("stream preview boundary", () => {
   const previewUrl = "https://cdns-preview-e.dzcdn.net/stream/c-test-preview";
   const deezerId = trackIdFor("dz", previewUrl);
