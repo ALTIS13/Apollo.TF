@@ -168,6 +168,13 @@ export class DownloadStorageOutput {
     return this.operation.failure;
   }
 
+  async inspect<T>(
+    inspector: (partPath: string, signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return this.storage.inspect(this.operation, inspector, signal);
+  }
+
   async commit(
     metadata: DownloadCommitMetadata,
     signal?: AbortSignal,
@@ -555,6 +562,54 @@ export class DownloadStorage {
         return false;
       }
     }, signal);
+  }
+
+  async inspect<T>(
+    operation: OperationState,
+    inspector: (partPath: string, signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const inspectionSignal = signal ?? new AbortController().signal;
+    let enteredLock = false;
+    try {
+      return await this.withLock(async () => {
+        enteredLock = true;
+        this.assertTracked(operation, "active");
+        try {
+          if (operation.failure) throw operation.failure;
+          await this.assertRootIdentity(signal);
+          await this.assertExactPart(operation, true, signal);
+          const handle = operation.handle;
+          if (!handle) throw unavailable(false);
+          throwIfAborted(signal);
+          await handle.sync();
+          throwIfAborted(signal);
+          await this.assertRootIdentity(signal);
+          await this.assertExactPart(operation, true, signal);
+
+          const result = await inspector(operation.partPath, inspectionSignal);
+          throwIfAborted(signal);
+          await this.assertRootIdentity(signal);
+          await this.assertExactPart(operation, true, signal);
+          return result;
+        } catch (error) {
+          const cleanupFailure = await this.cleanupFailedOperation(
+            operation,
+            false,
+          );
+          throw cleanupFailure ?? error;
+        }
+      }, signal);
+    } catch (error) {
+      if (
+        !enteredLock &&
+        operation.state === "active" &&
+        this.operations.get(operation.partPath) === operation.token
+      ) {
+        await this.abort(operation);
+      }
+      throw error;
+    }
   }
 
   async commit(

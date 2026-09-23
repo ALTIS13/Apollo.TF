@@ -62,6 +62,114 @@ afterEach(async () => {
 });
 
 describe("DownloadStorage", () => {
+  it("inspects a synced partial under the storage lock before commit", async () => {
+    const root = await createRoot();
+    const storage = await DownloadStorage.create({ root });
+    const output = await storage.begin(JOB_ID, "mp3");
+    expect(await output.write(Buffer.from("audio"))).toBe(true);
+    const handle = (output as unknown as { operation: { handle: FileHandle } })
+      .operation.handle;
+    const sync = vi.spyOn(handle, "sync");
+    const controller = new AbortController();
+    let releaseInspector: (() => void) | undefined;
+    const inspectorHeld = new Promise<void>((resolve) => {
+      releaseInspector = resolve;
+    });
+    let enteredInspector: (() => void) | undefined;
+    const entered = new Promise<void>((resolve) => {
+      enteredInspector = resolve;
+    });
+    const inspected = output.inspect(async (partPath, signal) => {
+      expect(sync).toHaveBeenCalledTimes(1);
+      expect(partPath).toBe(path.join(root, `${JOB_ID}.mp3.part`));
+      expect(signal).toBe(controller.signal);
+      expect(await readFile(partPath, "utf8")).toBe("audio");
+      enteredInspector?.();
+      await inspectorHeld;
+      return 123;
+    }, controller.signal);
+    await entered;
+    let secondBegan = false;
+    const second = storage.begin(SECOND_JOB_ID, "mp3").then((value) => {
+      secondBegan = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(secondBegan).toBe(false);
+    expect(await listNames(root)).toEqual([`${JOB_ID}.mp3.part`]);
+    releaseInspector?.();
+    await expect(inspected).resolves.toBe(123);
+    await (await second).abort();
+    await output.commit(metadata);
+    expect(await listNames(root)).toEqual([`${JOB_ID}.mp3`]);
+  });
+
+  it("does not publish or retain a partial when inspection rejects", async () => {
+    const root = await createRoot();
+    const storage = await DownloadStorage.create({ root });
+    const output = await storage.begin(JOB_ID, "mp3");
+    expect(await output.write(Buffer.from("audio"))).toBe(true);
+    const inspectionError = new Error("inspection_failed");
+
+    await expect(
+      output.inspect(async () => {
+        throw inspectionError;
+      }),
+    ).rejects.toBe(inspectionError);
+    expect(await listNames(root)).toEqual([]);
+    await expect(output.commit(metadata)).rejects.toThrow(
+      "storage_unavailable",
+    );
+    expect(await listNames(root)).toEqual([]);
+  });
+
+  it("rejects a same-sized partial replacement after inspection without touching it", async () => {
+    const root = await createRoot();
+    const storage = await DownloadStorage.create({ root });
+    const output = await storage.begin(JOB_ID, "mp3");
+    expect(await output.write(Buffer.from("owned"))).toBe(true);
+    const partPath = path.join(root, `${JOB_ID}.mp3.part`);
+    const movedPath = path.join(root, "original-moved");
+
+    await expect(
+      output.inspect(async () => {
+        await rename(partPath, movedPath);
+        await writeFile(partPath, "other");
+        return 10;
+      }),
+    ).rejects.toMatchObject({ code: "storage_unavailable", retriable: false });
+    expect(await readFile(partPath, "utf8")).toBe("other");
+    expect(await readFile(movedPath, "utf8")).toBe("owned");
+    expect(await listNames(root)).not.toContain(`${JOB_ID}.mp3`);
+  });
+
+  it("passes cancellation to the inspector and never publishes after abort", async () => {
+    const root = await createRoot();
+    const storage = await DownloadStorage.create({ root });
+    const output = await storage.begin(JOB_ID, "mp3");
+    expect(await output.write(Buffer.from("audio"))).toBe(true);
+    const controller = new AbortController();
+    let enteredInspector: (() => void) | undefined;
+    const entered = new Promise<void>((resolve) => {
+      enteredInspector = resolve;
+    });
+    const inspecting = output.inspect(async (_partPath, signal) => {
+      enteredInspector?.();
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return 10;
+    }, controller.signal);
+    await entered;
+    controller.abort();
+
+    await expect(inspecting).rejects.toMatchObject({
+      code: "storage_unavailable",
+      retriable: false,
+    });
+    expect(await listNames(root)).toEqual([]);
+  });
+
   it("creates an exclusive same-directory partial and commits an opaque UUID key", async () => {
     const root = await createRoot();
     const storage = await DownloadStorage.create({ root });
