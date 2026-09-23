@@ -82,6 +82,16 @@ function playbackErrorDescription(error: unknown): string {
   return "Не удалось загрузить трек.";
 }
 
+function isUnavailableTrackSource(error: unknown): boolean {
+  if (error instanceof Error && error.message === "No stream URL") return true;
+  if (typeof error !== "object" || error === null || !("status" in error) || !("data" in error)) return false;
+  const data = error.data;
+  const code = typeof data === "object" && data !== null && "error" in data ? data.error : null;
+  return (error.status === 422 && code === "preview_rejected") ||
+    (error.status === 503 && code === "duration_unverified") ||
+    ((error.status === 500 || error.status === 502) && code === "stream_error");
+}
+
 export function PlayerProvider({ children }: { children: ReactNode }) {
   const { session, status, webSocketRecoveryBudget } = useTfAuth();
   const [currentTrack, setCurrentTrack] = useState<TrackResult | null>(null);
@@ -269,9 +279,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setCurrentTrack(null);
       setIsPlaying(false);
       toast({ title: "Ошибка воспроизведения", description: playbackErrorDescription(err), variant: "destructive" });
+      if (live() && isUnavailableTrackSource(err)) return "recoverable" as const;
     } finally {
       if (mountedRef.current && load === loadGeneration.current) setIsLoading(false);
     }
+    return undefined;
   }, [queryClient, toast]);
 
   const _loadTrackRef = useRef(_loadTrack);
@@ -325,11 +337,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const advance = useCallback(async (reason: "ended" | "next") => {
     if (!canUseTfProtectedActivity()) return;
     const q = queueRef.current;
-    const nextIdx = getNextQueueIndex(q.length, queueIndexRef.current, repeatModeRef.current, reason);
-    if (nextIdx === null) return;
-    queueIndexRef.current = nextIdx;
-    setQueueIndex(nextIdx);
-    await _loadTrackRef.current(q[nextIdx]);
+    let nextIdx = getNextQueueIndex(q.length, queueIndexRef.current, repeatModeRef.current, reason);
+    for (let attempted = 0; nextIdx !== null && attempted < q.length; attempted++) {
+      if (!canUseTfProtectedActivity() || queueRef.current !== q) return;
+      queueIndexRef.current = nextIdx;
+      setQueueIndex(nextIdx);
+      const priorLoad = loadGeneration.current;
+      const result = await _loadTrackRef.current(q[nextIdx]);
+      if (reason !== "ended" || result !== "recoverable" || loadGeneration.current !== priorLoad + 1 ||
+          queueRef.current !== q || !canUseTfProtectedActivity()) return;
+      nextIdx = getNextQueueIndex(q.length, nextIdx, repeatModeRef.current, "next");
+    }
   }, []);
 
   playNextRef.current = advance;

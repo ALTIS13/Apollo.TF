@@ -484,7 +484,7 @@ describe("rendered browser renewal and actual player continuity", () => {
     const pending = deferred<Response>();
     const original = globalThis.fetch;
     vi.stubGlobal("fetch", (url: string, init: RequestInit) =>
-      url.endsWith("/stream") ? pending.promise : original(url, init),
+      new URL(url, "https://tf.apollot.ru").pathname.endsWith("/stream") ? pending.promise : original(url, init),
     );
     let play!: Promise<void>;
     act(() => {
