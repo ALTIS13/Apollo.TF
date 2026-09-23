@@ -13,6 +13,7 @@ import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 type FilterType = TrackType | "all";
 type SourceKey = "yt" | "sc" | "bc" | "dz";
 type SourceMode = "auto" | "manual";
+type SearchMode = "quick" | "exact";
 type HomeSearchRequest = SearchRequest & {
   mode: SourceMode;
   sources?: SourceKey[];
@@ -37,12 +38,28 @@ function saveSourcePrefs(mode: SourceMode, sources: Record<SourceKey, boolean>) 
   localStorage.setItem("tf_source_prefs", JSON.stringify({ mode, sources }));
 }
 
+function parseExplicitTrackQuery(value: string): { artist: string; title: string } | null {
+  const match = value.trim().match(/^(.+?)\s+[-–—]\s+(.+)$/u);
+  if (!match) return null;
+  const artist = match[1]!.trim();
+  const title = match[2]!.trim();
+  if (!artist || !title || artist.length > 200 || title.length > 300) return null;
+  return { artist, title };
+}
+
 export default function Home() {
   const reduceMotion = useReducedMotion();
   const { session } = useTfAuth();
   const params = new URLSearchParams(window.location.search);
   const [artist, setArtist] = useState(params.get("artist") ?? "");
   const [title, setTitle] = useState(params.get("title") ?? "");
+  const [searchMode, setSearchMode] = useState<SearchMode>("quick");
+  const [quickQuery, setQuickQuery] = useState(
+    params.get("artist") && params.get("title")
+      ? `${params.get("artist")} — ${params.get("title")}`
+      : "",
+  );
+  const [quickError, setQuickError] = useState(false);
   const [suggestions, setSuggestions] = useState<TrackSuggestionsResponse["suggestions"]>([]);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
@@ -125,8 +142,10 @@ export default function Home() {
     setSuggestions([]);
     setSuggestionsOpen(false);
     setActiveSuggestion(-1);
-    const query = `${artist.trim()} ${title.trim()}`.trim().slice(0, 500);
-    if (!session || title.trim().length < 2 || suggestionsSuppressed) return;
+    const query = (searchMode === "quick"
+      ? quickQuery.trim()
+      : `${artist.trim()} ${title.trim()}`.trim()).slice(0, 200);
+    if (!session || query.length < 2 || suggestionsSuppressed) return;
 
     const generation = captureTfSecurityGeneration();
     const controller = new AbortController();
@@ -149,7 +168,7 @@ export default function Home() {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [artist, title, session, suggestionsSuppressed]);
+  }, [artist, title, quickQuery, searchMode, session, suggestionsSuppressed]);
 
   useEffect(() => {
     if (!suggestionsOpen) return;
@@ -168,11 +187,13 @@ export default function Home() {
     setSuggestions([]);
     setArtist(suggestion.artist);
     setTitle(suggestion.title);
+    setQuickQuery(`${suggestion.artist} — ${suggestion.title}`);
+    setQuickError(false);
     setHasSearched(true);
     searchMutation.mutate(buildSearchData(suggestion.artist, suggestion.title));
   };
 
-  const handleTitleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleSuggestionKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (!suggestionsOpen || suggestions.length === 0) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -181,7 +202,7 @@ export default function Home() {
       event.preventDefault();
       setActiveSuggestion((current) => Math.max(current - 1, 0));
     } else if (event.key === "Enter") {
-      if (activeSuggestion < 0 && artist.trim()) return;
+      if (activeSuggestion < 0 && (searchMode === "exact" ? artist.trim() : parseExplicitTrackQuery(quickQuery))) return;
       event.preventDefault();
       chooseSuggestion(suggestions[Math.max(activeSuggestion, 0)]!);
     } else if (event.key === "Escape") {
@@ -203,12 +224,50 @@ export default function Home() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!artist.trim() || !title.trim()) return;
+    const pair = searchMode === "quick"
+      ? parseExplicitTrackQuery(quickQuery)
+      : artist.trim() && title.trim()
+        ? { artist: artist.trim(), title: title.trim() }
+        : null;
+    if (!pair) {
+      if (searchMode === "quick") setQuickError(true);
+      return;
+    }
 
+    setQuickError(false);
+    setArtist(pair.artist);
+    setTitle(pair.title);
+    setQuickQuery(`${pair.artist} — ${pair.title}`);
+    setSuggestionsSuppressed(true);
     setHasSearched(true);
     setSuggestionsOpen(false);
-    searchMutation.mutate(buildSearchData(artist, title));
+    searchMutation.mutate(buildSearchData(pair.artist, pair.title));
   };
+
+  const suggestionList = suggestionsOpen && (
+    <div
+      id="tf-track-suggestions"
+      role="listbox"
+      aria-label="Подсказки треков"
+      className="relative z-20 mt-1 max-h-64 overflow-y-auto rounded-md border border-white/15 bg-[#17171b] p-1 shadow-xl sm:absolute sm:inset-x-0 sm:top-full"
+    >
+      {suggestions.map((suggestion, index) => (
+        <button
+          key={`${suggestion.artist}:${suggestion.title}:${index}`}
+          id={`tf-suggestion-${index}`}
+          type="button"
+          role="option"
+          tabIndex={-1}
+          aria-selected={index === activeSuggestion}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => chooseSuggestion(suggestion)}
+          className={`block w-full truncate rounded-sm px-3 py-2 text-left text-sm focus-visible:outline-2 focus-visible:outline-white ${index === activeSuggestion ? "bg-white/10 text-white" : "text-foreground hover:bg-white/10"}`}
+        >
+          {suggestion.artist} - {suggestion.title}
+        </button>
+      ))}
+    </div>
+  );
 
   const results = searchMutation.data?.results || [];
   const likedLookup = useLikedTrackLookup(results.map((track) => track.id));
@@ -233,77 +292,104 @@ export default function Home() {
           <h1 className="mb-4 text-xl font-semibold tracking-normal text-white">
             Apollo TF <span className="font-normal text-white/40">/ Поиск</span>
           </h1>
+          <div role="group" aria-label="Режим поиска" className="mb-3 flex w-fit rounded-md border border-white/15 p-0.5">
+            {(["quick", "exact"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={searchMode === mode}
+                onClick={() => {
+                  setSearchMode(mode);
+                  setQuickError(false);
+                  setSuggestionsOpen(false);
+                }}
+                className={`h-8 rounded px-3 text-xs font-medium ${searchMode === mode ? "bg-white/15 text-white" : "text-muted-foreground hover:text-white"}`}
+              >
+                {mode === "quick" ? "Быстрый" : "Точный"}
+              </button>
+            ))}
+          </div>
           <form
             onSubmit={handleSearch}
             aria-label="Поиск музыки"
-            className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end"
+            className={`grid gap-3 sm:items-end ${searchMode === "quick" ? "sm:grid-cols-[minmax(0,1fr)_auto]" : "sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"}`}
           >
-            <label className="min-w-0 text-xs font-medium text-muted-foreground">
-              Исполнитель
-              <span className="mt-1.5 flex h-11 items-center gap-2 rounded-lg border border-white/15 bg-secondary/50 px-3 focus-within:border-primary">
-                <Music2 className="h-4 w-4 shrink-0" />
-                <input
-                  type="text"
-                  placeholder="Artist name..."
-                  value={artist}
-                  onChange={(e) => {
-                    setSuggestionsSuppressed(false);
-                    setArtist(e.target.value);
-                  }}
-                  className="h-full w-full min-w-0 bg-transparent text-sm text-foreground outline-none"
-                  required
-                />
-              </span>
-            </label>
-            <div ref={suggestionRegionRef} className="relative min-w-0">
-              <label className="text-xs font-medium text-muted-foreground">
-                Название трека
-                <span className="mt-1.5 flex h-11 items-center gap-2 rounded-lg border border-white/15 bg-secondary/50 px-3 focus-within:border-primary">
-                  <Search className="h-4 w-4 shrink-0" />
-                  <input
-                    type="text"
-                    placeholder="Track title..."
-                    value={title}
-                    onChange={(e) => {
-                      setSuggestionsSuppressed(false);
-                      setTitle(e.target.value);
-                    }}
-                    onKeyDown={handleTitleKeyDown}
-                    role="combobox"
-                    aria-autocomplete="list"
-                    aria-expanded={suggestionsOpen}
-                    aria-controls={suggestionsOpen ? "tf-track-suggestions" : undefined}
-                    aria-activedescendant={suggestionsOpen && activeSuggestion >= 0 ? `tf-suggestion-${activeSuggestion}` : undefined}
-                    className="h-full w-full min-w-0 bg-transparent text-sm text-foreground outline-none"
-                    required
-                  />
-                </span>
-              </label>
-              {suggestionsOpen && (
-                <div
-                  id="tf-track-suggestions"
-                  role="listbox"
-                  aria-label="Подсказки треков"
-                  className="relative z-20 mt-1 max-h-64 overflow-y-auto rounded-md border border-white/15 bg-[#17171b] p-1 shadow-xl sm:absolute sm:inset-x-0 sm:top-full"
-                >
-                  {suggestions.map((suggestion, index) => (
-                    <button
-                      key={`${suggestion.artist}:${suggestion.title}:${index}`}
-                      id={`tf-suggestion-${index}`}
-                      type="button"
-                      role="option"
-                      tabIndex={-1}
-                      aria-selected={index === activeSuggestion}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => chooseSuggestion(suggestion)}
-                      className={`block w-full truncate rounded-sm px-3 py-2 text-left text-sm focus-visible:outline-2 focus-visible:outline-white ${index === activeSuggestion ? "bg-white/10 text-white" : "text-foreground hover:bg-white/10"}`}
-                    >
-                      {suggestion.artist} - {suggestion.title}
-                    </button>
-                  ))}
+            {searchMode === "quick" ? (
+              <div ref={suggestionRegionRef} className="relative min-w-0">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Поиск
+                  <span className="mt-1.5 flex h-11 items-center gap-2 rounded-lg border border-white/15 bg-secondary/50 px-3 focus-within:border-primary">
+                    <Search className="h-4 w-4 shrink-0" />
+                    <input
+                      type="text"
+                      placeholder="Исполнитель — название трека"
+                      value={quickQuery}
+                      maxLength={504}
+                      onChange={(event) => {
+                        setQuickQuery(event.target.value);
+                        setSuggestionsSuppressed(false);
+                        setQuickError(false);
+                      }}
+                      onKeyDown={handleSuggestionKeyDown}
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-expanded={suggestionsOpen}
+                      aria-controls={suggestionsOpen ? "tf-track-suggestions" : undefined}
+                      aria-activedescendant={suggestionsOpen && activeSuggestion >= 0 ? `tf-suggestion-${activeSuggestion}` : undefined}
+                      className="h-full w-full min-w-0 bg-transparent text-sm text-foreground outline-none"
+                      required
+                    />
+                  </span>
+                </label>
+                {suggestionList}
+              </div>
+            ) : (
+              <>
+                <label className="min-w-0 text-xs font-medium text-muted-foreground">
+                  Исполнитель
+                  <span className="mt-1.5 flex h-11 items-center gap-2 rounded-lg border border-white/15 bg-secondary/50 px-3 focus-within:border-primary">
+                    <Music2 className="h-4 w-4 shrink-0" />
+                    <input
+                      type="text"
+                      placeholder="Artist name..."
+                      value={artist}
+                      onChange={(e) => {
+                        setSuggestionsSuppressed(false);
+                        setArtist(e.target.value);
+                      }}
+                      className="h-full w-full min-w-0 bg-transparent text-sm text-foreground outline-none"
+                      required
+                    />
+                  </span>
+                </label>
+                <div ref={suggestionRegionRef} className="relative min-w-0">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Название трека
+                    <span className="mt-1.5 flex h-11 items-center gap-2 rounded-lg border border-white/15 bg-secondary/50 px-3 focus-within:border-primary">
+                      <Search className="h-4 w-4 shrink-0" />
+                      <input
+                        type="text"
+                        placeholder="Track title..."
+                        value={title}
+                        onChange={(e) => {
+                          setSuggestionsSuppressed(false);
+                          setTitle(e.target.value);
+                        }}
+                        onKeyDown={handleSuggestionKeyDown}
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-expanded={suggestionsOpen}
+                        aria-controls={suggestionsOpen ? "tf-track-suggestions" : undefined}
+                        aria-activedescendant={suggestionsOpen && activeSuggestion >= 0 ? `tf-suggestion-${activeSuggestion}` : undefined}
+                        className="h-full w-full min-w-0 bg-transparent text-sm text-foreground outline-none"
+                        required
+                      />
+                    </span>
+                  </label>
+                  {suggestionList}
                 </div>
-              )}
-            </div>
+              </>
+            )}
             <button
               type="submit"
               disabled={searchMutation.isPending}
@@ -317,6 +403,11 @@ export default function Home() {
               {searchMutation.isPending ? "Поиск..." : "Найти"}
             </button>
           </form>
+          {searchMode === "quick" && quickError && (
+            <p role="alert" className="mt-2 text-xs text-destructive">
+              Укажите исполнителя и название через тире или выберите подсказку.
+            </p>
+          )}
           <fieldset className="mt-4">
             <legend className="mb-2 text-xs text-muted-foreground">
               Источники

@@ -14,7 +14,7 @@ Spotify and Yandex Music are UX references, not source-of-file contracts. See th
 
 | Journey | TF source state at this audit | Gap and acceptance target |
 | --- | --- | --- |
-| Enter and refine search | Separate artist/title fields, persistent source filters, result cards, and debounced artist/title suggestions selectable by pointer or keyboard | Free one-box query and paste-URL parsing, recent searches, and the same query contract on web/mobile remain open. Suggestions do not guess a full recording or change source selection. |
+| Enter and refine search | Quick one-field entry for an explicit `artist - title` pair or a selected suggestion, exact artist/title mode, persistent source filters and result cards | Arbitrary free-text search, paste-URL parsing, recent searches and the same query contract on web/mobile remain open. An ambiguous string is not silently split into a guessed track. |
 | Identify the right recording | Source, title, artist, duration and score; media-completeness filter | Surface version/source/quality/confidence and a clear full/uncertain/preview state; matching must use expected duration and release/version metadata where available. |
 | Play and continue listening | Play/pause, seek, volume and queue | This branch adds play-next, upcoming reorder, clear-upcoming without stopping current track, and known-duration source admission before stream resolution. Still missing repeat, shuffle, persistent queue, next-track error recovery and durable resume. |
 | Read lyrics | Server endpoint exists but was not exposed in the client | This branch adds on-demand plain/synced lyrics panel with seek-to-line. Still need licensing/display provenance, mismatch reporting and synchronized-line quality monitoring. |
@@ -35,7 +35,7 @@ The web player now passes artist/title for Deezer fallback and a known expected 
 
 1. Completed in this branch: lyrics and queue UX, focused tests and browser/mobile-width check.
 2. Completed in this branch at source-test level: preview filtering at search, queued-download and playback source-duration admission, encoded-file metadata admission before download publication, and account-scoped liked-status lookup on search/recommendation cards. Trusted duration references and actual file integrity remain the highest media correctness risks.
-3. Add free one-box search and clear candidate-quality indicators, then make provider-library -> TF candidate -> TF save/play a single understandable journey; build Apollo-owned playlists.
+3. Add true free-text search to the TF search container, clear candidate-quality indicators, then make provider-library -> TF candidate -> TF save/play a single understandable journey; build Apollo-owned playlists. The current quick field accepts only an explicit pair or a selected suggestion; it does not claim to resolve arbitrary text.
 4. Add repeat/shuffle and persisted queue/resume with account scoping and multi-device conflict rules.
 5. Design true offline library only after source permissions, Platform entitlement/revocation behavior and storage lifecycle are agreed. Android remains deferred per user direction.
 

@@ -119,6 +119,7 @@ function renderHome() {
 async function startSearch() {
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
+  fireEvent.click(screen.getByRole("button", { name: "Точный" }));
   fireEvent.change(screen.getByPlaceholderText("Artist name..."), {
     target: { value: "Artist" },
   });
@@ -130,19 +131,49 @@ async function startSearch() {
   );
   await waitFor(() => expect(searchStarted).toBe(true));
 }
+it("searches an explicit artist-title pair from the quick field", async () => {
+  renderHome();
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  fireEvent.change(screen.getByPlaceholderText("Исполнитель — название трека"), {
+    target: { value: "  Artist — Track - Live  " },
+  });
+  fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
+
+  await waitFor(() => expect(searchStarted).toBe(true));
+  expect(searchBody).toMatchObject({ artist: "Artist", title: "Track - Live", mode: "auto" });
+  await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
+});
+
+it("does not guess an artist from an undelimited quick query", async () => {
+  renderHome();
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  fireEvent.change(screen.getByPlaceholderText("Исполнитель — название трека"), {
+    target: { value: "Unfamiliar song" },
+  });
+  fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
+
+  expect(searchStarted).toBe(false);
+  expect(screen.getByRole("alert").textContent).toContain("исполнителя и название");
+});
 it("chooses a keyboard suggestion and searches with the current source filters", async () => {
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
-  const titleInput = screen.getByPlaceholderText("Track title...");
-  fireEvent.change(titleInput, { target: { value: "Tr" } });
+  fireEvent.click(screen.getByLabelText("SoundCloud"));
+  const queryInput = screen.getByPlaceholderText("Исполнитель — название трека");
+  fireEvent.change(queryInput, { target: { value: "Tr" } });
 
   expect(await screen.findByRole("option", { name: "Artist - Track" })).toBeTruthy();
-  fireEvent.keyDown(titleInput, { key: "ArrowDown" });
-  fireEvent.keyDown(titleInput, { key: "Enter" });
+  fireEvent.keyDown(queryInput, { key: "ArrowDown" });
+  fireEvent.keyDown(queryInput, { key: "Enter" });
 
   await waitFor(() => expect(searchStarted).toBe(true));
-  expect(searchBody).toMatchObject({ artist: "Artist", title: "Track", mode: "auto" });
-  expect(screen.getByPlaceholderText("Artist name...")).toHaveProperty("value", "Artist");
+  expect(searchBody).toMatchObject({
+    artist: "Artist",
+    title: "Track",
+    mode: "manual",
+    sources: ["yt", "bc", "dz"],
+  });
+  expect(queryInput).toHaveProperty("value", "Artist — Track");
   await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
 });
 
@@ -150,7 +181,7 @@ it("does not display a delayed suggestion from the previous account", async () =
   holdSuggestion = true;
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
-  fireEvent.change(screen.getByPlaceholderText("Track title..."), {
+  fireEvent.change(screen.getByPlaceholderText("Исполнитель — название трека"), {
     target: { value: "Tr" },
   });
   await waitFor(() => expect(suggestionStarted).toBe(true));
@@ -180,7 +211,7 @@ it("rendered Home ignores the generated client's delayed A401 after B becomes ac
   await settleSearch(json({ error: "unauthorized" }, 401));
   expect(auth.status).toBe("authenticated");
   expect(auth.session?.accountId).toBe(B);
-  expect(screen.getByPlaceholderText("Artist name...")).toBeTruthy();
+  expect(screen.getByPlaceholderText("Исполнитель — название трека")).toBeTruthy();
 });
 it("rendered Home cannot publish an old success after same-account generation renewal", async () => {
   await startSearch();
