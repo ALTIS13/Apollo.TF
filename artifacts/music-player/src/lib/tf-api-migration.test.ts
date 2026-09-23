@@ -17,6 +17,7 @@ import {
 } from "@/hooks/use-spotify";
 import { useYandexLogout } from "@/hooks/use-yandex";
 import {
+  canUseTfProtectedActivity,
   clearTfSessionSecurityState,
   commitTfSessionSecurityState,
   fetchTfSession,
@@ -53,6 +54,10 @@ function queryWrapper({ children }: { children: ReactNode }) {
   return createElement(QueryClientProvider, { client: queryClient }, children);
 }
 
+function authQueryWrapper({ children }: { children: ReactNode }) {
+  return queryWrapper({ children: createElement(TfAuthProvider, null, children) });
+}
+
 async function loadActiveSession() {
   vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(session));
   commitTfSessionSecurityState(await fetchTfSession());
@@ -74,12 +79,14 @@ describe("TF API migration", () => {
 
   it("loads recommendations without a sessionId query and with credentials", async () => {
     await loadActiveSession();
-    vi.mocked(fetch).mockResolvedValue(jsonResponse({ results: [] }));
+    vi.mocked(fetch).mockImplementation(async (url) =>
+      String(url).endsWith("/auth/me") ? jsonResponse(session) : jsonResponse({ results: [] }),
+    );
 
-    render(createElement(Discover));
+    render(createElement(Discover), { wrapper: authQueryWrapper });
 
-    await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
-    const [url, request] = vi.mocked(fetch).mock.calls[0];
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/tracks/recommendations"))).toHaveLength(1));
+    const [url, request] = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes("/tracks/recommendations"))!;
     const requestUrl = new URL(String(url), window.location.origin);
 
     expect(requestUrl.pathname).toBe("/api/tracks/recommendations");
@@ -175,37 +182,36 @@ describe("TF API migration", () => {
     const nextSession = { ...session, csrfToken: nextToken };
     const user = userEvent.setup();
 
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(firstSession));
-    commitTfSessionSecurityState(await fetchTfSession());
-    vi.mocked(fetch).mockClear();
-    vi.mocked(fetch).mockResolvedValue(jsonResponse({
-      query: "Artist Track",
-      results: [],
-      cached: false,
-    }));
+    vi.mocked(fetch).mockImplementation(async (url) =>
+      String(url).endsWith("/auth/me")
+        ? jsonResponse(firstSession)
+        : jsonResponse({ query: "Artist Track", results: [], cached: false }),
+    );
 
-    render(createElement(Home), { wrapper: queryWrapper });
+    render(createElement(Home), { wrapper: authQueryWrapper });
+    await waitFor(() => expect(canUseTfProtectedActivity()).toBe(true));
+    vi.mocked(fetch).mockClear();
     clearTfSessionSecurityState();
+    await user.click(screen.getByRole("button", { name: "Точный" }));
     await user.type(screen.getByRole("textbox", { name: "Исполнитель" }), "Artist");
-    await user.type(screen.getByRole("textbox", { name: "Название трека" }), "Track");
+    await user.type(screen.getByRole("combobox", { name: "Название трека" }), "Track");
     await user.click(screen.getByRole("button", { name: "Найти" }));
 
     expect(await screen.findByText("Search Failed")).toBeInTheDocument();
-    expect(fetch).not.toHaveBeenCalled();
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/tracks/search"))).toHaveLength(0);
 
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(nextSession));
+    vi.mocked(fetch).mockImplementation(async (url) =>
+      String(url).endsWith("/auth/me")
+        ? jsonResponse(nextSession)
+        : jsonResponse({ query: "Artist Track", results: [], cached: false }),
+    );
     commitTfSessionSecurityState(await fetchTfSession());
     vi.mocked(fetch).mockClear();
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({
-      query: "Artist Track",
-      results: [],
-      cached: false,
-    }));
 
     await user.click(screen.getByRole("button", { name: "Найти" }));
 
-    await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
-    const request = vi.mocked(fetch).mock.calls[0][1];
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/tracks/search"))).toHaveLength(1));
+    const request = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes("/tracks/search"))![1];
     expect(new Headers(request?.headers).get("X-CSRF-Token")).toBe(nextToken);
   });
 
@@ -215,22 +221,28 @@ describe("TF API migration", () => {
     [503, "policy_unavailable", "unavailable"],
   ])("forwards generated search %s %s into the auth channel", async (status, code, eventType) => {
     await loadActiveSession();
-    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: code }), {
-      status,
-      headers: { "Content-Type": "application/json" },
-    }));
+    vi.mocked(fetch).mockImplementation(async (url) =>
+      String(url).endsWith("/auth/me")
+        ? jsonResponse(session)
+        : new Response(JSON.stringify({ error: code }), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
     const events: Array<{ type: string; error: { code: string } }> = [];
     const unsubscribe = subscribeTfAuthSecurityEvents((event) => {
       events.push(event);
     });
     const user = userEvent.setup();
 
-    render(createElement(Home), { wrapper: queryWrapper });
+    render(createElement(Home), { wrapper: authQueryWrapper });
+    await user.click(screen.getByRole("button", { name: "Точный" }));
     await user.type(screen.getByRole("textbox", { name: "Исполнитель" }), "Artist");
-    await user.type(screen.getByRole("textbox", { name: "Название трека" }), "Track");
+    await user.type(screen.getByRole("combobox", { name: "Название трека" }), "Track");
     await user.click(screen.getByRole("button", { name: "Найти" }));
 
     expect(await screen.findByText("Search Failed")).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/tracks/search"))).toHaveLength(1);
     await waitFor(() => expect(events).toHaveLength(1));
     expect(events[0]).toMatchObject({
       type: eventType,
