@@ -60,6 +60,13 @@ export interface TfPolicyDependencies {
 export const TF_ROUTE_POLICIES: readonly TfRoutePolicy[] = Object.freeze([
   {
     method: "POST",
+    path: "/api/tracks/free-search",
+    pattern: /^\/api\/tracks\/free-search$/,
+    capability: "tf.search",
+    live: false,
+  },
+  {
+    method: "POST",
     path: "/api/tracks/search",
     pattern: /^\/api\/tracks\/search$/,
     capability: "tf.search",

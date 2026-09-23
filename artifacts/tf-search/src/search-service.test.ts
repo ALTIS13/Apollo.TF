@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   TfSearchArtistDiscoveryCommand,
   TfSearchCommand,
+  TfSearchFreeCommand,
   TfSearchResult,
   TfSearchSource,
 } from "@workspace/tf-search-contract";
@@ -76,6 +77,44 @@ function providers(
 }
 
 describe("search service", () => {
+  it("searches arbitrary text once per selected provider and scopes cached results", async () => {
+    const calls: Array<{ source: TfSearchSource; query: string; limit: number }> = [];
+    const service = createSearchService({ providers: providers(calls) });
+    const freeCommand: TfSearchFreeCommand = {
+      schemaVersion: 1,
+      requestId,
+      accountId: "11111111-1111-4111-8111-111111111111",
+      query: "Artist Track",
+      mode: "auto",
+      sources: [...allSources],
+      maxResults: 6,
+    };
+
+    const first = await service.freeSearch(freeCommand);
+    const second = await service.freeSearch({ ...freeCommand, requestId: "10000000-0000-4000-8000-000000000002" });
+    const otherAccount = await service.freeSearch({
+      ...freeCommand,
+      requestId: "10000000-0000-4000-8000-000000000003",
+      accountId: "22222222-2222-4222-8222-222222222222",
+    });
+
+    expect(first.query).toBe("Artist Track");
+    expect(first.results[0]?.artist).toBe("Artist");
+    expect(first.cached).toBe(false);
+    expect(second.cached).toBe(true);
+    expect(otherAccount.cached).toBe(false);
+    expect(calls).toEqual([
+      { source: "yt", query: "Artist Track", limit: 6 },
+      { source: "sc", query: "Artist Track", limit: 6 },
+      { source: "bc", query: "Artist Track", limit: 3 },
+      { source: "dz", query: "Artist Track", limit: 3 },
+      { source: "yt", query: "Artist Track", limit: 6 },
+      { source: "sc", query: "Artist Track", limit: 6 },
+      { source: "bc", query: "Artist Track", limit: 3 },
+      { source: "dz", query: "Artist Track", limit: 3 },
+    ]);
+  });
+
   it("does not reveal another account's queries and observes a cached search for its owner", async () => {
     const accountA = "11111111-1111-4111-8111-111111111111";
     const accountB = "22222222-2222-4222-8222-222222222222";

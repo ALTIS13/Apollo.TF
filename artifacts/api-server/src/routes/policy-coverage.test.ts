@@ -45,6 +45,7 @@ function discoverRoutes(router: Router): TfProtectedRoute[] {
 
 function exactInventory(): TfProtectedRoute[] {
   return [
+    { method: "POST", path: "/api/tracks/free-search" },
     { method: "POST", path: "/api/tracks/search" },
     { method: "POST", path: "/api/tracks/batch-search" },
     { method: "GET", path: "/api/tracks/:id/stream" },
@@ -159,7 +160,7 @@ describe("protected route policy coverage", () => {
       ...websocketTicketRoutes,
     ];
 
-    expect(trackRoutes).toHaveLength(15);
+    expect(trackRoutes).toHaveLength(16);
     expect(collectionRoutes).toHaveLength(4);
     expect(spotifyRoutes).toHaveLength(9);
     expect(yandexRoutes).toHaveLength(6);

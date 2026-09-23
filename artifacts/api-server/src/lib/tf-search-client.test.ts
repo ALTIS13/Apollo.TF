@@ -2,6 +2,7 @@ import { createSignedBodySignature } from "@workspace/module-runtime-contract";
 import {
   TF_SEARCH_ARTIST_DISCOVERY_PATH,
   TF_SEARCH_COMMAND_PATH,
+  TF_SEARCH_FREE_COMMAND_PATH,
   TF_SEARCH_SUGGESTIONS_PATH,
   type TfSearchArtistDiscoveryResponse,
   type TfSearchResponse,
@@ -185,6 +186,31 @@ describe("parseTfSearchClientConfig", () => {
 });
 
 describe("HttpTfSearchClient", () => {
+  it("signs the account-scoped free-text command at its own internal path", async () => {
+    const fetchImplementation = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { requestId: string };
+      return new Response(JSON.stringify({ ...searchResponse(body.requestId), query: "night music" }), { status: 200 });
+    });
+    const result = await client(fetchImplementation).freeSearch({
+      accountId: "11111111-1111-4111-8111-111111111111",
+      query: "night music", mode: "auto", sources: ["yt", "sc", "bc", "dz"], maxResults: 20,
+    });
+    expect(result.query).toBe("night music");
+    const [url, init] = fetchImplementation.mock.calls[0]!;
+    expect(String(url)).toBe(`https://search.apollot.ru${TF_SEARCH_FREE_COMMAND_PATH}`);
+    const rawBody = Buffer.from(String(init?.body));
+    expect(JSON.parse(rawBody.toString())).toMatchObject({
+      requestId: FIRST_REQUEST_ID,
+      accountId: "11111111-1111-4111-8111-111111111111",
+      query: "night music",
+    });
+    const headers = new Headers(init?.headers);
+    expect(headers.get("x-apollo-internal-signature")).toBe(createSignedBodySignature({
+      method: "POST", path: TF_SEARCH_FREE_COMMAND_PATH,
+      timestamp: String(Math.floor(NOW_MS / 1_000)), nonce: FIRST_NONCE,
+      rawBody, secret: SECRET,
+    }));
+  });
   it("sends an exact signed search command without browser or account context", async () => {
     const fetchImplementation = vi.fn<typeof fetch>(
       async (input, init) => {

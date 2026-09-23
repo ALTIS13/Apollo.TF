@@ -245,6 +245,7 @@ describe("credentialed TF browser boundary", () => {
 
   it("does not dispatch search when tf.search is absent or revoked", async () => {
     const searchGateway = {
+      freeSearch: vi.fn(),
       search: vi.fn(),
       discoverArtist: vi.fn(),
       suggestions: vi.fn(),

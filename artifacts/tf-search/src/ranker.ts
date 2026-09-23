@@ -28,6 +28,10 @@ export interface SmartBoosts {
   readonly queryText?: string;
 }
 
+export type RankQuery =
+  | { readonly artist: string; readonly title: string }
+  | { readonly text: string };
+
 function normalize(value: string): string {
   return value
     .toLowerCase()
@@ -83,13 +87,20 @@ function artistSimilarity(trackArtist: string, queryArtist: string): number {
 
 function scoreTrack<T extends RankableTrack>(
   track: T,
-  query: { readonly artist: string; readonly title: string },
+  query: RankQuery,
   referenceDuration?: number,
 ): number {
-  const titleScore = titleSimilarity(track.title, query.title);
-  const artistScore = artistSimilarity(track.artist, query.artist);
-  const fullScore = jaccardSimilarity(`${track.artist} ${track.title}`, `${query.artist} ${query.title}`);
-  const nameScore = Math.min(1, titleScore * 0.5 + artistScore * 0.25 + fullScore * 0.25);
+  const nameScore = "text" in query
+    ? Math.max(
+      jaccardSimilarity(`${track.artist} ${track.title}`, query.text),
+      titleSimilarity(track.title, query.text) * 0.85,
+      artistSimilarity(track.artist, query.text) * 0.65,
+    )
+    : Math.min(1,
+      titleSimilarity(track.title, query.title) * 0.5
+      + artistSimilarity(track.artist, query.artist) * 0.25
+      + jaccardSimilarity(`${track.artist} ${track.title}`, `${query.artist} ${query.title}`) * 0.25,
+    );
   const durationScore = referenceDuration && track.duration > 0
     ? Math.max(0, 1 - Math.abs(track.duration - referenceDuration) / 90)
     : 0;
@@ -109,7 +120,7 @@ function smartBoosts(queryText: string): Record<string, number> {
 
 export function rank<T extends RankableTrack>(
   tracks: readonly T[],
-  query: { readonly artist: string; readonly title: string },
+  query: RankQuery,
   referenceDuration?: number,
   smart?: SmartBoosts,
 ): T[] {

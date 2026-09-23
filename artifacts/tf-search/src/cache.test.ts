@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TfSearchResult } from "@workspace/tf-search-contract";
+import type { TfSearchCommand, TfSearchResult } from "@workspace/tf-search-contract";
 import { BoundedSearchCache, type SearchCacheIdentity } from "./cache.js";
 
 const ACCOUNT_ID = "11111111-1111-4111-8111-111111111111";
@@ -20,7 +20,7 @@ function result(index: number): TfSearchResult {
   };
 }
 
-function identity(overrides: Partial<SearchCacheIdentity> = {}): SearchCacheIdentity {
+function identity(overrides: Partial<Omit<TfSearchCommand, "schemaVersion" | "requestId">> = {}): SearchCacheIdentity {
   return {
     artist: "Artist",
     title: "Track",

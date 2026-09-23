@@ -25,6 +25,7 @@ import type {
   DownloadQueueRequest,
   DownloadQueueResponse,
   ErrorResponse,
+  FreeSearchRequest,
   GetTrackDownload403,
   GetTrackDownloadParams,
   GetTrackStreamParams,
@@ -233,6 +234,92 @@ export function useGetTrackSuggestions<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * @summary Search open sources by free text
+ */
+export const getFreeSearchTracksUrl = () => {
+  return `/api/tracks/free-search`;
+};
+
+export const freeSearchTracks = async (
+  freeSearchRequest: FreeSearchRequest,
+  options?: RequestInit,
+): Promise<SearchResponse> => {
+  return customFetch<SearchResponse>(getFreeSearchTracksUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(freeSearchRequest),
+  });
+};
+
+export const getFreeSearchTracksMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof freeSearchTracks>>,
+    TError,
+    { data: BodyType<FreeSearchRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof freeSearchTracks>>,
+  TError,
+  { data: BodyType<FreeSearchRequest> },
+  TContext
+> => {
+  const mutationKey = ["freeSearchTracks"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof freeSearchTracks>>,
+    { data: BodyType<FreeSearchRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return freeSearchTracks(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type FreeSearchTracksMutationResult = NonNullable<
+  Awaited<ReturnType<typeof freeSearchTracks>>
+>;
+export type FreeSearchTracksMutationBody = BodyType<FreeSearchRequest>;
+export type FreeSearchTracksMutationError = ErrorType<void>;
+
+/**
+ * @summary Search open sources by free text
+ */
+export const useFreeSearchTracks = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof freeSearchTracks>>,
+    TError,
+    { data: BodyType<FreeSearchRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof freeSearchTracks>>,
+  TError,
+  { data: BodyType<FreeSearchRequest> },
+  TContext
+> => {
+  return useMutation(getFreeSearchTracksMutationOptions(options));
+};
 
 /**
  * Searches enabled open media sources for variants of a track. Returns all found variants (original, remix, live, cover) without auto-selecting.

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const TF_SEARCH_COMMAND_PATH = "/v1/search";
+export const TF_SEARCH_FREE_COMMAND_PATH = "/v1/free-search";
 export const TF_SEARCH_ARTIST_DISCOVERY_PATH = "/v1/artist-discovery";
 export const TF_SEARCH_SUGGESTIONS_PATH = "/v1/suggestions";
 
@@ -68,6 +69,18 @@ const tfSearchCommandObjectSchema = z
     artist: z.string().trim().min(1).max(200),
     title: z.string().trim().min(1).max(300),
     accountId: canonicalUuidSchema.optional(),
+    mode: z.enum(["auto", "manual"]),
+    sources: tfSearchSourcesSchema,
+    maxResults: z.number().finite().int().min(1).max(40),
+  })
+  .strict();
+
+const tfSearchFreeCommandObjectSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    requestId: canonicalUuidSchema,
+    accountId: canonicalUuidSchema.optional(),
+    query: z.string().trim().min(2).max(500),
     mode: z.enum(["auto", "manual"]),
     sources: tfSearchSourcesSchema,
     maxResults: z.number().finite().int().min(1).max(40),
@@ -151,6 +164,7 @@ export type TfSearchSource = z.infer<typeof tfSearchSourceSchema>;
 export type TfSearchResultSource = z.infer<typeof tfSearchResultSourceSchema>;
 export type TfSearchResult = z.infer<typeof tfSearchResultObjectSchema>;
 export type TfSearchCommand = z.infer<typeof tfSearchCommandObjectSchema>;
+export type TfSearchFreeCommand = z.infer<typeof tfSearchFreeCommandObjectSchema>;
 export type TfSearchResponse = z.infer<typeof tfSearchResponseObjectSchema>;
 export type TfSearchArtistDiscoveryCommand = z.infer<
   typeof tfSearchArtistDiscoveryCommandObjectSchema
@@ -168,6 +182,8 @@ export type TfSearchSuggestionsResponse = z.infer<
 
 export const tfSearchCommandSchema: z.ZodType<TfSearchCommand> =
   tfSearchCommandObjectSchema;
+export const tfSearchFreeCommandSchema: z.ZodType<TfSearchFreeCommand> =
+  tfSearchFreeCommandObjectSchema;
 export const tfSearchResponseSchema: z.ZodType<TfSearchResponse> =
   tfSearchResponseObjectSchema;
 export const tfSearchArtistDiscoveryCommandSchema: z.ZodType<TfSearchArtistDiscoveryCommand> =

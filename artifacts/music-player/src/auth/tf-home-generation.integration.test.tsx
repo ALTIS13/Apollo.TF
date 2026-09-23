@@ -21,6 +21,7 @@ let auth: TfAuthContextValue;
 let finishSearch: (response: Response) => void;
 let searchStarted: boolean;
 let searchBody: unknown;
+let searchPath: string;
 let suggestionStarted: boolean;
 let holdSuggestion: boolean;
 let finishSuggestion: (response: Response) => void;
@@ -50,9 +51,11 @@ class ControlledAudio extends EventTarget {
 }
 beforeEach(() => {
   clearTfSessionSecurityState();
+  localStorage.removeItem("tf_source_prefs");
   identity = A;
   searchStarted = false;
   searchBody = null;
+  searchPath = "";
   suggestionStarted = false;
   holdSuggestion = false;
   vi.stubGlobal("Audio", ControlledAudio);
@@ -69,8 +72,9 @@ beforeEach(() => {
       response.headers.set("Apollo-TF-Session-Profile", "renewal-v1");
       return response;
     }
-    if (path.endsWith("/search")) {
+    if (path.endsWith("/search") || path.endsWith("/free-search")) {
       searchStarted = true;
+      searchPath = path;
       searchBody = JSON.parse(String(init?.body));
       return new Promise<Response>((resolve) => {
         finishSearch = resolve;
@@ -134,7 +138,7 @@ async function startSearch() {
 it("searches an explicit artist-title pair from the quick field", async () => {
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
-  fireEvent.change(screen.getByPlaceholderText("Исполнитель — название трека"), {
+  fireEvent.change(screen.getByPlaceholderText("Трек или исполнитель"), {
     target: { value: "  Artist — Track - Live  " },
   });
   fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
@@ -144,22 +148,28 @@ it("searches an explicit artist-title pair from the quick field", async () => {
   await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
 });
 
-it("does not guess an artist from an undelimited quick query", async () => {
+it("searches an undelimited quick query without guessing artist and title", async () => {
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
-  fireEvent.change(screen.getByPlaceholderText("Исполнитель — название трека"), {
+  fireEvent.click(screen.getByLabelText("SoundCloud"));
+  fireEvent.change(screen.getByPlaceholderText("Трек или исполнитель"), {
     target: { value: "Unfamiliar song" },
   });
   fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
 
-  expect(searchStarted).toBe(false);
-  expect(screen.getByRole("alert").textContent).toContain("исполнителя и название");
+  await waitFor(() => expect(searchStarted).toBe(true));
+  expect(searchBody).toMatchObject({
+    query: "Unfamiliar song", mode: "manual", sources: ["yt", "bc", "dz"],
+  });
+  expect(searchPath).toBe("/api/tracks/free-search");
+  expect(searchBody).not.toHaveProperty("artist");
+  await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
 });
 it("chooses a keyboard suggestion and searches with the current source filters", async () => {
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
   fireEvent.click(screen.getByLabelText("SoundCloud"));
-  const queryInput = screen.getByPlaceholderText("Исполнитель — название трека");
+  const queryInput = screen.getByPlaceholderText("Трек или исполнитель");
   fireEvent.change(queryInput, { target: { value: "Tr" } });
 
   expect(await screen.findByRole("option", { name: "Artist - Track" })).toBeTruthy();
@@ -181,7 +191,7 @@ it("does not display a delayed suggestion from the previous account", async () =
   holdSuggestion = true;
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
-  fireEvent.change(screen.getByPlaceholderText("Исполнитель — название трека"), {
+  fireEvent.change(screen.getByPlaceholderText("Трек или исполнитель"), {
     target: { value: "Tr" },
   });
   await waitFor(() => expect(suggestionStarted).toBe(true));
@@ -211,7 +221,7 @@ it("rendered Home ignores the generated client's delayed A401 after B becomes ac
   await settleSearch(json({ error: "unauthorized" }, 401));
   expect(auth.status).toBe("authenticated");
   expect(auth.session?.accountId).toBe(B);
-  expect(screen.getByPlaceholderText("Исполнитель — название трека")).toBeTruthy();
+  expect(screen.getByPlaceholderText("Трек или исполнитель")).toBeTruthy();
 });
 it("rendered Home cannot publish an old success after same-account generation renewal", async () => {
   await startSearch();

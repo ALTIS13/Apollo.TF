@@ -2,6 +2,7 @@ import type {
   TfSearchArtistDiscoveryCommand,
   TfSearchArtistDiscoveryResponse,
   TfSearchCommand,
+  TfSearchFreeCommand,
   TfSearchResponse,
   TfSearchResult,
   TfSearchSource,
@@ -10,7 +11,7 @@ import type {
 } from "@workspace/tf-search-contract";
 import { BoundedSearchCache, type SearchCacheIdentity } from "./cache.js";
 import { filterCompleteMedia } from "./media-completeness.js";
-import { rank } from "./ranker.js";
+import { rank, type RankQuery } from "./ranker.js";
 
 export type InternalTrack = TfSearchResult;
 
@@ -21,6 +22,7 @@ export interface SearchProvider {
 
 export interface SearchService {
   search(command: TfSearchCommand): Promise<TfSearchResponse>;
+  freeSearch(command: TfSearchFreeCommand): Promise<TfSearchResponse>;
   discoverArtist(
     command: TfSearchArtistDiscoveryCommand,
   ): Promise<TfSearchArtistDiscoveryResponse>;
@@ -86,18 +88,21 @@ function createParserRollingTelemetry(): ParserRollingTelemetry {
   };
 }
 
-function cacheIdentity(command: TfSearchCommand): SearchCacheIdentity {
-  return {
+type SearchInput = TfSearchCommand | TfSearchFreeCommand;
+
+function cacheIdentity(command: SearchInput): SearchCacheIdentity {
+  const common = {
     accountId: command.accountId,
-    artist: command.artist,
-    title: command.title,
     mode: command.mode,
     sources: command.sources,
     maxResults: command.maxResults,
   };
+  return "query" in command
+    ? { ...common, query: command.query }
+    : { ...common, artist: command.artist, title: command.title };
 }
 
-function isCacheable(command: TfSearchCommand): boolean {
+function isCacheable(command: SearchInput): boolean {
   return command.maxResults <= 20
     && command.sources.length === ALL_SOURCES.length
     && ALL_SOURCES.every((source) => command.sources.includes(source));
@@ -145,14 +150,28 @@ class SearchServiceImpl implements RuntimeSearchService {
   }
 
   async search(command: TfSearchCommand): Promise<TfSearchResponse> {
+    return this.executeSearch(command, `${command.artist} ${command.title}`, {
+      artist: command.artist,
+      title: command.title,
+    });
+  }
+
+  async freeSearch(command: TfSearchFreeCommand): Promise<TfSearchResponse> {
+    return this.executeSearch(command, command.query, { text: command.query });
+  }
+
+  private async executeSearch(
+    command: SearchInput,
+    query: string,
+    rankQuery: RankQuery,
+  ): Promise<TfSearchResponse> {
     this.recordRequest();
-    const query = `${command.artist} ${command.title}`;
     const cacheable = isCacheable(command);
 
     if (cacheable) {
       const cached = this.cache.get(cacheIdentity(command));
       if (cached) {
-        if (command.accountId && cached.length > 0) {
+        if (command.accountId && "artist" in command && cached.length > 0) {
           this.cache.observe(command.accountId, command.artist, command.title);
         }
         return {
@@ -204,12 +223,12 @@ class SearchServiceImpl implements RuntimeSearchService {
         rejection.count,
       );
     }
-    const ranked = rank(completeMedia.accepted, { artist: command.artist, title: command.title }, medianOriginalDuration(completeMedia.accepted), {
+    const ranked = rank(completeMedia.accepted, rankQuery, medianOriginalDuration(completeMedia.accepted), {
       mode: command.mode,
       queryText: query,
     }).slice(0, command.maxResults);
 
-    if (command.accountId && ranked.length > 0) {
+    if (command.accountId && "artist" in command && ranked.length > 0) {
       this.cache.observe(command.accountId, command.artist, command.title);
     }
 

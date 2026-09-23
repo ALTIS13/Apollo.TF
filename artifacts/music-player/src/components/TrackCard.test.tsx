@@ -93,6 +93,32 @@ it("queues a search result as next without starting playback or a download", () 
   expect(queueTrackDownloads).not.toHaveBeenCalled();
 });
 
+it("shows candidate metadata without presenting it as verified file quality", () => {
+  const { rerender } = render(
+    <TrackCard
+      track={{ ...track, score: 742, quality: ["128", "320"] }}
+      index={0}
+      compact
+    />,
+  );
+
+  expect(screen.getByText("3:00")).toBeInTheDocument();
+  expect(screen.getByText("Оригинал")).toBeInTheDocument();
+  expect(screen.getByText("youtube")).toBeInTheDocument();
+  expect(screen.getByText("Рейтинг поиска: 742")).toBeInTheDocument();
+  expect(screen.getByText("Метки битрейта: 128, 320 кбит/с · файл не проверен")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Скачать" })).toBeInTheDocument();
+
+  rerender(<TrackCard track={{ ...track, duration: 0, quality: [] }} index={0} />);
+  expect(screen.getByText("Длительность неизвестна")).toBeInTheDocument();
+  expect(screen.getByText("Битрейт не указан")).toBeInTheDocument();
+  expect(screen.queryByText("0:00")).not.toBeInTheDocument();
+
+  rerender(<TrackCard track={{ ...track, type: "live", quality: ["lossless"] }} index={0} />);
+  expect(screen.getByText("Лайв")).toBeInTheDocument();
+  expect(screen.getByText("Метки источника: lossless · файл не проверен")).toBeInTheDocument();
+});
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();

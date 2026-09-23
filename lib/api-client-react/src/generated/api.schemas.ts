@@ -54,6 +54,43 @@ export interface TrackResult {
   score: number;
 }
 
+export type FreeSearchRequestMode =
+  (typeof FreeSearchRequestMode)[keyof typeof FreeSearchRequestMode];
+
+export const FreeSearchRequestMode = {
+  auto: "auto",
+  manual: "manual",
+} as const;
+
+export type FreeSearchRequestSourcesItem =
+  (typeof FreeSearchRequestSourcesItem)[keyof typeof FreeSearchRequestSourcesItem];
+
+export const FreeSearchRequestSourcesItem = {
+  yt: "yt",
+  sc: "sc",
+  bc: "bc",
+  dz: "dz",
+} as const;
+
+export interface FreeSearchRequest {
+  /**
+   * @minLength 2
+   * @maxLength 500
+   */
+  query: string;
+  mode?: FreeSearchRequestMode;
+  /**
+   * @minItems 1
+   * @maxItems 4
+   */
+  sources?: FreeSearchRequestSourcesItem[];
+  /**
+   * @minimum 1
+   * @maximum 40
+   */
+  maxResults?: number;
+}
+
 export type SearchRequestMode =
   (typeof SearchRequestMode)[keyof typeof SearchRequestMode];
 

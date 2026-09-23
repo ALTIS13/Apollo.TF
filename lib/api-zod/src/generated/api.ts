@@ -42,6 +42,70 @@ export const GetTrackSuggestionsResponse = zod.object({
 });
 
 /**
+ * @summary Search open sources by free text
+ */
+export const freeSearchTracksBodyQueryMin = 2;
+export const freeSearchTracksBodyQueryMax = 500;
+
+export const freeSearchTracksBodySourcesMax = 4;
+
+export const freeSearchTracksBodyMaxResultsMax = 40;
+
+export const FreeSearchTracksBody = zod.object({
+  query: zod
+    .string()
+    .min(freeSearchTracksBodyQueryMin)
+    .max(freeSearchTracksBodyQueryMax),
+  mode: zod.enum(["auto", "manual"]).optional(),
+  sources: zod
+    .array(zod.enum(["yt", "sc", "bc", "dz"]))
+    .min(1)
+    .max(freeSearchTracksBodySourcesMax)
+    .optional(),
+  maxResults: zod
+    .number()
+    .min(1)
+    .max(freeSearchTracksBodyMaxResultsMax)
+    .optional(),
+});
+
+export const freeSearchTracksResponseSourcesMax = 4;
+
+export const FreeSearchTracksResponse = zod.object({
+  query: zod.string().describe("The normalized search query used"),
+  results: zod.array(
+    zod.object({
+      id: zod
+        .string()
+        .describe(
+          "Unique track ID. Format: yt_<base64url(https:\/\/www.youtube.com\/watch?v=ID)> for YouTube or sc_<base64url(permalink_url)> for SoundCloud. Pass this ID to \/stream or \/download endpoints.",
+        ),
+      title: zod.string(),
+      artist: zod.string(),
+      type: zod.enum(["original", "remix", "live", "cover"]),
+      duration: zod.number().describe("Duration in seconds"),
+      source: zod.enum(["youtube", "soundcloud", "bandcamp", "deezer"]),
+      thumbnailUrl: zod.string().nullish(),
+      quality: zod
+        .array(zod.string())
+        .describe('Available quality options (e.g. [\"128\", \"320\"])'),
+      viewCount: zod.number().nullish(),
+      score: zod.number().describe("Ranking score (higher is better match)"),
+    }),
+  ),
+  cached: zod.boolean().describe("Whether results came from cache"),
+  sources: zod
+    .array(zod.enum(["yt", "sc", "bc", "dz"]))
+    .min(1)
+    .max(freeSearchTracksResponseSourcesMax),
+  fallbackAvailable: zod
+    .boolean()
+    .describe(
+      "Whether broadening a manual source selection may return results",
+    ),
+});
+
+/**
  * Searches enabled open media sources for variants of a track. Returns all found variants (original, remix, live, cover) without auto-selecting.
  * @summary Search for track variants
  */

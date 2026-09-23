@@ -7,7 +7,7 @@ import {
   spawnAudioDownload,
   type AudioQuality,
 } from "../lib/ytdlp.js";
-import { SearchTracksBody } from "@workspace/api-zod";
+import { FreeSearchTracksBody, SearchTracksBody } from "@workspace/api-zod";
 import { getCachedStreamUrl, setCachedStreamUrl } from "../lib/stream-cache.js";
 import {
   cancelDownloadJob,
@@ -147,6 +147,7 @@ function unavailableGateway(): TfSearchGateway {
   };
   return {
     search: unavailable,
+    freeSearch: unavailable,
     discoverArtist: unavailable,
     suggestions: unavailable,
   };
@@ -366,6 +367,38 @@ export function createTracksRouter(
         mode: mode ?? "auto",
         sources: enabledSources,
         maxResults,
+      });
+      res.json({
+        query: response.query,
+        results: response.results.map(publicSearchResult),
+        cached: response.cached,
+        sources: response.sources,
+        fallbackAvailable: response.fallbackAvailable,
+      });
+    } catch {
+      res.status(503).json({ error: "search_unavailable" });
+    }
+  });
+
+  router.post("/tracks/free-search", async (req, res) => {
+    const parsed = FreeSearchTracksBody.safeParse(req.body);
+    const query = parsed.success ? parsed.data.query.trim() : "";
+    if (!parsed.success || query.length < 2 || hasLegacyInvalidSearchOptions(req.body)) {
+      res.status(400).json({ error: "bad_request", message: "invalid search query or options" });
+      return;
+    }
+    const { mode, sources } = parsed.data;
+    const enabledSources: TfSearchSource[] =
+      mode === "manual" && sources && sources.length > 0
+        ? sources
+        : [...ALL_SEARCH_SOURCES];
+    try {
+      const response = await routeDependencies.searchGateway.freeSearch({
+        accountId: req.tfPrincipal!.accountId,
+        query,
+        mode: mode ?? "auto",
+        sources: enabledSources,
+        maxResults: parsed.data.maxResults ?? 20,
       });
       res.json({
         query: response.query,

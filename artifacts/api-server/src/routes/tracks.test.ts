@@ -157,6 +157,7 @@ function artistDiscoveryResponse(
 function searchGateway() {
   return {
     search: vi.fn().mockResolvedValue(searchResponse()),
+    freeSearch: vi.fn().mockResolvedValue(searchResponse()),
     discoverArtist: vi.fn().mockResolvedValue(artistDiscoveryResponse()),
     suggestions: vi.fn().mockResolvedValue({
       schemaVersion: 1,
@@ -250,6 +251,26 @@ afterEach(async () => {
 });
 
 describe("TF search module routing", () => {
+  it("passes free text with account scope and strips internal result URLs", async () => {
+    const gateway = searchGateway();
+    gateway.freeSearch.mockResolvedValue({ ...searchResponse(), query: "late night music" });
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+    const result = await fetch(`${baseUrl}/tracks/free-search`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "  late night music  ", mode: "manual", sources: ["yt"] }),
+    });
+    expect(result.status).toBe(200);
+    expect(gateway.freeSearch).toHaveBeenCalledWith({
+      accountId: ACCOUNT_ID, query: "late night music", mode: "manual", sources: ["yt"], maxResults: 20,
+    });
+    expect(JSON.stringify(await result.json())).not.toContain("sourceUrl");
+    const invalid = await fetch(`${baseUrl}/tracks/free-search`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "x" }),
+    });
+    expect(invalid.status).toBe(400);
+  });
   it("preserves the public search response while stripping module-only fields", async () => {
     const gateway = searchGateway();
     gateway.search.mockResolvedValue(

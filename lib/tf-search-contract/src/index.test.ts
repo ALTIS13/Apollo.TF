@@ -3,6 +3,7 @@ import {
   tfSearchArtistDiscoveryCommandSchema,
   tfSearchArtistDiscoveryResponseSchema,
   tfSearchCommandSchema,
+  tfSearchFreeCommandSchema,
   tfSearchResponseSchema,
   tfSearchResultSourceSchema,
   tfSearchSourceSchema,
@@ -72,6 +73,21 @@ describe("tf search contract", () => {
     expect(tfSearchCommandSchema.safeParse({ ...command, artist: " Artist " }).success).toBe(true);
     expect(tfSearchCommandSchema.safeParse({ ...command, artist: " ".repeat(201) }).success).toBe(false);
     expect(tfSearchCommandSchema.safeParse({ ...command, title: " ".repeat(301) }).success).toBe(false);
+  });
+
+  it("accepts only bounded free-text search commands", () => {
+    const freeCommand = {
+      schemaVersion: 1,
+      requestId,
+      accountId: requestId,
+      query: "Artist Track",
+      mode: "auto",
+      sources: ["yt", "sc"],
+      maxResults: 20,
+    };
+    expect(tfSearchFreeCommandSchema.parse(freeCommand)).toEqual(freeCommand);
+    expect(tfSearchFreeCommandSchema.safeParse({ ...freeCommand, query: " " }).success).toBe(false);
+    expect(tfSearchFreeCommandSchema.safeParse({ ...freeCommand, artist: "Artist" }).success).toBe(false);
   });
 
   it("accepts a strict bounded response with internal source URLs", () => {

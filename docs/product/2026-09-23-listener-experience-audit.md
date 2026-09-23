@@ -14,8 +14,8 @@ Spotify and Yandex Music are UX references, not source-of-file contracts. See th
 
 | Journey | TF source state at this audit | Gap and acceptance target |
 | --- | --- | --- |
-| Enter and refine search | Quick one-field entry for an explicit `artist - title` pair or a selected suggestion, exact artist/title mode, persistent source filters and result cards | Arbitrary free-text search, paste-URL parsing, recent searches and the same query contract on web/mobile remain open. An ambiguous string is not silently split into a guessed track. |
-| Identify the right recording | Source, title, artist, duration and score; media-completeness filter | Surface version/source/quality/confidence and a clear full/uncertain/preview state; matching must use expected duration and release/version metadata where available. |
+| Enter and refine search | Quick one-field entry accepts arbitrary text, an explicit `artist - title` pair or a selected suggestion; exact artist/title mode, persistent source filters and result cards | Paste-URL parsing, durable recent searches and the same query contract on mobile remain open. An ambiguous string is never silently split into a guessed track. |
+| Identify the right recording | Source, title, artist, duration, ranking and source-provided quality labels; media-completeness filter | Show a clear full/uncertain/preview state; matching must use trusted expected duration and release/version metadata where available. Source labels are not proof of encoded-file quality. |
 | Play and continue listening | Play/pause, seek, volume and queue | This branch adds play-next, upcoming reorder, clear-upcoming without stopping current track, and known-duration source admission before stream resolution. Still missing repeat, shuffle, persistent queue, next-track error recovery and durable resume. |
 | Read lyrics | Server endpoint exists but was not exposed in the client | This branch adds on-demand plain/synced lyrics panel with seek-to-line. Still need licensing/display provenance, mismatch reporting and synchronized-line quality monitoring. |
 | Save and organize | TF liked collection backed by account API; Spotify/Yandex liked and playlists browsable | This branch adds account-scoped liked-status lookup and save/remove on search and recommendation cards. Provider item -> candidate -> save flow still needs fewer steps; Apollo-created playlists, reorder and batch actions are absent. |
@@ -25,7 +25,9 @@ Spotify and Yandex Music are UX references, not source-of-file contracts. See th
 
 Search suggestions are now derived only from successful searches observed for the current Platform account. The signed API-to-search command carries that account ID; the browser does not supply it. The result cache is also account-keyed for interactive searches, so its `cached` flag does not disclose another account's prior query. The suggestion index is bounded, expires after one hour, and is in-memory only; durable recent searches remain a separate, unimplemented feature.
 
-Rollout order for this additive internal command field: update the TF search container first, then the API. A new search container accepts an older API command without `accountId` but returns no suggestions; the new API requires the new search container to accept the account-scoped command. Do not deploy the API first.
+Free-text quick search uses a separate versioned signed internal command and the same TF search providers, preview filter, ranker, account-scoped cache and public `tf.search` policy as exact search. Explicit pairs and selected suggestions retain the exact-search path. Only exact pairs seed account suggestions; free-text input does not invent an artist/title pair. Candidate cards expose source/type/duration and label the score as search ranking and bitrate values as unverified source labels.
+
+Rollout order for additive internal commands: update the TF search container first, then the API, then the web client. The older search container does not serve `/v1/free-search`; deploying the API or web client first would leave quick free-text search unavailable. An updated search container accepts older exact commands without `accountId`, but returns no account suggestions for those requests. No deployment has been performed in this branch.
 
 ## Preview/full-track quality gate
 
@@ -39,7 +41,7 @@ The web player now passes artist/title for Deezer fallback and a known expected 
 
 1. Completed in this branch: lyrics and queue UX, focused tests and browser/mobile-width check.
 2. Completed in this branch at source-test level: preview filtering at search, queued-download and playback source-duration admission, encoded-file metadata admission before download publication, and account-scoped liked-status lookup on search/recommendation cards. Trusted duration references and actual file integrity remain the highest media correctness risks.
-3. Add true free-text search to the TF search container, clear candidate-quality indicators, then make provider-library -> TF candidate -> TF save/play a single understandable journey; build Apollo-owned playlists. The current quick field accepts only an explicit pair or a selected suggestion; it does not claim to resolve arbitrary text.
+3. Completed in this branch at source-test level: true account-scoped free-text search and more honest candidate metadata. Next, make provider-library -> TF candidate -> TF save/play a single understandable journey; build Apollo-owned playlists. URL parsing and durable recent searches remain open.
 4. Add repeat/shuffle and persisted queue/resume with account scoping and multi-device conflict rules.
 5. Design true offline library only after source permissions, Platform entitlement/revocation behavior and storage lifecycle are agreed. Android remains deferred per user direction.
 

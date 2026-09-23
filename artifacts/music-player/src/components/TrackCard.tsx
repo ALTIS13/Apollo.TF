@@ -127,6 +127,19 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
     return "default";
   };
 
+  const typeLabels: Record<string, string> = {
+    original: "Оригинал",
+    remix: "Ремикс",
+    live: "Лайв",
+    cover: "Кавер",
+  };
+  const bitrateLabels = track.quality.every((value) => /^\d+$/.test(value));
+  const shownQuality = track.quality.slice(0, 3).join(", ");
+  const remainingQuality = track.quality.length - 3;
+  const qualityText = track.quality.length === 0
+    ? "Битрейт не указан"
+    : `${bitrateLabels ? "Метки битрейта" : "Метки источника"}: ${shownQuality}${bitrateLabels ? " кбит/с" : ""}${remainingQuality > 0 ? ` и ещё ${remainingQuality}` : ""} · файл не проверен`;
+
   return (
     <motion.div
       initial={reduceMotion ? false : { opacity: 0, y: 20 }}
@@ -180,11 +193,11 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
             <h3 className={`${compact ? "text-sm font-semibold tracking-normal" : "text-lg font-bold"} text-foreground truncate group-hover:text-primary transition-colors`}>
               {track.title}
             </h3>
-            <p className={`${compact ? "text-xs" : ""} text-muted-foreground flex items-center gap-2 mt-1`}>
-              <span className="truncate">{track.artist}</span>
+            <p className={`${compact ? "text-xs" : ""} text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 mt-1`}>
+              <span className="min-w-0 truncate">{track.artist}</span>
               <span className="w-1 h-1 rounded-full bg-muted-foreground/30 inline-block" />
               <span className="shrink-0 font-mono text-xs tracking-normal">
-                {formatDuration(track.duration)}
+                {track.duration > 0 ? formatDuration(track.duration) : "Длительность неизвестна"}
               </span>
             </p>
           </div>
@@ -193,7 +206,7 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
               variant={getVariant(track.type)}
               className={compact ? "capitalize px-2 py-0 text-[10px]" : "capitalize px-3 py-1"}
             >
-              {track.type}
+              {typeLabels[track.type] ?? track.type}
             </Badge>
             <Badge
               variant={getSourceVariant(track.source)}
@@ -202,6 +215,12 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
               {track.source}
             </Badge>
           </div>
+        </div>
+        <div className="mt-2 flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span title="Поисковый рейтинг, не оценка качества записи">
+            Рейтинг поиска: {track.score}
+          </span>
+          <span className="min-w-0 break-words" title={qualityText}>{qualityText}</span>
         </div>
       </div>
 

@@ -11,18 +11,19 @@ const MAX_RESULTS_PER_ENTRY = 40;
 const MAX_SUGGESTIONS = 5;
 const SOURCE_ORDER: readonly TfSearchSource[] = ["yt", "sc", "bc", "dz"];
 
-export interface SearchCacheIdentity {
+interface SearchCacheOptions {
   readonly accountId?: string;
-  readonly artist: string;
-  readonly title: string;
   readonly mode: TfSearchCommand["mode"];
   readonly sources: readonly TfSearchSource[];
   readonly maxResults: number;
 }
 
+export type SearchCacheIdentity = SearchCacheOptions & (
+  | { readonly artist: string; readonly title: string; readonly query?: never }
+  | { readonly query: string; readonly artist?: never; readonly title?: never }
+);
+
 interface CacheEntry {
-  readonly artist: string;
-  readonly title: string;
   readonly expiresAt: number;
   readonly results: readonly TfSearchResult[];
 }
@@ -42,8 +43,9 @@ function keyFor(identity: SearchCacheIdentity): string {
   const canonicalSources = SOURCE_ORDER.filter((source) => identity.sources.includes(source));
   return JSON.stringify([
     identity.accountId ?? null,
-    normalize(identity.artist),
-    normalize(identity.title),
+    identity.query === undefined ? "pair" : "free",
+    normalize(identity.query ?? identity.artist ?? ""),
+    normalize(identity.title ?? ""),
     identity.mode,
     canonicalSources,
     identity.maxResults,
@@ -89,8 +91,6 @@ export class BoundedSearchCache {
 
   set(identity: SearchCacheIdentity, results: readonly TfSearchResult[]): void {
     const key = keyFor(identity);
-    const normalizedArtist = normalize(identity.artist);
-    const normalizedTitle = normalize(identity.title);
     this.removeExpired();
     this.entries.delete(key);
 
@@ -101,8 +101,6 @@ export class BoundedSearchCache {
     }
 
     this.entries.set(key, {
-      artist: normalizedArtist,
-      title: normalizedTitle,
       expiresAt: this.now() + this.ttlMs,
       results: results.slice(0, MAX_RESULTS_PER_ENTRY),
     });

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { getTrackSuggestions, searchTracks } from "@workspace/api-client-react";
-import type { SearchRequest, TrackSuggestionsResponse, TrackType } from "@workspace/api-client-react";
+import { freeSearchTracks, getTrackSuggestions, searchTracks } from "@workspace/api-client-react";
+import type { FreeSearchRequest, SearchRequest, TrackSuggestionsResponse, TrackType } from "@workspace/api-client-react";
 import { TrackCard } from "@/components/TrackCard";
 import { SaveLikedTrackButton } from "@/components/LikedCollection";
 import { useLikedTrackLookup } from "@/hooks/use-liked-collection";
@@ -103,13 +103,12 @@ export default function Home() {
   }, []);
 
   const searchMutation = useMutation({
-    mutationFn: async (data: SearchRequest) => {
+    mutationFn: async (data: SearchRequest | FreeSearchRequest) => {
       const generation = captureTfSecurityGeneration();
       try {
-        const result = await searchTracks(
-          data,
-          tfRequestInit({ method: "POST" }),
-        );
+        const result = "query" in data
+          ? await freeSearchTracks(data, tfRequestInit({ method: "POST" }))
+          : await searchTracks(data, tfRequestInit({ method: "POST" }));
         if (!isCurrentTfSecurityGeneration(generation)) {
           throw new TfApiError(
             0,
@@ -136,6 +135,13 @@ export default function Home() {
       return { artist: a, title: t, mode: "manual", sources: enabledSources };
     }
     return { artist: a, title: t, mode: "auto" };
+  }
+
+  function buildFreeSearchData(query: string): FreeSearchRequest {
+    const sources = sourceMode === "manual" && enabledSources.length < 4
+      ? enabledSources
+      : undefined;
+    return { query, mode: sources ? "manual" : "auto", sources };
   }
 
   useEffect(() => {
@@ -229,8 +235,20 @@ export default function Home() {
       : artist.trim() && title.trim()
         ? { artist: artist.trim(), title: title.trim() }
         : null;
+    if (!pair && searchMode === "quick") {
+      const query = quickQuery.trim();
+      if (query.length < 2 || query.length > 500) {
+        setQuickError(true);
+        return;
+      }
+      setQuickError(false);
+      setSuggestionsSuppressed(true);
+      setSuggestionsOpen(false);
+      setHasSearched(true);
+      searchMutation.mutate(buildFreeSearchData(query));
+      return;
+    }
     if (!pair) {
-      if (searchMode === "quick") setQuickError(true);
       return;
     }
 
@@ -322,9 +340,9 @@ export default function Home() {
                     <Search className="h-4 w-4 shrink-0" />
                     <input
                       type="text"
-                      placeholder="Исполнитель — название трека"
+                      placeholder="Трек или исполнитель"
                       value={quickQuery}
-                      maxLength={504}
+                      maxLength={500}
                       onChange={(event) => {
                         setQuickQuery(event.target.value);
                         setSuggestionsSuppressed(false);
@@ -405,7 +423,7 @@ export default function Home() {
           </form>
           {searchMode === "quick" && quickError && (
             <p role="alert" className="mt-2 text-xs text-destructive">
-              Укажите исполнителя и название через тире или выберите подсказку.
+              Введите не менее двух символов для поиска.
             </p>
           )}
           <fieldset className="mt-4">
