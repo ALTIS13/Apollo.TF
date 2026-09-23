@@ -18,19 +18,26 @@ import { Button } from "@/components/ui/button";
 import { useTfAuth } from "@/auth/tf-auth";
 import {
   useLikedCollection,
+  useRemoveLikedTrack,
   useSaveLikedTrack,
 } from "@/hooks/use-liked-collection";
 import { usePlayer } from "@/hooks/use-player";
 import { useToast } from "@/hooks/use-toast";
 import { formatDuration } from "@/lib/utils";
+import { useEffect, useState } from "react";
 
-export function SaveLikedTrackButton({ track }: { track: TrackResult }) {
+export function SaveLikedTrackButton({ track, saved, checking = false }: {
+  track: TrackResult;
+  saved: boolean;
+  checking?: boolean;
+}) {
   const save = useSaveLikedTrack();
+  const remove = useRemoveLikedTrack();
   const { hasEntitlement } = useTfAuth();
   const { toast } = useToast();
-  const label = save.isSuccess
-    ? "Сохранено в избранном"
-    : "Сохранить в избранное";
+  const [locallySaved, setLocallySaved] = useState(saved);
+  useEffect(() => setLocallySaved(saved), [saved]);
+  const label = locallySaved ? "Удалить из избранного" : "Сохранить в избранное";
   return (
     <Button
       type="button"
@@ -38,11 +45,23 @@ export function SaveLikedTrackButton({ track }: { track: TrackResult }) {
       variant="ghost"
       title={label}
       aria-label={label}
+      aria-pressed={locallySaved}
       className="h-9 w-9 rounded-lg text-[#a78bfa] hover:bg-white/5"
       disabled={
-        !hasEntitlement("tf.collections") || save.isPending || save.isSuccess
+        !hasEntitlement("tf.collections") || checking || save.isPending || remove.isPending
       }
-      onClick={() =>
+      onClick={() => {
+        if (locallySaved) {
+          remove.mutate(track.id, {
+            onSuccess: () => setLocallySaved(false),
+            onError: () => toast({
+              title: "Не удалось удалить трек",
+              description: "Повторите попытку позже.",
+              variant: "destructive",
+            }),
+          });
+          return;
+        }
         save.mutate(
           {
             trackId: track.id,
@@ -53,6 +72,7 @@ export function SaveLikedTrackButton({ track }: { track: TrackResult }) {
               track.duration > 0 ? Math.round(track.duration) : null,
           },
           {
+            onSuccess: () => setLocallySaved(true),
             onError: () =>
               toast({
                 title: "Не удалось сохранить трек",
@@ -60,13 +80,13 @@ export function SaveLikedTrackButton({ track }: { track: TrackResult }) {
                 variant: "destructive",
               }),
           },
-        )
-      }
+        );
+      }}
     >
-      {save.isPending ? (
+      {checking || save.isPending || remove.isPending ? (
         <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
       ) : (
-        <Heart className={`h-4 w-4 ${save.isSuccess ? "fill-current" : ""}`} />
+        <Heart className={`h-4 w-4 ${locallySaved ? "fill-current" : ""}`} />
       )}
     </Button>
   );

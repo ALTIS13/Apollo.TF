@@ -35,6 +35,16 @@ describe("media completeness gate", () => {
       "provider_preview_url",
     ],
     [
+      "opaque Deezer preview CDN URL",
+      track({
+        id: "dz_opaque_preview",
+        source: "deezer",
+        sourceUrl: "https://e-cdns-proxy.dzcdn.net/stream/c-a-opaque.mp3",
+      }),
+      210,
+      "provider_preview_url",
+    ],
+    [
       "title marker",
       track({ id: "yt_demo", title: "Track (30 sec preview)" }),
       210,
@@ -113,5 +123,53 @@ describe("media completeness gate", () => {
       "candidate_90",
     ]);
     expect(result.rejected).toEqual([]);
+  });
+
+  it("does not let multiple 30-second originals redefine a known full duration", () => {
+    const result = filterCompleteMedia([
+      track({ id: "yt_full", duration: 210 }),
+      track({ id: "yt_preview_one", duration: 30 }),
+      track({ id: "sc_preview_two", source: "soundcloud", duration: 32 }),
+    ]);
+
+    expect(result.accepted.map((candidate) => candidate.id)).toEqual(["yt_full"]);
+    expect(result.rejected).toEqual([
+      { source: "youtube", reason: "duration_outlier", count: 1 },
+      { source: "soundcloud", reason: "duration_outlier", count: 1 },
+    ]);
+  });
+
+  it("uses catalog duration without admitting a Deezer preview as audio", () => {
+    const result = filterCompleteMedia([
+      track({
+        id: "dz_preview",
+        source: "deezer",
+        duration: 205,
+        sourceUrl: "https://cdns-preview-a.dzcdn.net/stream/c-a-preview.mp3",
+      }),
+      track({ id: "yt_preview", duration: 30 }),
+    ]);
+
+    expect(result.accepted).toEqual([]);
+    expect(result.rejected).toEqual([
+      { source: "youtube", reason: "duration_outlier", count: 1 },
+      { source: "deezer", reason: "provider_preview_url", count: 1 },
+    ]);
+  });
+
+  it("keeps a genuinely short recording when there is no full-length reference", () => {
+    const short = track({ id: "yt_short", duration: 25 });
+    expect(filterCompleteMedia([short]).accepted).toEqual([short]);
+  });
+
+  it("detects a 30-second excerpt of a 95-second original", () => {
+    const result = filterCompleteMedia([
+      track({ id: "yt_full", duration: 95 }),
+      track({ id: "sc_excerpt", source: "soundcloud", duration: 30 }),
+    ]);
+    expect(result.accepted.map((candidate) => candidate.id)).toEqual(["yt_full"]);
+    expect(result.rejected).toEqual([
+      { source: "soundcloud", reason: "duration_outlier", count: 1 },
+    ]);
   });
 });

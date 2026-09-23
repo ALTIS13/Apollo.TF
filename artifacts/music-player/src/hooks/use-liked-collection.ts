@@ -2,10 +2,12 @@ import { useEffect, useRef } from "react";
 import {
   useInfiniteQuery,
   useMutation,
+  useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
 import {
   listLikedTracks,
+  lookupLikedTracks,
   saveLikedTrack,
   removeLikedTrack,
   type SaveLikedTrackRequest,
@@ -85,9 +87,37 @@ export function useSaveLikedTrack() {
   });
 }
 
-export function useLikedCollection() {
+export function useRemoveLikedTrack() {
   const access = useCollectionAccess();
   const client = useQueryClient();
+  return useMutation({
+    mutationKey: [...likedCollectionKey(access.accountId), "remove"],
+    mutationFn: (trackId: string) => access.request(() =>
+      removeLikedTrack(trackId, tfRequestInit({ method: "DELETE" })),
+    ),
+    onSuccess: () => client.invalidateQueries({
+      queryKey: likedCollectionKey(access.accountId),
+    }),
+    retry: false,
+  });
+}
+
+export function useLikedTrackLookup(trackIds: readonly string[]) {
+  const access = useCollectionAccess();
+  const ids = [...new Set(trackIds)].sort().slice(0, 40);
+  return useQuery({
+    queryKey: [...likedCollectionKey(access.accountId), "lookup", ...ids],
+    enabled: access.allowed && ids.length > 0,
+    queryFn: () => access.request(() =>
+      lookupLikedTracks({ trackIds: ids }, tfRequestInit({ method: "POST" })),
+    ),
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+export function useLikedCollection() {
+  const access = useCollectionAccess();
   const query = useInfiniteQuery({
     queryKey: likedCollectionKey(access.accountId),
     enabled: access.allowed,
@@ -104,20 +134,7 @@ export function useLikedCollection() {
     staleTime: 30_000,
     retry: false,
   });
-  const remove = useMutation({
-    mutationKey: [...likedCollectionKey(access.accountId), "remove"],
-    mutationFn: (trackId: string) => {
-      return access.request(() =>
-        removeLikedTrack(trackId, tfRequestInit({ method: "DELETE" })),
-      );
-    },
-    onSuccess: () => {
-      return client.invalidateQueries({
-        queryKey: likedCollectionKey(access.accountId),
-      });
-    },
-    retry: false,
-  });
+  const remove = useRemoveLikedTrack();
   return {
     query,
     remove,

@@ -48,6 +48,7 @@ function track(
 function store(overrides: Partial<LikedCollectionStore> = {}) {
   return {
     list: vi.fn().mockResolvedValue([]),
+    lookup: vi.fn().mockResolvedValue([]),
     save: vi.fn().mockResolvedValue(track(1)),
     remove: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -83,6 +84,44 @@ afterEach(async () => {
 });
 
 describe("liked collection routes", () => {
+  it("looks up only requested IDs under the principal account and preserves request order", async () => {
+    const currentStore = store({
+      lookup: vi.fn().mockResolvedValue(["sc_second", "yt_first"]),
+    });
+    const origin = await startServer(currentStore);
+    const response = await fetch(`${origin}/collections/liked/lookup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ trackIds: ["yt_first", "bc_absent", "sc_second"] }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      likedTrackIds: ["yt_first", "sc_second"],
+    });
+    expect(currentStore.lookup).toHaveBeenCalledWith(ACCOUNT_ID, [
+      "yt_first", "bc_absent", "sc_second",
+    ]);
+  });
+
+  it.each([
+    { trackIds: [] },
+    { trackIds: ["yt_same", "yt_same"] },
+    { trackIds: ["bad"] },
+    { trackIds: ["yt_valid"], accountId: OTHER_ACCOUNT_ID },
+    { trackIds: Array.from({ length: 41 }, (_, i) => `yt_${i}`) },
+  ])("rejects invalid liked lookup input before storage access", async (body) => {
+    const currentStore = store();
+    const origin = await startServer(currentStore);
+    const response = await fetch(`${origin}/collections/liked/lookup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(response.status).toBe(400);
+    expect(currentStore.lookup).not.toHaveBeenCalled();
+  });
+
   it("lists only the principal account and emits an opaque next cursor", async () => {
     const currentStore = store({
       list: vi.fn().mockResolvedValue([track(9), track(7), track(4)]),

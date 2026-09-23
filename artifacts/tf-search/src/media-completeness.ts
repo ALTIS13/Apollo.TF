@@ -33,21 +33,15 @@ const REASON_ORDER: readonly MediaRejectionReason[] = [
   "duration_outlier",
 ];
 
-function isProviderPreviewUrl(track: InternalTrack): boolean {
+function isProviderPreviewMedia(track: InternalTrack): boolean {
   if (track.source !== "deezer") return false;
   try {
-    const url = new URL(track.sourceUrl);
-    return (
-      url.hostname.endsWith(".dzcdn.net") &&
-      (url.hostname.includes("preview") || url.pathname.includes("preview"))
-    );
+    const hostname = new URL(track.sourceUrl).hostname;
+    // The current Deezer adapter encodes its API's preview field as a CDN URL.
+    return hostname === "dzcdn.net" || hostname.endsWith(".dzcdn.net");
   } catch {
     return false;
   }
-}
-
-function hasExplicitPreviewSignal(track: InternalTrack): boolean {
-  return isProviderPreviewUrl(track) || TITLE_MARKER_PATTERN.test(track.title);
 }
 
 function median(values: readonly number[]): number | undefined {
@@ -62,13 +56,14 @@ function median(values: readonly number[]): number | undefined {
 function referenceOriginalDuration(
   tracks: readonly InternalTrack[],
 ): number | undefined {
+  // Deezer preview URLs carry catalog duration, but are still rejected as media below.
   return median(
     tracks
       .filter(
         (track) =>
           track.type === "original" &&
-          track.duration > 0 &&
-          !hasExplicitPreviewSignal(track),
+          track.duration >= 90 &&
+          !TITLE_MARKER_PATTERN.test(track.title),
       )
       .map((track) => track.duration),
   );
@@ -78,7 +73,7 @@ export function assessMediaCompleteness(
   track: InternalTrack,
   referenceDuration?: number,
 ): MediaCompletenessAssessment {
-  if (isProviderPreviewUrl(track)) {
+  if (isProviderPreviewMedia(track)) {
     return { complete: false, reason: "provider_preview_url" };
   }
   if (TITLE_MARKER_PATTERN.test(track.title)) {
@@ -86,7 +81,7 @@ export function assessMediaCompleteness(
   }
   if (
     referenceDuration !== undefined &&
-    referenceDuration >= 120 &&
+    referenceDuration >= 90 &&
     track.duration > 0 &&
     track.duration <= 90 &&
     track.duration / referenceDuration <= 0.55

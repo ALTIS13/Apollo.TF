@@ -307,6 +307,19 @@ export interface LikedTrackPage {
   nextCursor: string | null;
 }
 
+export interface LikedTrackLookupRequest {
+  /**
+   * @minItems 1
+   * @maxItems 40
+   */
+  trackIds: string[];
+}
+
+export interface LikedTrackLookupResponse {
+  /** @maxItems 40 */
+  likedTrackIds: string[];
+}
+
 export interface SaveLikedTrackRequest {
   /**
    * @minLength 1

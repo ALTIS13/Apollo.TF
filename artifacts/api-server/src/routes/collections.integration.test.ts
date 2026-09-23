@@ -222,6 +222,16 @@ describe.skipIf(runtimeUrl === undefined && runId === undefined)(
       expect(await list(accountB, bOld.storageId)).toEqual([]);
     });
 
+    it("looks up only tracks owned by the current account, including shared IDs", async () => {
+      const requested = [aOld.trackId, aShared.trackId, bNew.trackId];
+      expect(new Set(await store.lookup(accountA, requested))).toEqual(
+        new Set([aOld.trackId, aShared.trackId]),
+      );
+      expect(new Set(await store.lookup(accountB, requested))).toEqual(
+        new Set([aShared.trackId, bNew.trackId]),
+      );
+    });
+
     it("upserts idempotently, preserves storage ID and likedAt, and isolates owners of the same track", async () => {
       expect(aShared.storageId).not.toBe(bShared.storageId);
       const untouchedB = await snapshot(accountB);

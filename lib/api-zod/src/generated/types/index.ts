@@ -26,6 +26,8 @@ export * from "./downloadResponse";
 export * from "./errorResponse";
 export * from "./healthStatus";
 export * from "./likedTrack";
+export * from "./likedTrackLookupRequest";
+export * from "./likedTrackLookupResponse";
 export * from "./likedTrackMutationResponse";
 export * from "./likedTrackPage";
 export * from "./listLikedTracksParams";

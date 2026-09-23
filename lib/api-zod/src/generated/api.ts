@@ -408,6 +408,54 @@ export const ListLikedTracksResponse = zod
   .strict();
 
 /**
+ * @summary Check which requested tracks are saved by the current account
+ */
+export const lookupLikedTracksBodyTrackIdsItemMin = 4;
+export const lookupLikedTracksBodyTrackIdsItemMax = 4096;
+
+export const lookupLikedTracksBodyTrackIdsItemRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const lookupLikedTracksBodyTrackIdsMax = 40;
+
+export const LookupLikedTracksBody = zod
+  .object({
+    trackIds: zod
+      .array(
+        zod
+          .string()
+          .min(lookupLikedTracksBodyTrackIdsItemMin)
+          .max(lookupLikedTracksBodyTrackIdsItemMax)
+          .regex(lookupLikedTracksBodyTrackIdsItemRegExp),
+      )
+      .min(1)
+      .max(lookupLikedTracksBodyTrackIdsMax),
+  })
+  .strict();
+
+export const lookupLikedTracksResponseLikedTrackIdsItemMin = 4;
+export const lookupLikedTracksResponseLikedTrackIdsItemMax = 4096;
+
+export const lookupLikedTracksResponseLikedTrackIdsItemRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const lookupLikedTracksResponseLikedTrackIdsMax = 40;
+
+export const LookupLikedTracksResponse = zod
+  .object({
+    likedTrackIds: zod
+      .array(
+        zod
+          .string()
+          .min(lookupLikedTracksResponseLikedTrackIdsItemMin)
+          .max(lookupLikedTracksResponseLikedTrackIdsItemMax)
+          .regex(lookupLikedTracksResponseLikedTrackIdsItemRegExp),
+      )
+      .max(lookupLikedTracksResponseLikedTrackIdsMax),
+  })
+  .strict();
+
+/**
  * @summary Save or update one track for the current account
  */
 export const saveLikedTrackPathTrackIdMin = 4;

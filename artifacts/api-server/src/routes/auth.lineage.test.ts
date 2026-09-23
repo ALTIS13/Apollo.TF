@@ -200,7 +200,7 @@ async function fixture(withLegacy = false) {
       webOrigin: origin,
       secureCookies: true,
     },
-    collections: { store: { list, save: vi.fn(), remove: vi.fn() } },
+    collections: { store: { list, lookup: vi.fn(async () => []), save: vi.fn(), remove: vi.fn() } },
   });
   const server = app.listen(0, "127.0.0.1");
   servers.push(server);

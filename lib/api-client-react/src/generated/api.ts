@@ -27,6 +27,8 @@ import type {
   DownloadResponse,
   ErrorResponse,
   HealthStatus,
+  LikedTrackLookupRequest,
+  LikedTrackLookupResponse,
   LikedTrackMutationResponse,
   LikedTrackPage,
   ListLikedTracksParams,
@@ -905,6 +907,92 @@ export function useListLikedTracks<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * @summary Check which requested tracks are saved by the current account
+ */
+export const getLookupLikedTracksUrl = () => {
+  return `/api/collections/liked/lookup`;
+};
+
+export const lookupLikedTracks = async (
+  likedTrackLookupRequest: LikedTrackLookupRequest,
+  options?: RequestInit,
+): Promise<LikedTrackLookupResponse> => {
+  return customFetch<LikedTrackLookupResponse>(getLookupLikedTracksUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(likedTrackLookupRequest),
+  });
+};
+
+export const getLookupLikedTracksMutationOptions = <
+  TError = ErrorType<CollectionErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof lookupLikedTracks>>,
+    TError,
+    { data: BodyType<LikedTrackLookupRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof lookupLikedTracks>>,
+  TError,
+  { data: BodyType<LikedTrackLookupRequest> },
+  TContext
+> => {
+  const mutationKey = ["lookupLikedTracks"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof lookupLikedTracks>>,
+    { data: BodyType<LikedTrackLookupRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return lookupLikedTracks(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type LookupLikedTracksMutationResult = NonNullable<
+  Awaited<ReturnType<typeof lookupLikedTracks>>
+>;
+export type LookupLikedTracksMutationBody = BodyType<LikedTrackLookupRequest>;
+export type LookupLikedTracksMutationError = ErrorType<CollectionErrorResponse>;
+
+/**
+ * @summary Check which requested tracks are saved by the current account
+ */
+export const useLookupLikedTracks = <
+  TError = ErrorType<CollectionErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof lookupLikedTracks>>,
+    TError,
+    { data: BodyType<LikedTrackLookupRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof lookupLikedTracks>>,
+  TError,
+  { data: BodyType<LikedTrackLookupRequest> },
+  TContext
+> => {
+  return useMutation(getLookupLikedTracksMutationOptions(options));
+};
 
 /**
  * @summary Save or update one track for the current account

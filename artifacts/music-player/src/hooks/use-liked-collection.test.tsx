@@ -1,6 +1,7 @@
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   renderHook,
   screen,
@@ -10,9 +11,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { TfAuthProvider, useTfAuth } from "@/auth/tf-auth";
+import { SaveLikedTrackButton } from "@/components/LikedCollection";
 import {
   useLikedCollection,
   useSaveLikedTrack,
+  useLikedTrackLookup,
   likedCollectionKey,
 } from "./use-liked-collection";
 
@@ -47,6 +50,13 @@ function fixture() {
         });
       if (path.endsWith("/auth/logout"))
         return new Response(null, { status: 204 });
+      if (path.endsWith("/collections/liked/lookup")) {
+        const requested = JSON.parse(String(init?.body)) as { trackIds: string[] };
+        return json({
+          likedTrackIds: requested.trackIds.filter((id) =>
+            rows.some((row) => row.trackId === id)),
+        });
+      }
       if (init?.method === "PUT") {
         rows = [item];
         return json({ item });
@@ -128,6 +138,69 @@ it("saves/removes with current cookie/CSRF flow and invalidates the account coll
   expect(new Headers(deletion[1]?.headers).get("X-CSRF-Token")).toBe(
     "c".repeat(42) + "A",
   );
+});
+
+it("looks up search-result hearts in one current-account request and clears them on account switch", async () => {
+  const f = fixture();
+  f.setRows([item]);
+  const { result } = renderHook(
+    () => ({
+      auth: useTfAuth(),
+      lookup: useLikedTrackLookup(["yt_track", "sc_other"]),
+    }),
+    { wrapper: f.wrapper },
+  );
+  await waitFor(() =>
+    expect(result.current.lookup.data?.likedTrackIds).toEqual(["yt_track"]),
+  );
+  const lookup = f.fetchMock.mock.calls.find(([url]) =>
+    String(url).endsWith("/collections/liked/lookup"))!;
+  expect(lookup[1]?.method).toBe("POST");
+  expect(new Headers(lookup[1]?.headers).get("X-CSRF-Token")).toBe(
+    "c".repeat(42) + "A",
+  );
+  expect(JSON.parse(String(lookup[1]?.body))).toEqual({
+    trackIds: ["sc_other", "yt_track"],
+  });
+  f.switchAccount();
+  await act(async () => { await result.current.auth.refresh(); });
+  await waitFor(() =>
+    expect(result.current.lookup.data?.likedTrackIds).toEqual([]),
+  );
+  expect(f.client.getQueryData(["tf", "liked", accountA, "lookup", "sc_other", "yt_track"])).toBeUndefined();
+});
+
+it("toggles a previously saved search result through delete and idempotent save", async () => {
+  const f = fixture();
+  f.setRows([item]);
+  function SearchHeart() {
+    const lookup = useLikedTrackLookup([item.trackId]);
+    return <SaveLikedTrackButton
+      track={{
+        id: item.trackId,
+        artist: item.artist,
+        title: item.title,
+        thumbnailUrl: null,
+        duration: 180,
+        source: "youtube",
+        type: "original",
+        quality: [],
+        score: 1,
+      }}
+      saved={lookup.data?.likedTrackIds.includes(item.trackId) ?? false}
+      checking={lookup.isFetching && !lookup.data}
+    />;
+  }
+  render(<SearchHeart />, { wrapper: f.wrapper });
+  const removeButton = await screen.findByRole("button", { name: "Удалить из избранного" });
+  expect(removeButton).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(removeButton);
+  const saveButton = await screen.findByRole("button", { name: "Сохранить в избранное" });
+  expect(saveButton).toHaveAttribute("aria-pressed", "false");
+  expect(f.fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+  fireEvent.click(saveButton);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Удалить из избранного" })).toHaveAttribute("aria-pressed", "true"));
+  expect(f.fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
 });
 
 it("clears account A data on switch and account B data on logout", async () => {

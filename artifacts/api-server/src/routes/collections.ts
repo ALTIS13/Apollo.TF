@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 
 import { db } from "@workspace/db";
 import { likedTracksTable } from "@workspace/db/schema";
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import { Router, type IRouter, type Response } from "express";
 import { z } from "zod";
 
@@ -37,6 +37,14 @@ const saveLikedTrackSchema = z
     durationSeconds: z.number().int().min(1).max(86_400).nullable().optional(),
   })
   .strict();
+const lookupLikedTracksSchema = z
+  .object({
+    trackIds: z.array(trackIdSchema).min(1).max(40).refine(
+      (trackIds) => new Set(trackIds).size === trackIds.length &&
+        trackIds.reduce((size, trackId) => size + trackId.length, 0) <= 16_384,
+    ),
+  })
+  .strict();
 
 export interface LikedTrackRecord {
   readonly storageId: number;
@@ -63,6 +71,7 @@ export interface LikedCollectionStore {
     readonly cursorId: number | null;
     readonly limit: number;
   }) => Promise<readonly LikedTrackRecord[]>;
+  readonly lookup: (accountId: string, trackIds: readonly string[]) => Promise<readonly string[]>;
   readonly save: (input: SaveLikedTrackInput) => Promise<LikedTrackRecord>;
   readonly remove: (accountId: string, trackId: string) => Promise<void>;
 }
@@ -125,6 +134,17 @@ export const defaultLikedCollectionStore: LikedCollectionStore = {
       .orderBy(desc(likedTracksTable.id))
       .limit(input.limit);
     return rows.map(recordFromRow);
+  },
+
+  async lookup(accountId, trackIds) {
+    const rows = await db
+      .select({ trackId: likedTracksTable.trackId })
+      .from(likedTracksTable)
+      .where(and(
+        eq(likedTracksTable.sessionId, accountId),
+        inArray(likedTracksTable.trackId, [...trackIds]),
+      ));
+    return rows.map((row) => row.trackId);
   },
 
   async save(input) {
@@ -217,6 +237,21 @@ export function createCollectionsRouter(
         hasNextPage && page.length > 0
           ? encodeLikedCursor(page[page.length - 1]!.storageId)
           : null,
+    });
+  });
+
+  router.post("/collections/liked/lookup", async (request, response) => {
+    const body = lookupLikedTracksSchema.safeParse(request.body);
+    if (!body.success) {
+      badRequest(response);
+      return;
+    }
+    const found = new Set(await store.lookup(
+      request.tfPrincipal!.accountId,
+      body.data.trackIds,
+    ));
+    response.status(200).json({
+      likedTrackIds: body.data.trackIds.filter((trackId) => found.has(trackId)),
     });
   });
 

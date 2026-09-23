@@ -4,6 +4,7 @@ import { searchTracks } from "@workspace/api-client-react";
 import type { SearchRequest, TrackType } from "@workspace/api-client-react";
 import { TrackCard } from "@/components/TrackCard";
 import { SaveLikedTrackButton } from "@/components/LikedCollection";
+import { useLikedTrackLookup } from "@/hooks/use-liked-collection";
 import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, reportTfAuthError, TfApiError, tfRequestInit } from "@/lib/tf-session-client";
 import { Search, Music2, Loader2, AlertCircle } from "lucide-react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
@@ -131,6 +132,7 @@ export default function Home() {
   };
 
   const results = searchMutation.data?.results || [];
+  const likedLookup = useLikedTrackLookup(results.map((track) => track.id));
 
   const filteredResults =
     activeFilter === "all"
@@ -331,7 +333,11 @@ export default function Home() {
                     track={track}
                     index={i}
                     compact
-                    collectionAction={<SaveLikedTrackButton track={track} />}
+                    collectionAction={<SaveLikedTrackButton
+                      track={track}
+                      saved={likedLookup.data?.likedTrackIds.includes(track.id) ?? false}
+                      checking={likedLookup.isFetching && !likedLookup.data}
+                    />}
                   />
                 ))}
               </div>
