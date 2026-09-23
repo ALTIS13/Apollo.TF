@@ -6,6 +6,7 @@ import {
   Music,
   Loader2,
   ListPlus,
+  ListStart,
   X,
 } from "lucide-react";
 import { formatDuration } from "@/lib/utils";
@@ -32,6 +33,7 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
     togglePlayPause,
     isLoading,
     addToQueue,
+    addNextToQueue,
   } = usePlayer();
   const [queueAdded, setQueueAdded] = useState(false);
   const { toast } = useToast();
@@ -56,6 +58,12 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
     setQueueAdded(true);
     setTimeout(() => setQueueAdded(false), 1500);
     toast({ title: "Добавлено в очередь", description: track.title });
+  };
+
+  const handlePlayNext = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    addNextToQueue(track);
+    toast({ title: "Следующий трек", description: track.title });
   };
 
   useEffect(() => {
@@ -192,6 +200,15 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
       {/* Actions */}
       <div className={compact ? "col-span-2 flex min-w-0 items-center justify-end gap-2 border-t border-white/10 pt-2 lg:col-span-1 lg:border-t-0 lg:pt-0" : "flex-shrink-0 w-full sm:w-auto flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2 border-t sm:border-t-0 sm:border-l border-white/10 pt-4 sm:pt-0 sm:pl-6"}>
         {collectionAction}
+        <button
+          type="button"
+          onClick={handlePlayNext}
+          aria-label={`Играть следующим: ${track.title}`}
+          title="Играть следующим"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/5 bg-secondary/50 text-foreground transition-colors hover:bg-secondary hover:text-primary focus-visible:outline-2 focus-visible:outline-white"
+        >
+          <ListStart className="h-4 w-4" />
+        </button>
         <button
           onClick={handleAddToQueue}
           className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold transition-all border ${

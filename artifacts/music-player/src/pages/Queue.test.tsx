@@ -13,6 +13,7 @@ const player = vi.hoisted(() => ({
   playFromQueue: vi.fn(),
   removeFromQueue: vi.fn(),
   clearQueue: vi.fn(),
+  moveQueuedTrack: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-player", () => ({ usePlayer: () => player }));
@@ -32,18 +33,15 @@ afterEach(() => {
   window.removeEventListener("keydown", handleGlobalKey);
 });
 
-it("plays the focused queue item with Enter and Space in queue order", async () => {
+it("plays a focused queue item with Enter and Space", async () => {
   const user = userEvent.setup();
   render(<Queue />);
-  screen.getByRole("button", { name: "Очистить" }).focus();
-
-  await user.tab();
+  screen.getByRole("button", { name: "Воспроизвести First track" }).focus();
   expect(screen.getByRole("button", { name: "Воспроизвести First track" })).toHaveFocus();
   await user.keyboard("{Enter}");
   expect(player.playFromQueue).toHaveBeenNthCalledWith(1, 0);
 
-  await user.tab();
-  await user.tab();
+  screen.getByRole("button", { name: "Воспроизвести Second track" }).focus();
   expect(screen.getByRole("button", { name: "Воспроизвести Second track" })).toHaveFocus();
   await user.keyboard(" ");
   expect(player.playFromQueue).toHaveBeenNthCalledWith(2, 1);
@@ -55,16 +53,12 @@ it("plays the focused queue item with Enter and Space in queue order", async () 
 it("removes the focused item without triggering playback or nesting buttons", async () => {
   const user = userEvent.setup();
   const { container } = render(<Queue />);
-  screen.getByRole("button", { name: "Очистить" }).focus();
-
-  await user.tab();
-  await user.tab();
+  screen.getByRole("button", { name: "Удалить First track из очереди" }).focus();
   expect(screen.getByRole("button", { name: "Удалить First track из очереди" })).toHaveFocus();
   await user.keyboard(" ");
   expect(player.removeFromQueue).toHaveBeenNthCalledWith(1, 0);
 
-  await user.tab();
-  await user.tab();
+  screen.getByRole("button", { name: "Удалить Second track из очереди" }).focus();
   expect(screen.getByRole("button", { name: "Удалить Second track из очереди" })).toHaveFocus();
   await user.keyboard("{Enter}");
   expect(player.removeFromQueue).toHaveBeenNthCalledWith(2, 1);
@@ -72,4 +66,13 @@ it("removes the focused item without triggering playback or nesting buttons", as
   expect(player.playFromQueue).not.toHaveBeenCalled();
   expect(container.querySelector("button button")).toBeNull();
   expect(globalPlaybackShortcut).not.toHaveBeenCalled();
+});
+
+it("reorders upcoming items without starting playback", async () => {
+  const user = userEvent.setup();
+  render(<Queue />);
+  await user.click(screen.getByRole("button", { name: "Переместить Second track выше" }));
+  expect(player.moveQueuedTrack).toHaveBeenCalledWith(1, 0);
+  expect(player.playFromQueue).not.toHaveBeenCalled();
+  expect(player.removeFromQueue).not.toHaveBeenCalled();
 });

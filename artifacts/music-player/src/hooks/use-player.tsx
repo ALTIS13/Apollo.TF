@@ -19,6 +19,7 @@ import {
 import { useTfAuth } from "@/auth/tf-auth";
 import { TfWebSocketLifecycle } from "@/lib/tf-websocket";
 import { successorWebSocketEnabled } from "@/lib/tf-successor-ws-config";
+import { clearUpcoming, insertNext, moveUpcoming } from "@/lib/queue-operations";
 
 interface PlayerContextType {
   currentTrack: TrackResult | null;
@@ -32,6 +33,8 @@ interface PlayerContextType {
   playTrack: (track: TrackResult) => Promise<void>;
   playFromQueue: (index: number) => Promise<void>;
   addToQueue: (track: TrackResult) => void;
+  addNextToQueue: (track: TrackResult) => void;
+  moveQueuedTrack: (from: number, to: number) => void;
   removeFromQueue: (index: number) => void;
   clearQueue: () => void;
   playNext: () => Promise<void>;
@@ -267,6 +270,19 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const addNextToQueue = useCallback((track: TrackResult) => {
+    const updated = insertNext(queueRef.current, currentTrackRef.current ? queueIndexRef.current : -1, track);
+    queueRef.current = updated;
+    setQueue(updated);
+  }, []);
+
+  const moveQueuedTrack = useCallback((from: number, to: number) => {
+    const updated = moveUpcoming(queueRef.current, currentTrackRef.current ? queueIndexRef.current : -1, from, to);
+    if (updated === queueRef.current) return;
+    queueRef.current = [...updated];
+    setQueue(queueRef.current);
+  }, []);
+
   const removeFromQueue = useCallback((index: number) => {
     // Compute new queue and side-effects before state update to avoid async calls inside updater
     const prev = queueRef.current;
@@ -301,11 +317,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clearQueue = useCallback(() => {
-    setQueue([]);
-    queueRef.current = [];
+    const updated = clearUpcoming(queueRef.current, queueIndexRef.current, currentTrackRef.current !== null);
+    queueRef.current = [...updated];
+    setQueue(queueRef.current);
+    if (currentTrackRef.current !== null) return;
     queueIndexRef.current = 0;
     setQueueIndex(0);
-    // Stop playback and reset player state (consistent with remove-last-item behavior)
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ""; }
     setCurrentTrack(null);
     setIsPlaying(false);
@@ -479,7 +496,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       value={{
         currentTrack, isPlaying, isLoading, progress, duration, volume,
         queue, queueIndex,
-        playTrack, playFromQueue, addToQueue, removeFromQueue, clearQueue,
+        playTrack, playFromQueue, addToQueue, addNextToQueue, moveQueuedTrack, removeFromQueue, clearQueue,
         playNext, playPrev,
         togglePlayPause, seekTo, seekBy, setVolume,
       }}

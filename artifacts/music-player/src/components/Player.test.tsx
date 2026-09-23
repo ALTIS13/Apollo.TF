@@ -20,6 +20,13 @@ const player = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/use-player", () => ({ usePlayer: () => player }));
+vi.mock("./LyricsPanel", () => ({
+  LyricsPanel: ({ onOpenChange }: { onOpenChange: (open: boolean) => void }) => (
+    <div role="dialog" aria-label="Текст песни">
+      <button type="button" onClick={() => onOpenChange(false)}>Закрыть текст</button>
+    </div>
+  ),
+}));
 const globalShortcut = vi.fn();
 function handleGlobalKey(event: KeyboardEvent) {
   if (event.code === "Space") {
@@ -71,8 +78,21 @@ it("keeps disabled transport controls inactive and out of the tab order", async 
     await user.click(button);
   }
   await user.tab();
+  expect(screen.getByRole("button", { name: "Текст песни" })).toHaveFocus();
+  await user.tab();
   expect(screen.getByRole("button", { name: "Выключить звук" })).toHaveFocus();
   expect(player.playPrev).not.toHaveBeenCalled();
   expect(player.playNext).not.toHaveBeenCalled();
+  expect(player.togglePlayPause).not.toHaveBeenCalled();
+});
+
+it("opens and closes the lyrics panel without changing playback", async () => {
+  const user = userEvent.setup();
+  render(<Player />);
+
+  await user.click(screen.getByRole("button", { name: "Текст песни" }));
+  expect(screen.getByRole("dialog", { name: "Текст песни" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Закрыть текст" }));
+  expect(screen.queryByRole("dialog", { name: "Текст песни" })).toBeNull();
   expect(player.togglePlayPause).not.toHaveBeenCalled();
 });

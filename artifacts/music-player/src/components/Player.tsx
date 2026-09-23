@@ -3,10 +3,11 @@ import { formatDuration } from "@/lib/utils";
 import {
   Play, Pause, SkipBack, SkipForward,
   Volume2, VolumeX, Volume1,
-  Music, Loader2,
+  Music, Loader2, ScrollText,
 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import type { KeyboardEvent } from "react";
+import { LyricsPanel } from "./LyricsPanel";
 
 function keepSpaceOnButton(event: KeyboardEvent<HTMLButtonElement>) {
   // Preserve native activation instead of invoking the global playback shortcut.
@@ -24,6 +25,11 @@ export function Player() {
 
   const seekBarRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [lyricsOpen, setLyricsOpen] = useState(false);
+
+  useEffect(() => {
+    if (!currentTrack) setLyricsOpen(false);
+  }, [currentTrack]);
 
   const hasNext = queueIndex < queue.length - 1;
   const hasPrev = queueIndex > 0 || progress > 3;
@@ -53,11 +59,11 @@ export function Player() {
 
   return (
     <div className="border-t border-white/5 bg-black/80 backdrop-blur-xl flex-shrink-0">
-      <div className="h-[90px] px-4 flex items-center gap-4">
+      <div className="grid h-[90px] grid-cols-[minmax(0,1fr)_auto_auto] grid-rows-[minmax(0,1fr)_20px] items-center gap-x-2 px-2 pb-2 sm:flex sm:gap-4 sm:px-4 sm:pb-0">
 
         {/* Track info */}
-        <div className="flex flex-1 min-w-0 items-center gap-3 sm:flex-none sm:w-[28%] sm:min-w-[140px]">
-          <div className="w-12 h-12 rounded-lg overflow-hidden bg-secondary flex-shrink-0 relative shadow">
+        <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-2 sm:flex-none sm:w-[28%] sm:min-w-[140px] sm:gap-3">
+          <div className="relative h-9 w-9 flex-shrink-0 overflow-hidden rounded-lg bg-secondary shadow sm:h-12 sm:w-12">
             {currentTrack?.thumbnailUrl ? (
               <img src={currentTrack.thumbnailUrl} alt={currentTrack.title} className="w-full h-full object-cover" />
             ) : (
@@ -78,15 +84,15 @@ export function Player() {
                 <p className="text-xs text-muted-foreground truncate">{currentTrack.artist}</p>
               </>
             ) : (
-              <p className="text-xs text-muted-foreground">Ничего не играет</p>
+              <p className="truncate text-xs text-muted-foreground"><span className="sm:hidden">Не играет</span><span className="hidden sm:inline">Ничего не играет</span></p>
             )}
           </div>
         </div>
 
         {/* Center: controls + seek */}
-        <div className="flex-1 min-w-[120px] flex flex-col items-center gap-1.5 max-w-[400px] mx-auto">
+        <div className="contents sm:mx-auto sm:flex sm:max-w-[400px] sm:min-w-[120px] sm:flex-1 sm:flex-col sm:items-center sm:gap-1.5">
           {/* Buttons */}
-          <div className="flex items-center gap-5">
+          <div className="col-start-2 row-start-1 flex items-center gap-2 sm:gap-5">
             <button
               onClick={playPrev}
               onKeyDown={keepSpaceOnButton}
@@ -117,7 +123,7 @@ export function Player() {
           </div>
 
           {/* Seek bar + time */}
-          <div className="flex items-center gap-2 w-full">
+          <div className="col-span-3 row-start-2 flex w-full items-center gap-2">
             <span className="text-[10px] font-mono text-muted-foreground w-8 text-right">{formatDuration(progress)}</span>
             <div
               ref={seekBarRef}
@@ -138,11 +144,22 @@ export function Player() {
         </div>
 
         {/* Right: volume */}
-        <div className="flex shrink-0 items-center justify-end gap-2 sm:w-[28%] sm:min-w-[100px]">
+        <div className="col-start-3 row-start-1 flex shrink-0 items-center justify-end gap-2 sm:w-[28%] sm:min-w-[100px]">
+          <button
+            type="button"
+            onClick={() => setLyricsOpen(true)}
+            onKeyDown={keepSpaceOnButton}
+            disabled={!currentTrack}
+            aria-label="Текст песни"
+            title="Текст песни"
+            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground disabled:opacity-30"
+          >
+            <ScrollText className="h-4 w-4" />
+          </button>
           <button
             onClick={() => setVolume(volume === 0 ? 0.8 : 0)}
             onKeyDown={keepSpaceOnButton}
-            className="text-muted-foreground hover:text-foreground transition-colors"
+            className="hidden text-muted-foreground transition-colors hover:text-foreground sm:block"
             title={volume === 0 ? "Включить звук" : "Выключить звук"}
           >
             <VolumeIcon className="w-4 h-4" />
@@ -160,6 +177,16 @@ export function Player() {
         </div>
 
       </div>
+      {currentTrack && lyricsOpen && (
+        <LyricsPanel
+          track={currentTrack}
+          progress={progress}
+          duration={duration}
+          seekTo={seekTo}
+          open={lyricsOpen}
+          onOpenChange={setLyricsOpen}
+        />
+      )}
     </div>
   );
 }

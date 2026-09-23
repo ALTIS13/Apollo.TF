@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TrackCard } from "./TrackCard";
 
 const toast = vi.hoisted(() => vi.fn());
+const playerActions = vi.hoisted(() => ({ addNextToQueue: vi.fn(), playTrack: vi.fn() }));
 
 vi.mock("@workspace/api-client-react", async (importOriginal) => {
   const actual =
@@ -33,9 +34,10 @@ vi.mock("@/hooks/use-player", () => ({
     currentTrack: null,
     isPlaying: false,
     isLoading: false,
-    playTrack: vi.fn(),
+    playTrack: playerActions.playTrack,
     togglePlayPause: vi.fn(),
     addToQueue: vi.fn(),
+    addNextToQueue: playerActions.addNextToQueue,
   }),
 }));
 
@@ -78,7 +80,17 @@ beforeEach(() => {
     status: "canceled",
   });
   toast.mockReset();
+  playerActions.addNextToQueue.mockReset();
+  playerActions.playTrack.mockReset();
   vi.stubGlobal("location", { assign: vi.fn() });
+});
+
+it("queues a search result as next without starting playback or a download", () => {
+  render(<TrackCard track={track} index={0} />);
+  fireEvent.click(screen.getByRole("button", { name: "Играть следующим: Test Track" }));
+  expect(playerActions.addNextToQueue).toHaveBeenCalledWith(track);
+  expect(playerActions.playTrack).not.toHaveBeenCalled();
+  expect(queueTrackDownloads).not.toHaveBeenCalled();
 });
 
 afterEach(() => {
@@ -208,9 +220,9 @@ describe("TrackCard download action", () => {
     await screen.findByText("Загрузка завершена");
     expectReservedTerminalRow("Загрузка завершена");
     expect(window.location.assign).not.toHaveBeenCalled();
-    expect(toast).toHaveBeenCalledWith({
+    await waitFor(() => expect(toast).toHaveBeenCalledWith({
       title: "Загрузка завершена",
       description: track.title,
-    });
+    }));
   });
 });
