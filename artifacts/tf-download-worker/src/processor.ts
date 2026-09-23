@@ -19,6 +19,10 @@ import {
   probeSourceDuration,
   type DurationProbeOptions,
 } from "./duration-probe";
+import {
+  probeFileDuration,
+  type FileDurationProbeOptions,
+} from "./file-duration-probe";
 import { noopDownloadLogger, type DownloadLogger } from "./logger";
 import {
   DownloadStorageError,
@@ -65,6 +69,10 @@ export class DownloadProcessingError extends Error {
 interface StorageOutputBoundary {
   readonly failure?: DownloadStorageError;
   write(data: Uint8Array, signal?: AbortSignal): Promise<boolean>;
+  inspect?<T>(
+    inspector: (partPath: string, signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T>;
   commit(
     metadata: DownloadCommitMetadata,
     signal?: AbortSignal,
@@ -91,8 +99,12 @@ export interface CreateDownloadProcessorOptions {
   readonly cancellationStore: DownloadCancellationStore;
   readonly spawnDownload?: SpawnDownload;
   readonly probeDuration?: (options: DurationProbeOptions) => Promise<number>;
+  readonly probeFileDuration?: (
+    options: FileDurationProbeOptions,
+  ) => Promise<number>;
   readonly logger?: DownloadLogger;
   readonly downloaderExecutable?: string;
+  readonly fileProbeExecutable?: string;
   readonly deadlineMs?: number;
   readonly cancellationPollMs?: number;
   readonly killGraceMs?: number;
@@ -105,8 +117,10 @@ export function createDownloadProcessor(
 ): DownloadProcessor {
   const spawnDownload = options.spawnDownload ?? spawnYtDlpDownload;
   const probeDuration = options.probeDuration ?? probeSourceDuration;
+  const inspectFileDuration = options.probeFileDuration ?? probeFileDuration;
   const logger = options.logger ?? noopDownloadLogger;
   const downloaderExecutable = options.downloaderExecutable ?? "yt-dlp";
+  const fileProbeExecutable = options.fileProbeExecutable ?? "ffprobe";
   const deadlineMs = boundedPositiveInteger(
     options.deadlineMs,
     DEFAULT_DEADLINE_MS,
@@ -292,6 +306,48 @@ export function createDownloadProcessor(
 
       await raceWithAbort(downloadTask, controller.signal);
       throwSignalReason(controller.signal);
+      if (
+        expectedDurationSeconds !== undefined &&
+        expectedDurationSeconds >= 90
+      ) {
+        if (!output.inspect) {
+          throw new DownloadProcessingError("duration_unverified", {
+            retriable: false,
+          });
+        }
+        let fileDurationSeconds: number;
+        try {
+          fileDurationSeconds = await raceWithAbort(
+            output.inspect(
+              (filePath, signal) =>
+                inspectFileDuration({
+                  executable: fileProbeExecutable,
+                  filePath,
+                  extension,
+                  signal,
+                }),
+              controller.signal,
+            ),
+            controller.signal,
+          );
+        } catch (error) {
+          throwSignalReason(controller.signal);
+          if (error instanceof DownloadStorageError) throw error;
+          throw new DownloadProcessingError("duration_unverified", {
+            retriable: false,
+          });
+        }
+        if (!Number.isFinite(fileDurationSeconds) || fileDurationSeconds <= 0) {
+          throw new DownloadProcessingError("duration_unverified", {
+            retriable: false,
+          });
+        }
+        if (isPreviewLength(fileDurationSeconds, expectedDurationSeconds)) {
+          throw new DownloadProcessingError("preview_rejected", {
+            retriable: false,
+          });
+        }
+      }
       const metadata: DownloadCommitMetadata = {
         filename,
         mimeType,

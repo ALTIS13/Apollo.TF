@@ -449,10 +449,12 @@ describe("createDownloadProcessor", () => {
       expect(begin).not.toHaveBeenCalled();
       expect(spawnDownload).not.toHaveBeenCalled();
       expect(await readdir(root)).toEqual([]);
-      expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({
-        state: "failed",
-        code: "preview_rejected",
-      }));
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          state: "failed",
+          code: "preview_rejected",
+        }),
+      );
       expect(JSON.stringify(logger)).not.toContain(SOURCE_URL);
     },
   );
@@ -520,6 +522,7 @@ describe("createDownloadProcessor", () => {
   it("admits verified full-length media", async () => {
     const { storage } = await createStorage();
     const probeDuration = vi.fn(async () => 110);
+    const probeFileDuration = vi.fn(async () => 110);
     const processor = createDownloadProcessor({
       storage,
       cancellationStore: createCancellationStore(),
@@ -527,6 +530,7 @@ describe("createDownloadProcessor", () => {
         createFakeProcess({ stdout: [Buffer.from("audio")] }),
       ),
       probeDuration,
+      probeFileDuration,
       logger: createLogger(),
     });
 
@@ -539,6 +543,62 @@ describe("createDownloadProcessor", () => {
       storageKey: `${JOB_ID}.mp3`,
     });
     expect(probeDuration).toHaveBeenCalledTimes(1);
+    expect(probeFileDuration).toHaveBeenCalledWith({
+      executable: "ffprobe",
+      filePath: expect.stringMatching(/\.mp3\.part$/),
+      extension: "mp3",
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("rejects a short encoded file before publishing it", async () => {
+    const { root, storage } = await createStorage();
+    const commit = vi.spyOn(storage, "commit");
+    const processor = createDownloadProcessor({
+      storage,
+      cancellationStore: createCancellationStore(),
+      spawnDownload: vi.fn(() =>
+        createFakeProcess({ stdout: [Buffer.from("audio")] }),
+      ),
+      probeDuration: vi.fn(async () => 205),
+      probeFileDuration: vi.fn(async () => 30),
+      logger: createLogger(),
+    });
+
+    await expect(
+      processor(
+        createJob({ ...validData, expectedDurationSeconds: 210 }),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "preview_rejected", retriable: false });
+    expect(commit).not.toHaveBeenCalled();
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it("fails closed and removes staged media when encoded duration is unavailable", async () => {
+    const { root, storage } = await createStorage();
+    const commit = vi.spyOn(storage, "commit");
+    const processor = createDownloadProcessor({
+      storage,
+      cancellationStore: createCancellationStore(),
+      spawnDownload: vi.fn(() =>
+        createFakeProcess({ stdout: [Buffer.from("audio")] }),
+      ),
+      probeDuration: vi.fn(async () => 205),
+      probeFileDuration: vi.fn(async () => {
+        throw new Error("private file path");
+      }),
+      logger: createLogger(),
+    });
+
+    await expect(
+      processor(
+        createJob({ ...validData, expectedDurationSeconds: 210 }),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "duration_unverified", retriable: false });
+    expect(commit).not.toHaveBeenCalled();
+    expect(await readdir(root)).toEqual([]);
   });
 
   it("cancels a pending duration probe without opening storage", async () => {
