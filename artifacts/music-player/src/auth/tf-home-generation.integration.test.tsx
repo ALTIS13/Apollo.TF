@@ -20,6 +20,10 @@ let identity: string;
 let auth: TfAuthContextValue;
 let finishSearch: (response: Response) => void;
 let searchStarted: boolean;
+let searchBody: unknown;
+let suggestionStarted: boolean;
+let holdSuggestion: boolean;
+let finishSuggestion: (response: Response) => void;
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -48,8 +52,11 @@ beforeEach(() => {
   clearTfSessionSecurityState();
   identity = A;
   searchStarted = false;
+  searchBody = null;
+  suggestionStarted = false;
+  holdSuggestion = false;
   vi.stubGlobal("Audio", ControlledAudio);
-  vi.stubGlobal("fetch", async (url: string) => {
+  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const path = new URL(url, "https://tf.apollot.ru").pathname;
     if (path.endsWith("/auth/me")) {
       const response = json({
@@ -64,9 +71,19 @@ beforeEach(() => {
     }
     if (path.endsWith("/search")) {
       searchStarted = true;
+      searchBody = JSON.parse(String(init?.body));
       return new Promise<Response>((resolve) => {
         finishSearch = resolve;
       });
+    }
+    if (path.endsWith("/suggest")) {
+      suggestionStarted = true;
+      if (holdSuggestion) {
+        return new Promise<Response>((resolve) => {
+          finishSuggestion = resolve;
+        });
+      }
+      return json({ suggestions: [{ artist: "Artist", title: "Track" }] });
     }
     throw new Error(`Unexpected controlled request: ${path}`);
   });
@@ -76,7 +93,7 @@ afterEach(() => {
   clearTfSessionSecurityState();
   vi.unstubAllGlobals();
 });
-async function startSearch() {
+function renderHome() {
   render(
     <QueryClientProvider
       client={
@@ -98,6 +115,9 @@ async function startSearch() {
       </TfAuthProvider>
     </QueryClientProvider>,
   );
+}
+async function startSearch() {
+  renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
   fireEvent.change(screen.getByPlaceholderText("Artist name..."), {
     target: { value: "Artist" },
@@ -110,6 +130,40 @@ async function startSearch() {
   );
   await waitFor(() => expect(searchStarted).toBe(true));
 }
+it("chooses a keyboard suggestion and searches with the current source filters", async () => {
+  renderHome();
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  const titleInput = screen.getByPlaceholderText("Track title...");
+  fireEvent.change(titleInput, { target: { value: "Tr" } });
+
+  expect(await screen.findByRole("option", { name: "Artist - Track" })).toBeTruthy();
+  fireEvent.keyDown(titleInput, { key: "ArrowDown" });
+  fireEvent.keyDown(titleInput, { key: "Enter" });
+
+  await waitFor(() => expect(searchStarted).toBe(true));
+  expect(searchBody).toMatchObject({ artist: "Artist", title: "Track", mode: "auto" });
+  expect(screen.getByPlaceholderText("Artist name...")).toHaveProperty("value", "Artist");
+  await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
+});
+
+it("does not display a delayed suggestion from the previous account", async () => {
+  holdSuggestion = true;
+  renderHome();
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  fireEvent.change(screen.getByPlaceholderText("Track title..."), {
+    target: { value: "Tr" },
+  });
+  await waitFor(() => expect(suggestionStarted).toBe(true));
+
+  identity = B;
+  await act(async () => { await auth.refresh(); });
+  await act(async () => {
+    finishSuggestion(json({ suggestions: [{ artist: "Old", title: "Private" }] }));
+  });
+
+  expect(auth.session?.accountId).toBe(B);
+  expect(screen.queryByRole("option", { name: "Old - Private" })).toBeNull();
+});
 async function settleSearch(response: Response) {
   await act(async () => {
     finishSearch(response);

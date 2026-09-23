@@ -28,6 +28,32 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /tracks/suggest:
+    get:
+      operationId: getTrackSuggestions
+      tags: [tracks]
+      summary: Suggest artist and title pairs for a search query
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 500
+      responses:
+        "200":
+          description: Up to five search suggestions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackSuggestionsResponse"
+        "503":
+          description: Search module unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchUnavailableResponse"
   /tracks/search:
     post:
       operationId: searchTracks
@@ -643,6 +669,23 @@ components:
         maxLength: 4096
         pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
   schemas:
+    TrackSuggestionsResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        suggestions:
+          type: array
+          maxItems: 5
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              artist:
+                type: string
+              title:
+                type: string
+            required: [artist, title]
+      required: [suggestions]
     HealthStatus:
       type: object
       properties:

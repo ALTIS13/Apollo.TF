@@ -16,6 +16,32 @@ export const HealthCheckResponse = zod.object({
 });
 
 /**
+ * @summary Suggest artist and title pairs for a search query
+ */
+export const getTrackSuggestionsQueryQMin = 2;
+export const getTrackSuggestionsQueryQMax = 500;
+
+export const GetTrackSuggestionsQueryParams = zod.object({
+  q: zod.coerce
+    .string()
+    .min(getTrackSuggestionsQueryQMin)
+    .max(getTrackSuggestionsQueryQMax),
+});
+
+export const getTrackSuggestionsResponseSuggestionsMax = 5;
+
+export const GetTrackSuggestionsResponse = zod.object({
+  suggestions: zod
+    .array(
+      zod.object({
+        artist: zod.string(),
+        title: zod.string(),
+      }),
+    )
+    .max(getTrackSuggestionsResponseSuggestionsMax),
+});
+
+/**
  * Searches enabled open media sources for variants of a track. Returns all found variants (original, remix, live, cover) without auto-selecting.
  * @summary Search for track variants
  */

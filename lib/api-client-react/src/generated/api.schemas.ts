@@ -5,6 +5,16 @@
  * Music Player API specification
  * OpenAPI spec version: 0.1.0
  */
+export type TrackSuggestionsResponseSuggestionsItem = {
+  artist: string;
+  title: string;
+};
+
+export interface TrackSuggestionsResponse {
+  /** @maxItems 5 */
+  suggestions: TrackSuggestionsResponseSuggestionsItem[];
+}
+
 export interface HealthStatus {
   status: string;
 }
@@ -402,6 +412,14 @@ export const SearchUnavailableResponseValue = {
   error: "search_unavailable",
 } as const;
 export type SearchUnavailableResponse = typeof SearchUnavailableResponseValue;
+
+export type GetTrackSuggestionsParams = {
+  /**
+   * @minLength 2
+   * @maxLength 500
+   */
+  q: string;
+};
 
 export type GetTrackStreamParams = {
   /**

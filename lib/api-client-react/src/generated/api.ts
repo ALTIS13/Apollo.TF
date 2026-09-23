@@ -28,6 +28,7 @@ import type {
   GetTrackDownload403,
   GetTrackDownloadParams,
   GetTrackStreamParams,
+  GetTrackSuggestionsParams,
   HealthStatus,
   LikedTrackLookupRequest,
   LikedTrackLookupResponse,
@@ -41,6 +42,7 @@ import type {
   StreamAdmissionError,
   StreamBadRequest,
   StreamResponse,
+  TrackSuggestionsResponse,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -120,6 +122,110 @@ export function useHealthCheck<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getHealthCheckQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Suggest artist and title pairs for a search query
+ */
+export const getGetTrackSuggestionsUrl = (
+  params: GetTrackSuggestionsParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/tracks/suggest?${stringifiedParams}`
+    : `/api/tracks/suggest`;
+};
+
+export const getTrackSuggestions = async (
+  params: GetTrackSuggestionsParams,
+  options?: RequestInit,
+): Promise<TrackSuggestionsResponse> => {
+  return customFetch<TrackSuggestionsResponse>(
+    getGetTrackSuggestionsUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetTrackSuggestionsQueryKey = (
+  params?: GetTrackSuggestionsParams,
+) => {
+  return [`/api/tracks/suggest`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetTrackSuggestionsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getTrackSuggestions>>,
+  TError = ErrorType<SearchUnavailableResponse>,
+>(
+  params: GetTrackSuggestionsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getTrackSuggestions>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetTrackSuggestionsQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getTrackSuggestions>>
+  > = ({ signal }) =>
+    getTrackSuggestions(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getTrackSuggestions>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetTrackSuggestionsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getTrackSuggestions>>
+>;
+export type GetTrackSuggestionsQueryError =
+  ErrorType<SearchUnavailableResponse>;
+
+/**
+ * @summary Suggest artist and title pairs for a search query
+ */
+
+export function useGetTrackSuggestions<
+  TData = Awaited<ReturnType<typeof getTrackSuggestions>>,
+  TError = ErrorType<SearchUnavailableResponse>,
+>(
+  params: GetTrackSuggestionsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getTrackSuggestions>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetTrackSuggestionsQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

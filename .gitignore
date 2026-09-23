@@ -49,6 +49,7 @@ Thumbs.db
 .local/
 /.superpowers/
 /.worktrees/
+/.playwright-cli/
 
 # private operations data, SSH material, and local infrastructure notes
 /.ops-private/
