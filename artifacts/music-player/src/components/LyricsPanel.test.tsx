@@ -111,6 +111,53 @@ it("identifies an unverified lyrics fallback without presenting it as a matched 
   expect(screen.getByText("Совпадение с записью не проверено")).toBeInTheDocument();
 });
 
+it("reports a wrong lyric match with track metadata but without copying lyric lines", async () => {
+  tfFetch.mockImplementation((path?: string) => path?.startsWith("/tracks/lyrics?")
+    ? Promise.resolve({ plainLyrics: "Private lyric line", syncedLyrics: null, source: "lyrics.ovh", match: "unverified" })
+    : Promise.resolve({ state: "recorded" }));
+  renderPanel({ track: { ...track, duration: 180.4 } });
+  const user = userEvent.setup();
+  await screen.findByText("Private lyric line");
+  await user.click(screen.getByRole("button", { name: "Сообщить о проблеме" }));
+  await user.click(screen.getByRole("radio", { name: "Не тот трек" }));
+  await user.click(screen.getByRole("button", { name: "Отправить" }));
+
+  await waitFor(() => expect(tfFetch).toHaveBeenCalledWith(
+    "/tracks/lyrics/feedback",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        trackId: "yt_first",
+        artist: "Artist",
+        title: "First song",
+        durationSeconds: 180,
+        lyricsSource: "lyrics.ovh",
+        reason: "wrong_track",
+      }),
+    }),
+  ));
+  expect(await screen.findByText("Спасибо, сообщение отправлено")).toBeInTheDocument();
+  expect(JSON.stringify(tfFetch.mock.calls)).not.toContain("Private lyric line");
+});
+
+it("reports missing lyrics without requiring a reason selection", async () => {
+  tfFetch.mockImplementation((path?: string) => path?.startsWith("/tracks/lyrics?")
+    ? Promise.resolve({ plainLyrics: null, syncedLyrics: null, source: null, match: null })
+    : Promise.resolve({ state: "recorded" }));
+  renderPanel();
+  const user = userEvent.setup();
+  await screen.findByText("Текст пока недоступен");
+  await user.click(screen.getByRole("button", { name: "Сообщить о проблеме" }));
+  expect(screen.getByText("Текст отсутствует")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Отправить" }));
+  await waitFor(() => expect(tfFetch).toHaveBeenCalledWith(
+    "/tracks/lyrics/feedback",
+    expect.objectContaining({
+      body: expect.stringContaining('"lyricsSource":"none","reason":"missing"'),
+    }),
+  ));
+});
+
 it("follows the active line, yields to manual scrolling, and resumes on command", async () => {
   tfFetch.mockResolvedValue({
     plainLyrics: null,

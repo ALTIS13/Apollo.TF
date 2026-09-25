@@ -231,3 +231,33 @@ describe("GET /api/admin/dashboard", () => {
     expect(body).not.toContain("private-host");
   });
 });
+
+describe("GET /api/admin/lyrics-feedback", () => {
+  it("returns bounded feedback only with the operator token", async () => {
+    const loadLyricsFeedback = vi.fn().mockResolvedValue({
+      schemaVersion: 1,
+      reports: [{
+        id: 4,
+        accountId: "10000000-0000-4000-8000-000000000001",
+        trackId: "yt_first",
+        artist: "Artist",
+        title: "First song",
+        lyricsSource: "lrclib",
+        reason: "wrong_track",
+        createdAt: "2026-09-26T12:00:00.000Z",
+      }],
+    });
+    const dashboardUrl = await startAdminServer({ token: "admin-secret", loadLyricsFeedback });
+    const url = dashboardUrl.replace(/\/dashboard$/, "/lyrics-feedback");
+
+    const unauthorized = await fetch(url);
+    expect(unauthorized.status).toBe(401);
+    expect(loadLyricsFeedback).not.toHaveBeenCalled();
+
+    const response = await fetch(url, { headers: { "X-Admin-Dashboard-Token": "admin-secret" } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual(await loadLyricsFeedback.mock.results[0]?.value);
+    expect(loadLyricsFeedback).toHaveBeenCalledTimes(1);
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDashboardSnapshot } from "./index";
+import { parseDashboardSnapshot, parseLyricsFeedbackList } from "./index";
 
 const validSnapshot = {
   generatedAt: "2026-07-14T12:00:00.000Z",
@@ -235,4 +235,20 @@ describe("admin dashboard contract", () => {
       }),
     ).not.toThrow();
   });
+});
+
+it("validates a bounded lyrics feedback list without raw lyrics", () => {
+  const report = {
+    id: 4,
+    accountId: "10000000-0000-4000-8000-000000000001",
+    trackId: "yt_first",
+    artist: "Artist",
+    title: "First song",
+    lyricsSource: "lrclib",
+    reason: "wrong_track",
+    createdAt: "2026-09-26T12:00:00.000Z",
+  };
+  expect(parseLyricsFeedbackList({ schemaVersion: 1, reports: [report] }).reports).toHaveLength(1);
+  expect(() => parseLyricsFeedbackList({ schemaVersion: 1, reports: [{ ...report, lyrics: "private" }] })).toThrow();
+  expect(() => parseLyricsFeedbackList({ schemaVersion: 1, reports: Array(26).fill(report) })).toThrow();
 });

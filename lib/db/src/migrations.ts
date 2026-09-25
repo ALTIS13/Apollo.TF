@@ -95,6 +95,10 @@ export const TF_MIGRATION_MANIFEST: readonly MigrationManifestEntry[] =
       checksum:
         "a9bdbd8012fc237045aa7c57aeac4683a3baccfa66a1b7ec1956a2b1a4185c96",
     },
+    {
+      name: "0003_lyrics_feedback.sql",
+      checksum: "945c0c134b03d3629fc8e620cba24ed10373d74e1f675d536b38e11ffa1b81ed",
+    },
   ]);
 
 function contractError(code: MigrationErrorCode, message: string): Error {
@@ -817,7 +821,9 @@ export async function baselineTfStartupSchema(
   return executeWithLock(pool, options, async (client) => {
     await requireBaselineSuperuser(client);
     await recordBaseline(client, migrations[0]!);
-    await applyMigration(client, migrations[1]!);
+    for (const migration of migrations.slice(1)) {
+      await applyMigration(client, migration);
+    }
     return {
       applied: migrations.map(({ name }) => name),
       alreadyApplied: [],

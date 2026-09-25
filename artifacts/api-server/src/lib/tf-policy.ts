@@ -108,6 +108,13 @@ export const TF_ROUTE_POLICIES: readonly TfRoutePolicy[] = Object.freeze([
     live: false,
   },
   {
+    method: "POST",
+    path: "/api/tracks/lyrics/feedback",
+    pattern: /^\/api\/tracks\/lyrics\/feedback$/,
+    capability: "tf.search",
+    live: true,
+  },
+  {
     method: "GET",
     path: "/api/tracks/recent",
     pattern: /^\/api\/tracks\/recent$/,

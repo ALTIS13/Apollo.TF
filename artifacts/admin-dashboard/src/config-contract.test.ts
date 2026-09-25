@@ -196,12 +196,19 @@ describe("admin dashboard delivery contracts", () => {
     const dashboardLocationStart = nginxConfig.indexOf(
       "location = /api/admin/dashboard",
     );
+    const feedbackLocationStart = nginxConfig.indexOf(
+      "location = /api/admin/lyrics-feedback",
+    );
     const fallbackApiLocationStart = nginxConfig.indexOf(
       "location ^~ /api/",
-      dashboardLocationStart,
+      feedbackLocationStart,
     );
     const dashboardLocation = nginxConfig.slice(
       dashboardLocationStart,
+      feedbackLocationStart,
+    );
+    const feedbackLocation = nginxConfig.slice(
+      feedbackLocationStart,
       fallbackApiLocationStart,
     );
     const fallbackApiLocation = nginxConfig.slice(
@@ -213,6 +220,7 @@ describe("admin dashboard delivery contracts", () => {
       /location\s*=\s*\/healthz\s*{[^}]*return\s+200/s,
     );
     expect(dashboardLocationStart).toBeGreaterThan(-1);
+    expect(feedbackLocationStart).toBeGreaterThan(dashboardLocationStart);
     expect(fallbackApiLocationStart).toBeGreaterThan(dashboardLocationStart);
     expect(dashboardLocation).toContain("if ($request_method != GET)");
     expect(dashboardLocation).toContain("return 405");
@@ -226,11 +234,18 @@ describe("admin dashboard delivery contracts", () => {
     expect(dashboardLocation).toContain(
       "proxy_pass $apollo_api_upstream$request_uri",
     );
+    expect(feedbackLocation).toContain("if ($request_method != GET)");
+    expect(feedbackLocation).toContain("return 405");
+    expect(feedbackLocation).toContain("limit_req zone=apollo_admin");
+    expect(feedbackLocation).toContain(
+      'proxy_set_header X-Admin-Dashboard-Token "${ADMIN_DASHBOARD_TOKEN}"',
+    );
+    expect(feedbackLocation).toContain("proxy_pass $apollo_api_upstream$request_uri");
     expect(fallbackApiLocation).toContain("return 404");
     expect(fallbackApiLocation).not.toContain("proxy_pass");
     expect(fallbackApiLocation).not.toContain("X-Admin-Dashboard-Token");
-    expect(nginxConfig.match(/proxy_pass/g)).toHaveLength(1);
-    expect(nginxConfig.match(/X-Admin-Dashboard-Token/g)).toHaveLength(1);
+    expect(nginxConfig.match(/proxy_pass/g)).toHaveLength(2);
+    expect(nginxConfig.match(/X-Admin-Dashboard-Token/g)).toHaveLength(2);
     expect(nginxConfig).toMatch(
       /location\s+\/\s*{[^}]*try_files\s+\$uri\s+\$uri\/\s+\/index\.html/s,
     );

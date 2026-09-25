@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Router, type IRouter } from "express";
-import { parseDashboardSnapshot } from "@workspace/admin-dashboard-contract";
+import { parseDashboardSnapshot, parseLyricsFeedbackList } from "@workspace/admin-dashboard-contract";
 import {
   adminRequestTelemetry,
   createAdminDashboardSnapshot,
@@ -18,6 +18,7 @@ const DATABASE_PROBE_CACHE_MS = 5_000;
 interface CreateAdminRouterOptions {
   token?: string | null;
   loadSnapshot?: () => Promise<unknown>;
+  loadLyricsFeedback?: () => Promise<unknown>;
 }
 
 interface CachedProbeOptions {
@@ -123,6 +124,10 @@ export function createAdminRouter(
       ? loadAdminDashboardToken(process.env)
       : options.token;
   const loadSnapshot = options.loadSnapshot ?? loadRuntimeSnapshot;
+  const loadLyricsFeedback = options.loadLyricsFeedback ?? (async () => {
+    const store = await import("../lib/lyrics-feedback-store.js");
+    return store.loadLyricsFeedback();
+  });
 
   router.get("/admin/dashboard", async (req, res) => {
     res.set({
@@ -155,6 +160,31 @@ export function createAdminRouter(
         "Admin dashboard snapshot unavailable",
       );
       res.status(503).json({ error: "admin_dashboard_unavailable" });
+    }
+  });
+
+  router.get("/admin/lyrics-feedback", async (req, res) => {
+    res.set({
+      "Cache-Control": "no-store",
+      Pragma: "no-cache",
+      "X-Content-Type-Options": "nosniff",
+    });
+    if (!configuredToken) {
+      res.status(503).json({ error: "admin_dashboard_disabled" });
+      return;
+    }
+    if (!isDashboardTokenValid(req.get("X-Admin-Dashboard-Token"), configuredToken)) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+    try {
+      res.status(200).json(parseLyricsFeedbackList(await loadLyricsFeedback()));
+    } catch (error) {
+      req.log?.warn(
+        { errorType: error instanceof Error ? error.name : "UnknownError" },
+        "Admin lyrics feedback unavailable",
+      );
+      res.status(503).json({ error: "admin_lyrics_feedback_unavailable" });
     }
   });
 

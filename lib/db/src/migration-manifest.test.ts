@@ -27,6 +27,7 @@ describe("TF immutable migration manifest", () => {
     expect(TF_MIGRATION_MANIFEST.map(({ name }) => name)).toEqual([
       "0001_tf_core_collections.sql",
       "0002_tf_runtime_privileges.sql",
+      "0003_lyrics_feedback.sql",
     ]);
     expect(recomputed).toEqual(TF_MIGRATION_MANIFEST);
   });
@@ -75,5 +76,13 @@ describe("TF immutable migration manifest", () => {
       /grant\s+(?:[\s\S]*,\s*)?update\s+on\s+sequence/i,
     );
     expect(second).not.toMatch(/grant usage on schema public/i);
+
+    const third = await readFile(
+      `${migrationDirectory}/0003_lyrics_feedback.sql`,
+      "utf8",
+    );
+    expect(third).toMatch(/create table public\.lyrics_feedback/i);
+    expect(third).toMatch(/grant select, insert on public\.lyrics_feedback to apollo_tf_runtime/i);
+    expect(third).not.toMatch(/grant (?:update|delete) on public\.lyrics_feedback/i);
   });
 });

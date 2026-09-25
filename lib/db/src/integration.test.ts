@@ -433,6 +433,7 @@ const runtimePrivilegesSql = await readFile(
 const migrationNames = [
   "0001_tf_core_collections.sql",
   "0002_tf_runtime_privileges.sql",
+  "0003_lyrics_feedback.sql",
 ] as const;
 const exactHistory = [
   {
@@ -444,6 +445,11 @@ const exactHistory = [
     name: "0002_tf_runtime_privileges.sql",
     checksum:
       "a9bdbd8012fc237045aa7c57aeac4683a3baccfa66a1b7ec1956a2b1a4185c96",
+  },
+  {
+    name: "0003_lyrics_feedback.sql",
+    checksum:
+      "945c0c134b03d3629fc8e620cba24ed10373d74e1f675d536b38e11ffa1b81ed",
   },
 ] as const;
 
@@ -1255,6 +1261,7 @@ async function resetTfState(): Promise<void> {
   await adminPool!.query(`
     drop schema if exists apollo_tf cascade;
     drop table if exists
+      public.lyrics_feedback,
       public.playlist_tracks,
       public.playlists,
       public.liked_tracks,
@@ -1397,7 +1404,7 @@ describe
       );
     });
 
-    test("applies the exact manifest once and reports both migrations on repeat", async () => {
+    test("applies the exact manifest once and reports every migration on repeat", async () => {
       await expect(runTfMigrations(migratorPool!)).resolves.toEqual({
         applied: [...migrationNames],
         alreadyApplied: [],
@@ -1407,6 +1414,49 @@ describe
         alreadyApplied: [...migrationNames],
       });
       await expectExactHistory(exactHistory);
+    });
+
+    test("stores one bounded lyrics report per account and reason with insert/select-only runtime rights", async () => {
+      await runTfMigrations(migratorPool!);
+      await expect(createTfMigrationReadinessProbe(runtimePool!)()).resolves.toBe(true);
+      const values = [
+        "10000000-0000-4000-8000-000000000001",
+        "yt_first",
+        "Artist",
+        "First song",
+        180,
+        "lrclib",
+        "wrong_track",
+      ];
+      const insert = `
+        insert into public.lyrics_feedback
+          (account_id, track_id, artist, title, duration_seconds, lyrics_source, reason)
+        values ($1, $2, $3, $4, $5, $6, $7)
+        on conflict (account_id, track_id, lyrics_source, reason) do nothing
+        returning id
+      `;
+      const first = await runtimePool!.query<{ id: number }>(insert, values);
+      const duplicate = await runtimePool!.query<{ id: number }>(insert, values);
+      expect(first.rows).toHaveLength(1);
+      expect(duplicate.rows).toEqual([]);
+
+      const visible = await runtimePool!.query<{ account_id: string; artist: string; reason: string }>(
+        "select account_id, artist, reason from public.lyrics_feedback where id = $1",
+        [first.rows[0]!.id],
+      );
+      expect(visible.rows).toEqual([{
+        account_id: values[0],
+        artist: "Artist",
+        reason: "wrong_track",
+      }]);
+      await expect(runtimePool!.query(
+        "update public.lyrics_feedback set title = 'changed' where id = $1",
+        [first.rows[0]!.id],
+      )).rejects.toMatchObject({ code: "42501" });
+      await expect(runtimePool!.query(
+        "delete from public.lyrics_feedback where id = $1",
+        [first.rows[0]!.id],
+      )).rejects.toMatchObject({ code: "42501" });
     });
 
     test("reports exact readiness and allows runtime CRUD on all five active tables", async () => {
@@ -1656,7 +1706,7 @@ describe
       ).toBe(true);
 
       await expect(runTfMigrations(migratorPool!)).resolves.toEqual({
-        applied: [migrationNames[1]],
+        applied: [migrationNames[1], migrationNames[2]],
         alreadyApplied: [migrationNames[0]],
       });
       await expectExactHistory(exactHistory);

@@ -1,5 +1,6 @@
 import {
   AudioLines,
+  Flag,
   Gauge,
   Network,
   RadioTower,
@@ -19,6 +20,7 @@ const navigationItems = [
   { href: "#incidents", label: "Инциденты", icon: TriangleAlert },
   { href: "#deployments", label: "Деплойменты", icon: Rocket },
   { href: "#parsers", label: "Парсеры", icon: ScanSearch },
+  { href: "#lyrics-feedback", label: "Тексты", icon: Flag },
   { href: "#accounts", label: "Пользователи", icon: Users },
   { href: "#providers", label: "Провайдеры", icon: RadioTower },
 ] as const;

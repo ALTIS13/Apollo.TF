@@ -39,6 +39,10 @@ import {
   TfDownloadWorkerError,
   type TfDownloadWorkerGateway,
 } from "../lib/tf-download-worker-client.js";
+import {
+  recordLyricsFeedback,
+  type LyricsFeedbackInput,
+} from "../lib/lyrics-feedback-store.js";
 
 interface RecentTrack {
   readonly trackId: string;
@@ -60,6 +64,9 @@ export interface TrackRouteDependencies {
     limit: number,
   ) => Promise<readonly RecentTrack[]>;
   readonly recordPlay: (input: RecordPlayInput) => Promise<void>;
+  readonly recordLyricsFeedback: (
+    input: LyricsFeedbackInput,
+  ) => Promise<"recorded" | "already_reported">;
   readonly loadTopArtists: (
     accountId: string,
   ) => Promise<readonly (string | null)[]>;
@@ -143,6 +150,14 @@ const downloadQueueRequestSchema = z
   .strict();
 const CANONICAL_JOB_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const lyricsFeedbackBody = z.object({
+  trackId: z.string().trim().min(1).max(4096),
+  artist: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(300),
+  durationSeconds: z.number().int().min(0).max(86_400),
+  lyricsSource: z.enum(["lrclib", "lyrics.ovh", "none"]),
+  reason: z.enum(["wrong_track", "out_of_sync", "incomplete", "missing"]),
+}).strict().refine((body) => (body.lyricsSource === "none") === (body.reason === "missing"));
 
 function unavailableGateway(): TfSearchGateway {
   const unavailable = async (): Promise<never> => {
@@ -314,6 +329,7 @@ const defaultTrackRouteDependencies: TrackRouteDependencies = {
       title: input.title,
     });
   },
+  recordLyricsFeedback,
   async loadTopArtists(accountId) {
     const rows = await db
       .select({
@@ -1090,6 +1106,28 @@ export function createTracksRouter(
       res.json({ suggestions: response.suggestions });
     } catch {
       res.status(503).json({ error: "search_unavailable" });
+    }
+  });
+
+  router.post("/tracks/lyrics/feedback", async (req, res) => {
+    const parsed = lyricsFeedbackBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
+
+    try {
+      const state = await routeDependencies.recordLyricsFeedback({
+        ...parsed.data,
+        accountId: req.tfPrincipal!.accountId,
+      });
+      res.status(state === "recorded" ? 201 : 200).json({ state });
+    } catch (error) {
+      req.log?.warn(
+        { errorType: error instanceof Error ? error.name : "UnknownError" },
+        "Lyrics feedback unavailable",
+      );
+      res.status(503).json({ error: "lyrics_feedback_unavailable" });
     }
   });
 

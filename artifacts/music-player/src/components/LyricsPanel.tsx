@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { TrackResult } from "@workspace/api-client-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Loader2, LocateFixed, ScrollText } from "lucide-react";
+import { AlertCircle, Flag, Loader2, LocateFixed, ScrollText, Send } from "lucide-react";
 import { useTfAuth } from "@/auth/tf-auth";
 import { formatDuration } from "@/lib/utils";
 import { tfFetch } from "@/lib/tf-session-client";
@@ -24,6 +24,20 @@ interface LyricsPanelProps {
   onOpenChange: (open: boolean) => void;
 }
 
+type FeedbackReason = "wrong_track" | "out_of_sync" | "incomplete" | "missing";
+interface FeedbackState {
+  trackId: string;
+  open: boolean;
+  reason: FeedbackReason | null;
+  status: "idle" | "sending" | "sent" | "error";
+}
+
+const feedbackReasons: readonly { value: FeedbackReason; label: string }[] = [
+  { value: "wrong_track", label: "Не тот трек" },
+  { value: "out_of_sync", label: "Строки не совпадают по времени" },
+  { value: "incomplete", label: "Текст неполный" },
+];
+
 export function LyricsPanel({
   track,
   progress,
@@ -36,6 +50,8 @@ export function LyricsPanel({
   const accountId = status === "authenticated" ? session?.accountId : null;
   const allowed = accountId !== null && hasEntitlement("tf.search");
   const [followState, setFollowState] = useState({ trackId: track.id, enabled: true });
+  const [feedbackState, setFeedbackState] = useState<FeedbackState | null>(null);
+  const feedback = feedbackState?.trackId === track.id ? feedbackState : null;
   const following = followState.trackId === track.id ? followState.enabled : true;
   const scrollViewportRef = useRef<HTMLDivElement>(null);
   const activeLineRef = useRef<HTMLButtonElement>(null);
@@ -65,6 +81,35 @@ export function LyricsPanel({
   const seekDuration = duration > 0 ? duration : track.duration;
   const plainText = lyrics.data?.plainLyrics?.trim() ||
     (syncedLines.length === 0 ? lyrics.data?.syncedLyrics?.trim() : null);
+  const hasLyrics = syncedLines.length > 0 || Boolean(plainText);
+  const feedbackAvailable = allowed && !lyrics.isPending && !lyrics.isError && lyrics.data !== undefined;
+  const submitFeedback = async () => {
+    const reason = hasLyrics ? feedback?.reason : "missing";
+    if (!feedbackAvailable || !reason || feedback?.status === "sending") return;
+    const trackId = track.id;
+    setFeedbackState((current) => current?.trackId === trackId ? { ...current, status: "sending" } : current);
+    try {
+      await tfFetch("/tracks/lyrics/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          trackId,
+          artist: track.artist,
+          title: track.title,
+          durationSeconds: track.duration > 0 ? Math.round(track.duration) : 0,
+          lyricsSource: lyrics.data?.source ?? "none",
+          reason,
+        }),
+      });
+      setFeedbackState((current) => current?.trackId === trackId
+        ? { ...current, open: false, status: "sent" }
+        : current);
+    } catch {
+      setFeedbackState((current) => current?.trackId === trackId
+        ? { ...current, status: "error" }
+        : current);
+    }
+  };
   const scrollToActiveLine = useCallback(() => {
     const viewport = scrollViewportRef.current;
     const line = activeLineRef.current;
@@ -172,11 +217,69 @@ export function LyricsPanel({
             <p className="text-sm text-white/60">Текст пока недоступен</p>
           )}
         </div>
-        {allowed && !lyrics.isError && lyrics.data?.source && (syncedLines.length > 0 || plainText) && (
+        {feedbackAvailable && (
           <footer className="shrink-0 border-t border-white/10 px-5 py-3 text-xs text-white/50">
-            <p>Источник: {lyrics.data.source === "lrclib" ? "LRCLIB" : "lyrics.ovh"}</p>
-            {lyrics.data.match === "unverified" && (
-              <p className="mt-1 text-amber-200/80">Совпадение с записью не проверено</p>
+            {lyrics.data?.source && hasLyrics && (
+              <>
+                <p>Источник: {lyrics.data.source === "lrclib" ? "LRCLIB" : "lyrics.ovh"}</p>
+                {lyrics.data.match === "unverified" && (
+                  <p className="mt-1 text-amber-200/80">Совпадение с записью не проверено</p>
+                )}
+              </>
+            )}
+            {feedback?.status === "sent" ? (
+              <p role="status" className="mt-2 text-emerald-300">Спасибо, сообщение отправлено</p>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  aria-expanded={feedback?.open ?? false}
+                  onClick={() => setFeedbackState({
+                    trackId: track.id,
+                    open: !feedback?.open,
+                    reason: feedback?.reason ?? null,
+                    status: "idle",
+                  })}
+                  className="mt-2 inline-flex items-center gap-2 rounded-md py-1 text-white/65 hover:text-white focus-visible:outline-2 focus-visible:outline-white"
+                >
+                  <Flag className="h-3.5 w-3.5" /> Сообщить о проблеме
+                </button>
+                {feedback?.open && (
+                  <form onSubmit={(event) => { event.preventDefault(); void submitFeedback(); }} className="mt-2 space-y-3 border-t border-white/10 pt-3">
+                    {hasLyrics ? (
+                      <fieldset className="space-y-2">
+                        <legend className="mb-2 text-white/85">Что не так?</legend>
+                        {feedbackReasons.map(({ value, label }) => (
+                          <label key={value} className="flex cursor-pointer items-center gap-2 py-1 text-sm text-white/75">
+                            <input
+                              type="radio"
+                              name={`lyrics-feedback-${track.id}`}
+                              value={value}
+                              checked={feedback.reason === value}
+                              onChange={() => setFeedbackState({ ...feedback, reason: value, status: "idle" })}
+                              className="accent-primary"
+                            />
+                            {label}
+                          </label>
+                        ))}
+                      </fieldset>
+                    ) : (
+                      <p className="text-sm text-white/75">Текст отсутствует</p>
+                    )}
+                    {feedback.status === "error" && (
+                      <p role="alert" className="text-amber-200">Не удалось отправить. Попробуйте снова.</p>
+                    )}
+                    <button
+                      type="submit"
+                      disabled={feedback.status === "sending" || (hasLyrics && !feedback.reason)}
+                      className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
+                    >
+                      {feedback.status === "sending" ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" /> : <Send className="h-4 w-4" />}
+                      Отправить
+                    </button>
+                  </form>
+                )}
+              </>
             )}
           </footer>
         )}

@@ -932,13 +932,17 @@ describe("baselineTfStartupSchema", () => {
     }
   });
 
-  test("adopts exact legacy objects then applies the privilege migration", async () => {
+  test("adopts exact legacy objects then applies every successor migration", async () => {
     const first = await readFile(
       join(canonicalMigrationDirectory, TF_MIGRATION_MANIFEST[0]!.name),
       "utf8",
     );
     const second = await readFile(
       join(canonicalMigrationDirectory, TF_MIGRATION_MANIFEST[1]!.name),
+      "utf8",
+    );
+    const third = await readFile(
+      join(canonicalMigrationDirectory, TF_MIGRATION_MANIFEST[2]!.name),
       "utf8",
     );
     const pool = new MigrationPoolDouble();
@@ -954,11 +958,13 @@ describe("baselineTfStartupSchema", () => {
       applied: [
         "0001_tf_core_collections.sql",
         "0002_tf_runtime_privileges.sql",
+        "0003_lyrics_feedback.sql",
       ],
       alreadyApplied: [],
     });
     expect(pool.client.queries.some(({ text }) => text === first)).toBe(false);
     expect(pool.client.queries.some(({ text }) => text === second)).toBe(true);
+    expect(pool.client.queries.some(({ text }) => text === third)).toBe(true);
     expect(
       pool.client.queries.filter(({ text }) => /owner to/i.test(text)),
     ).toHaveLength(12);
@@ -982,8 +988,8 @@ describe("baselineTfStartupSchema", () => {
       text.includes("insert into apollo_tf.schema_migrations"),
     );
 
-    expect(begins).toHaveLength(2);
-    expect(commits).toHaveLength(2);
+    expect(begins).toHaveLength(3);
+    expect(commits).toHaveLength(3);
     expect(lock).toBeGreaterThan(baselineBegin);
     expect(catalog).toBeGreaterThan(lock);
     expect(owner).toBeGreaterThan(catalog);

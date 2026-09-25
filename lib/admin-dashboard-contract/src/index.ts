@@ -325,3 +325,23 @@ export function parseDashboardSnapshot(value: unknown): DashboardSnapshot {
   }
   return result.data;
 }
+
+export const lyricsFeedbackListSchema = z.object({
+  schemaVersion: z.literal(1),
+  reports: z.array(z.object({
+    id: z.number().int().positive(),
+    accountId: z.string().uuid(),
+    trackId: z.string().trim().min(1).max(4096),
+    artist: z.string().trim().min(1).max(200),
+    title: z.string().trim().min(1).max(300),
+    lyricsSource: z.enum(["lrclib", "lyrics.ovh", "none"]),
+    reason: z.enum(["wrong_track", "out_of_sync", "incomplete", "missing"]),
+    createdAt: timestampSchema,
+  }).strict()).max(25),
+}).strict();
+
+export type LyricsFeedbackList = z.infer<typeof lyricsFeedbackListSchema>;
+
+export function parseLyricsFeedbackList(value: unknown): LyricsFeedbackList {
+  return lyricsFeedbackListSchema.parse(value);
+}

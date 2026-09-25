@@ -1206,6 +1206,35 @@ svg {
   scroll-margin-top: 80px;
 }
 
+.lyrics-feedback-panel {
+  grid-column: 1 / -1;
+}
+
+.lyrics-feedback-panel table {
+  min-width: 660px;
+}
+
+.lyrics-feedback-panel th[scope="row"] strong,
+.lyrics-feedback-panel th[scope="row"] small {
+  display: block;
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lyrics-feedback-panel th[scope="row"] small {
+  color: var(--color-subtle);
+  font-weight: 400;
+}
+
+.lyrics-feedback-state {
+  margin: 0;
+  padding: 14px;
+  color: var(--color-subtle);
+  font-size: 12px;
+}
+
 .data-panel-header {
   display: flex;
   min-height: 48px;

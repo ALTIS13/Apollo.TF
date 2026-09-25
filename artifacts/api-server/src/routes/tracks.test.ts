@@ -186,6 +186,7 @@ function routeDependencies(overrides: Partial<TrackRouteDependencies> = {}) {
       },
     ]),
     recordPlay: vi.fn().mockResolvedValue(undefined),
+    recordLyricsFeedback: vi.fn().mockResolvedValue("recorded"),
     loadTopArtists: vi.fn().mockResolvedValue([]),
     loadLikedArtists: vi.fn().mockResolvedValue([]),
     enqueueDownload: vi.fn().mockResolvedValue({
@@ -789,6 +790,55 @@ it("marks lyrics.ovh fallback as unverified when LRCLIB has no matching recordin
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+it("records a lyrics issue for the authenticated account without accepting client identity or lyrics text", async () => {
+  const recordLyricsFeedback = vi.fn()
+    .mockResolvedValueOnce("recorded")
+    .mockResolvedValueOnce("already_reported");
+  const baseUrl = await startTracksServer(routeDependencies({ recordLyricsFeedback }));
+  const body = {
+    trackId: "yt_first",
+    artist: "Artist",
+    title: "First song",
+    durationSeconds: 180,
+    lyricsSource: "lrclib",
+    reason: "wrong_track",
+  };
+
+  const first = await fetch(`${baseUrl}/tracks/lyrics/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  expect(first.status).toBe(201);
+  await expect(first.json()).resolves.toEqual({ state: "recorded" });
+  expect(recordLyricsFeedback).toHaveBeenCalledWith({
+    accountId: ACCOUNT_ID,
+    ...body,
+  });
+
+  const duplicate = await fetch(`${baseUrl}/tracks/lyrics/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  expect(duplicate.status).toBe(200);
+  await expect(duplicate.json()).resolves.toEqual({ state: "already_reported" });
+
+  for (const extra of [
+    { accountId: OTHER_ACCOUNT_ID },
+    { lyrics: "private text" },
+    { lyricsSource: "none" },
+  ]) {
+    const invalid = await fetch(`${baseUrl}/tracks/lyrics/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, ...extra }),
+    });
+    expect(invalid.status).toBe(400);
+  }
+  expect(recordLyricsFeedback).toHaveBeenCalledTimes(2);
 });
 
 describe("stream preview boundary", () => {
