@@ -283,6 +283,27 @@ it("keeps source selections and keyboard search submission in the compact Home f
   expect(screen.getByRole("checkbox", { name: "YouTube" })).toBeChecked();
 });
 
+it("offers a completed exact search again after returning to Home", async () => {
+  candidateFixture = true;
+  const user = userEvent.setup();
+  await open("/");
+  await user.click(screen.getByRole("button", { name: "Точный" }));
+  await user.type(screen.getByRole("textbox", { name: "Исполнитель" }), "Fixture Artist");
+  await user.type(screen.getByRole("combobox", { name: "Название трека" }), "Saved Fixture Track");
+  await user.click(screen.getByRole("button", { name: "Найти" }));
+  await screen.findByText("Independent Recording");
+
+  await user.click(screen.getByRole("link", { name: "Коллекция" }));
+  await user.click(screen.getByRole("link", { name: "Поиск" }));
+
+  const repeat = await screen.findByRole("button", {
+    name: "Повторить поиск: Fixture Artist — Saved Fixture Track",
+  });
+  await user.click(repeat);
+  await screen.findByText("Independent Recording");
+  expect(calls.filter(({ path }) => path.endsWith("/tracks/search"))).toHaveLength(2);
+});
+
 it("resolves a provider-library track in place into playable and savable TF candidates", async () => {
   candidateFixture = true;
   const user = userEvent.setup();

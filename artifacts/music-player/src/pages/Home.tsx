@@ -7,7 +7,8 @@ import { CollectionActions } from "@/components/CollectionActions";
 import { useLikedTrackLookup } from "@/hooks/use-liked-collection";
 import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, reportTfAuthError, TfApiError, tfRequestInit } from "@/lib/tf-session-client";
 import { useTfAuth } from "@/auth/tf-auth";
-import { Search, Music2, Loader2, AlertCircle } from "lucide-react";
+import { clearRecentSearches, readRecentSearches, rememberRecentSearch, removeRecentSearch, type RecentSearch } from "@/lib/recent-searches";
+import { Search, Music2, Loader2, AlertCircle, Clock3, X } from "lucide-react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 
 type FilterType = TrackType | "all";
@@ -69,6 +70,27 @@ export default function Home() {
   const suggestionRegionRef = useRef<HTMLDivElement>(null);
   const [activeFilter, setActiveFilter] = useState<FilterType>("all");
   const [hasSearched, setHasSearched] = useState(false);
+  const recentAccountId = session?.accountId ?? null;
+  const recentInstallationId = session?.installationId ?? null;
+  const recentIdentityKey = recentAccountId && recentInstallationId
+    ? `${recentAccountId}:${recentInstallationId}`
+    : null;
+  const [recentState, setRecentState] = useState<{ identityKey: string | null; items: RecentSearch[] }>({
+    identityKey: null,
+    items: [],
+  });
+  const recentSearches = recentState.identityKey === recentIdentityKey ? recentState.items : [];
+
+  useEffect(() => {
+    if (!recentAccountId || !recentInstallationId) {
+      setRecentState({ identityKey: null, items: [] });
+      return;
+    }
+    setRecentState({
+      identityKey: `${recentAccountId}:${recentInstallationId}`,
+      items: readRecentSearches({ accountId: recentAccountId, installationId: recentInstallationId }),
+    });
+  }, [recentAccountId, recentInstallationId]);
 
   const [sourceMode, setSourceMode] = useState<SourceMode>(
     () => loadSourcePrefs().mode,
@@ -123,6 +145,17 @@ export default function Home() {
         if (isCurrentTfSecurityGeneration(generation)) reportTfAuthError(error);
         throw error;
       }
+    },
+    onSuccess: (_result, variables) => {
+      if (!recentAccountId || !recentInstallationId) return;
+      const identity = { accountId: recentAccountId, installationId: recentInstallationId };
+      const input = "query" in variables
+        ? { kind: "quick" as const, query: variables.query }
+        : { kind: "exact" as const, artist: variables.artist, title: variables.title };
+      setRecentState({
+        identityKey: `${recentAccountId}:${recentInstallationId}`,
+        items: rememberRecentSearch(identity, input),
+      });
     },
   });
 
@@ -260,6 +293,41 @@ export default function Home() {
     setHasSearched(true);
     setSuggestionsOpen(false);
     searchMutation.mutate(buildSearchData(pair.artist, pair.title));
+  };
+
+  const repeatRecentSearch = (entry: RecentSearch) => {
+    setQuickError(false);
+    setSuggestionsSuppressed(true);
+    setSuggestionsOpen(false);
+    setActiveFilter("all");
+    setHasSearched(true);
+    if (entry.kind === "quick") {
+      setSearchMode("quick");
+      setQuickQuery(entry.query);
+      setArtist("");
+      setTitle("");
+      searchMutation.mutate(buildFreeSearchData(entry.query));
+    } else {
+      setSearchMode("exact");
+      setArtist(entry.artist);
+      setTitle(entry.title);
+      setQuickQuery(`${entry.artist} — ${entry.title}`);
+      searchMutation.mutate(buildSearchData(entry.artist, entry.title));
+    }
+  };
+
+  const removeRecent = (entry: RecentSearch) => {
+    if (!recentAccountId || !recentInstallationId) return;
+    setRecentState({
+      identityKey: `${recentAccountId}:${recentInstallationId}`,
+      items: removeRecentSearch({ accountId: recentAccountId, installationId: recentInstallationId }, entry),
+    });
+  };
+
+  const clearRecent = () => {
+    if (!recentAccountId || !recentInstallationId) return;
+    clearRecentSearches({ accountId: recentAccountId, installationId: recentInstallationId });
+    setRecentState({ identityKey: `${recentAccountId}:${recentInstallationId}`, items: [] });
   };
 
   const suggestionList = suggestionsOpen && (
@@ -460,19 +528,24 @@ export default function Home() {
       </header>
 
       <section
-        aria-label="Результаты поиска"
+        aria-label={!hasSearched && recentSearches.length > 0 ? "Недавний поиск" : "Результаты поиска"}
         aria-busy={searchMutation.isPending}
         className="mx-auto max-w-5xl px-4 py-5 sm:px-6"
       >
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-base font-semibold tracking-normal text-foreground">
-            Результаты{" "}
+            {!hasSearched && recentSearches.length > 0 ? "Недавний поиск" : "Результаты"}{" "}
             {searchMutation.data && !searchMutation.isPending && (
               <span className="ml-1 font-normal tabular-nums text-muted-foreground">
                 {filteredResults.length}
               </span>
             )}
           </h2>
+          {!hasSearched && recentSearches.length > 0 && (
+            <button type="button" onClick={clearRecent} className="text-xs text-muted-foreground hover:text-white focus-visible:outline-2 focus-visible:outline-white">
+              Очистить
+            </button>
+          )}
           {!searchMutation.isPending && results.length > 0 && (
             <div
               role="group"
@@ -492,7 +565,36 @@ export default function Home() {
             </div>
           )}
         </div>
-        {!hasSearched && (
+        {!hasSearched && recentSearches.length > 0 && (
+          <div className="divide-y divide-white/10 border-y border-white/10">
+            {recentSearches.map((entry) => {
+              const label = entry.kind === "quick" ? entry.query : `${entry.artist} — ${entry.title}`;
+              return (
+                <div key={`${entry.kind}:${label.toLowerCase()}`} className="flex min-h-12 items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label={`Повторить поиск: ${label}`}
+                    onClick={() => repeatRecentSearch(entry)}
+                    className="flex min-w-0 flex-1 items-center gap-3 py-3 text-left text-sm text-foreground hover:text-primary focus-visible:outline-2 focus-visible:outline-white"
+                  >
+                    <Clock3 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{label}</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Удалить из недавнего: ${label}`}
+                    title="Удалить из недавнего"
+                    onClick={() => removeRecent(entry)}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-white/5 hover:text-white focus-visible:outline-2 focus-visible:outline-white"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {!hasSearched && recentSearches.length === 0 && (
           <div className="flex items-center gap-3 py-8 text-sm text-muted-foreground">
             <Search className="h-5 w-5" />
             Нет результатов поиска
