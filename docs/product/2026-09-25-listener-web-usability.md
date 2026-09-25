@@ -20,5 +20,5 @@ Owner: Apollo.TF web player. Stage: source and fixture-backed browser check, not
 
 1. Establish a reachable isolated integrated Platform + TF web/API stack, exercise real session and capability gates, then open the responsive web app on a physical phone. Keep existing HomeNode services outside the trial.
 2. Design server-owned manual ordering for liked tracks across pagination and devices, with an account revision/conflict rule. Existing Apollo playlist reorder already persists; do not reimplement it.
-3. Improve recommendations with explicit preference signals and honest explanations, then add a lyrics mismatch-reporting path. Existing play-history recommendations and timed lyrics are a starting point, not new work to repeat.
+3. Liked-track artists now seed recommendations alongside play history, with a response basis derived only from visible results. Negative preference signals and per-track explanations remain open; add a durable lyrics mismatch-reporting path with operator visibility rather than a log-only button.
 4. Treat offline library as a separate source-rights and lifecycle project; a browser file download is not offline listening.

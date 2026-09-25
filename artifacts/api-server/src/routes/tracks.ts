@@ -16,7 +16,7 @@ import {
   listSessionDownloadJobs,
 } from "../lib/background-queue.js";
 import { db } from "@workspace/db";
-import { playHistoryTable } from "@workspace/db/schema";
+import { likedTracksTable, playHistoryTable } from "@workspace/db/schema";
 import { eq, sql } from "drizzle-orm";
 import {
   TfSearchUnavailableError,
@@ -61,6 +61,9 @@ export interface TrackRouteDependencies {
   ) => Promise<readonly RecentTrack[]>;
   readonly recordPlay: (input: RecordPlayInput) => Promise<void>;
   readonly loadTopArtists: (
+    accountId: string,
+  ) => Promise<readonly (string | null)[]>;
+  readonly loadLikedArtists: (
     accountId: string,
   ) => Promise<readonly (string | null)[]>;
   readonly enqueueDownload: typeof enqueueDownload;
@@ -321,6 +324,16 @@ const defaultTrackRouteDependencies: TrackRouteDependencies = {
       .where(eq(playHistoryTable.sessionId, accountId))
       .groupBy(playHistoryTable.artist)
       .orderBy(sql`count(*) desc`)
+      .limit(10);
+    return rows.map((row) => row.artist);
+  },
+  async loadLikedArtists(accountId) {
+    const rows = await db
+      .select({ artist: likedTracksTable.artist })
+      .from(likedTracksTable)
+      .where(eq(likedTracksTable.sessionId, accountId))
+      .groupBy(likedTracksTable.artist)
+      .orderBy(sql`count(*) desc`, sql`max(${likedTracksTable.likedAt}) desc`)
       .limit(10);
     return rows.map((row) => row.artist);
   },
@@ -980,12 +993,35 @@ export function createTracksRouter(
 
   router.get("/tracks/recommendations", async (req, res) => {
     try {
-      const artists = (
-        await routeDependencies.loadTopArtists(req.tfPrincipal!.accountId)
-      ).filter((artist): artist is string => !!artist);
+      const accountId = req.tfPrincipal!.accountId;
+      const [likedResult, historyResult] = await Promise.allSettled([
+        routeDependencies.loadLikedArtists(accountId),
+        routeDependencies.loadTopArtists(accountId),
+      ]);
+      if (likedResult.status === "rejected") {
+        req.log?.warn({ source: "liked_tracks" }, "Recommendation signal unavailable");
+      }
+      if (historyResult.status === "rejected") {
+        req.log?.warn({ source: "listening_history" }, "Recommendation signal unavailable");
+      }
+      const seeds: { artist: string; basis: "liked_tracks" | "listening_history" }[] = [];
+      const seenArtists = new Set<string>();
+      for (const [artists, basis] of [
+        [likedResult.status === "fulfilled" ? likedResult.value : [], "liked_tracks"],
+        [historyResult.status === "fulfilled" ? historyResult.value : [], "listening_history"],
+      ] as const) {
+        for (const candidate of artists) {
+          const artist = candidate?.trim();
+          if (!artist || artist.length > 300 || seenArtists.has(artist.toLowerCase())) continue;
+          seenArtists.add(artist.toLowerCase());
+          seeds.push({ artist, basis });
+          if (seeds.length === 10) break;
+        }
+        if (seeds.length === 10) break;
+      }
 
-      if (artists.length === 0) {
-        res.json({ results: [] });
+      if (seeds.length === 0) {
+        res.json({ results: [], basis: "none" });
         return;
       }
       if (!hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
@@ -993,7 +1029,7 @@ export function createTracksRouter(
         return;
       }
 
-      const discoveryPromises = artists.map((artist) =>
+      const discoveryPromises = seeds.map(({ artist }) =>
         routeDependencies.searchGateway
           .discoverArtist({
             artist,
@@ -1004,23 +1040,31 @@ export function createTracksRouter(
       );
 
       const settled = await Promise.allSettled(discoveryPromises);
-      const allResults = settled.flatMap((outcome) =>
-        outcome.status === "fulfilled" ? outcome.value : [],
-      );
-
       const seen = new Set<string>();
-      const deduped = allResults.filter((r) => {
-        if (seen.has(r.id)) return false;
-        seen.add(r.id);
-        return true;
-      });
-
-      const limited = deduped.slice(0, 20).map(publicSearchResult);
-
-      res.json({ results: limited });
+      const contributed = new Set<"liked_tracks" | "listening_history">();
+      const results: ReturnType<typeof publicSearchResult>[] = [];
+      for (const [index, outcome] of settled.entries()) {
+        if (outcome.status !== "fulfilled") continue;
+        for (const candidate of outcome.value) {
+          if (seen.has(candidate.id)) continue;
+          seen.add(candidate.id);
+          results.push(publicSearchResult(candidate));
+          contributed.add(seeds[index]!.basis);
+          if (results.length === 20) break;
+        }
+        if (results.length === 20) break;
+      }
+      const basis = contributed.size === 2
+        ? "mixed"
+        : contributed.has("liked_tracks")
+          ? "liked_tracks"
+          : contributed.has("listening_history")
+            ? "listening_history"
+            : "none";
+      res.json({ results, basis });
     } catch {
       req.log?.warn("Failed to generate recommendations");
-      res.json({ results: [] });
+      res.json({ results: [], basis: "none" });
     }
   });
 

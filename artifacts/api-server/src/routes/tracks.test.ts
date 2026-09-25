@@ -187,6 +187,7 @@ function routeDependencies(overrides: Partial<TrackRouteDependencies> = {}) {
     ]),
     recordPlay: vi.fn().mockResolvedValue(undefined),
     loadTopArtists: vi.fn().mockResolvedValue([]),
+    loadLikedArtists: vi.fn().mockResolvedValue([]),
     enqueueDownload: vi.fn().mockResolvedValue({
       jobId: "job-created",
       position: 1,
@@ -543,6 +544,7 @@ describe("TF search module routing", () => {
     });
     expect(gateway.search).not.toHaveBeenCalled();
     expect(body).toMatchObject({
+      basis: "listening_history",
       results: [
         { id: "yt_result_0" },
         { id: "yt_result_1" },
@@ -551,6 +553,55 @@ describe("TF search module routing", () => {
     });
     expect(JSON.stringify(body)).not.toContain("sourceUrl");
     expect(JSON.stringify(body)).not.toContain("providerStatus");
+  });
+
+  it("discovers from saved artists when an account has no listening history", async () => {
+    const gateway = searchGateway();
+    const loadLikedArtists = vi.fn().mockResolvedValue(["Favorite Artist"]);
+    gateway.discoverArtist.mockResolvedValue(
+      artistDiscoveryResponse({ query: "Favorite Artist", results: [result(7)] }),
+    );
+    const baseUrl = await startTracksServer(routeDependencies({
+      searchGateway: gateway,
+      loadLikedArtists,
+      loadTopArtists: vi.fn().mockResolvedValue([]),
+    }));
+
+    const response = await fetch(`${baseUrl}/tracks/recommendations`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      basis: "liked_tracks",
+      results: [{ id: "yt_result_7" }],
+    });
+    expect(loadLikedArtists).toHaveBeenCalledWith(ACCOUNT_ID);
+    expect(gateway.discoverArtist).toHaveBeenCalledWith({
+      artist: "Favorite Artist",
+      sources: ["yt", "sc"],
+      limitPerSource: 6,
+    });
+  });
+
+  it("deduplicates artist seeds and names only sources that produced results", async () => {
+    const gateway = searchGateway();
+    gateway.discoverArtist
+      .mockResolvedValueOnce(artistDiscoveryResponse({ results: [result(0)] }))
+      .mockRejectedValueOnce(new Error("saved artist unavailable"))
+      .mockResolvedValueOnce(artistDiscoveryResponse({ results: [result(9)] }));
+    const baseUrl = await startTracksServer(routeDependencies({
+      searchGateway: gateway,
+      loadLikedArtists: vi.fn().mockResolvedValue(["Artist", " artist ", "Saved"]),
+      loadTopArtists: vi.fn().mockResolvedValue(["ARTIST", "History"]),
+    }));
+
+    const response = await fetch(`${baseUrl}/tracks/recommendations`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      basis: "mixed",
+      results: [{ id: "yt_result_0" }, { id: "yt_result_9" }],
+    });
+    expect(gateway.discoverArtist.mock.calls.map(([input]) => input.artist)).toEqual([
+      "Artist", "Saved", "History",
+    ]);
   });
 
   it("isolates artist discovery failures and returns at most 20 deduped public candidates", async () => {
@@ -605,7 +656,7 @@ describe("TF search module routing", () => {
     const response = await fetch(`${baseUrl}/tracks/recommendations`);
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ results: [] });
+    await expect(response.json()).resolves.toEqual({ results: [], basis: "none" });
   });
 
   it("uses private module candidates for every Deezer playback and download fallback", async () => {
@@ -1046,6 +1097,7 @@ describe("track account ownership", () => {
       title: "Title",
     });
     expect(dependencies.loadTopArtists).toHaveBeenCalledWith(ACCOUNT_ID);
+    expect(dependencies.loadLikedArtists).toHaveBeenCalledWith(ACCOUNT_ID);
     expect(
       JSON.stringify(dependencies.loadRecentTracks.mock.calls),
     ).not.toContain(OTHER_ACCOUNT_ID);
@@ -1054,6 +1106,9 @@ describe("track account ownership", () => {
     );
     expect(
       JSON.stringify(dependencies.loadTopArtists.mock.calls),
+    ).not.toContain(OTHER_ACCOUNT_ID);
+    expect(
+      JSON.stringify(dependencies.loadLikedArtists.mock.calls),
     ).not.toContain(OTHER_ACCOUNT_ID);
   });
 

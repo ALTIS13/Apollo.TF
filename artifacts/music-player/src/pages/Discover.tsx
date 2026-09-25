@@ -7,17 +7,34 @@ import { motion, AnimatePresence } from "framer-motion";
 import type { TrackResult } from "@workspace/api-client-react";
 import { tfFetch } from "@/lib/tf-session-client";
 
+type RecommendationBasis = "liked_tracks" | "listening_history" | "mixed" | "none";
+
+const basisLabels: Record<RecommendationBasis, string> = {
+  liked_tracks: "По вашим сохранённым трекам",
+  listening_history: "По вашей истории прослушивания",
+  mixed: "По любимому и истории прослушивания",
+  none: "Подборка для вас",
+};
+
 export default function Discover() {
   const [recommendations, setRecommendations] = useState<TrackResult[]>([]);
+  const [basis, setBasis] = useState<RecommendationBasis>("none");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const likedLookup = useLikedTrackLookup(recommendations.map((track) => track.id));
 
   useEffect(() => {
     setIsLoading(true);
-    tfFetch<{ results: TrackResult[] }>("/tracks/recommendations?limit=20")
+    tfFetch<{ results: TrackResult[]; basis?: RecommendationBasis }>("/tracks/recommendations?limit=20")
       .then((data) => {
         setRecommendations(data.results ?? []);
+        setBasis(
+          data.basis === "liked_tracks" ||
+          data.basis === "listening_history" ||
+          data.basis === "mixed"
+            ? data.basis
+            : "none",
+        );
         setError(null);
       })
       .catch((e: Error) => setError(e.message))
@@ -28,12 +45,12 @@ export default function Discover() {
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 pb-32">
       {/* Header */}
       <div className="flex items-center gap-3 mb-8">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/30 to-pink-500/30 flex items-center justify-center border border-white/10">
-          <Sparkles className="w-5 h-5 text-purple-400" />
+        <div className="w-10 h-10 rounded-md bg-white/5 flex items-center justify-center border border-white/10">
+          <Sparkles className="w-5 h-5 text-primary" />
         </div>
         <div>
           <h1 className="text-xl font-bold text-white">Рекомендации</h1>
-          <p className="text-white/40 text-sm">На основе вашей истории прослушиваний</p>
+          <p className="text-white/50 text-sm">{basisLabels[basis]}</p>
         </div>
       </div>
 
@@ -70,12 +87,12 @@ export default function Discover() {
             animate={{ opacity: 1, y: 0 }}
             className="text-center py-24"
           >
-            <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center mx-auto mb-5">
-              <Music2 className="w-10 h-10 text-white/20" />
+            <div className="w-12 h-12 rounded-md bg-white/5 flex items-center justify-center mx-auto mb-4">
+              <Music2 className="w-6 h-6 text-white/30" />
             </div>
             <h2 className="text-xl font-semibold text-white/50 mb-2">Пока нет рекомендаций</h2>
             <p className="text-white/25 text-sm max-w-xs mx-auto">
-              Послушайте несколько треков через поиск, и мы начнём подбирать музыку специально для вас.
+              Сохраните понравившиеся треки или послушайте музыку, чтобы появились рекомендации.
             </p>
           </motion.div>
         )}
