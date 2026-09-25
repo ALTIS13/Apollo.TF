@@ -109,3 +109,50 @@
     @apply bg-card/60 backdrop-blur-md border border-white/5 shadow-xl transition-all duration-300;
   }
 }
+
+.player-seek {
+  appearance: none;
+  background: transparent;
+  touch-action: pan-y;
+}
+
+.player-seek::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, #8ddbd4 var(--seek-progress), #ffffff30 var(--seek-progress));
+}
+
+.player-seek::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border: 2px solid #0a1114;
+  border-radius: 50%;
+  background: #d8f4f0;
+}
+
+.player-seek::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: #ffffff30;
+}
+
+.player-seek::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: #8ddbd4;
+}
+
+.player-seek::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #0a1114;
+  border-radius: 50%;
+  background: #d8f4f0;
+}
+
+.player-seek:focus-visible {
+  outline: 2px solid #8ddbd4;
+  outline-offset: 2px;
+}

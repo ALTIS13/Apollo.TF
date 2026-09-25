@@ -7,11 +7,12 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { TfAuthProvider, useTfAuth } from "@/auth/tf-auth";
-import { SaveLikedTrackButton } from "@/components/LikedCollection";
+import { LikedCollection, SaveLikedTrackButton } from "@/components/LikedCollection";
 import {
   useLikedCollection,
   useSaveLikedTrack,
@@ -29,6 +30,8 @@ const item = {
   durationSeconds: 180,
   likedAt: "2026-09-04T20:00:00.000Z",
 };
+const playCollection = vi.hoisted(() => vi.fn());
+vi.mock("@/hooks/use-player", () => ({ usePlayer: () => ({ playCollection, playTrack: vi.fn() }) }));
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), {
     headers: { "Content-Type": "application/json" },
@@ -57,6 +60,10 @@ function fixture() {
             rows.some((row) => row.trackId === id)),
         });
       }
+      if (path.endsWith("/playlists"))
+        return json({ playlists: [{ id: 7, name: "Evening", trackCount: 0 }] });
+      if (path.endsWith("/playlists/7/tracks") && init?.method === "POST")
+        return json({ added: true });
       if (init?.method === "PUT") {
         rows = [item];
         return json({ item });
@@ -109,6 +116,30 @@ function setup() {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  playCollection.mockClear();
+});
+
+it("plays the loaded liked tracks in order and adds one to an Apollo playlist", async () => {
+  const f = fixture();
+  f.setRows([item, { ...item, trackId: "sc_second", title: "Second" }]);
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  await screen.findByText("Second");
+
+  await user.click(screen.getByRole("button", { name: "Воспроизвести загруженные треки" }));
+  expect(playCollection).toHaveBeenCalledWith([
+    expect.objectContaining({ id: "yt_track", title: "Track" }),
+    expect.objectContaining({ id: "sc_second", title: "Second" }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Добавить Track в плейлист" }));
+  await user.click(await screen.findByRole("button", { name: /Evening/ }));
+  await waitFor(() => expect(f.fetchMock.mock.calls.some(([url, init]) =>
+    String(url).endsWith("/playlists/7/tracks") && init?.method === "POST"
+  )).toBe(true));
+  const add = f.fetchMock.mock.calls.find(([url]) => String(url).endsWith("/playlists/7/tracks"))!;
+  expect(JSON.parse(String(add[1]?.body))).toMatchObject({ trackId: "yt_track", artist: "Artist", title: "Track" });
+  expect(JSON.parse(String(add[1]?.body))).not.toHaveProperty("accountId");
 });
 
 it("saves/removes with current cookie/CSRF flow and invalidates the account collection", async () => {

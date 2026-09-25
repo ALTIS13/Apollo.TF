@@ -24,6 +24,7 @@ import {
 import { usePlayer } from "@/hooks/use-player";
 import { useToast } from "@/hooks/use-toast";
 import { formatDuration } from "@/lib/utils";
+import { PlaylistAction } from "@/components/PlaylistAction";
 import { useEffect, useState } from "react";
 
 export function SaveLikedTrackButton({ track, saved, checking = false }: {
@@ -114,7 +115,7 @@ function playableTrack(item: LikedTrack): TrackResult {
 
 export function LikedCollection() {
   const { query, items, remove, allowed } = useLikedCollection();
-  const { playTrack } = usePlayer();
+  const { playTrack, playCollection } = usePlayer();
   if (!allowed)
     return (
       <div className="flex items-center gap-3 py-12 text-sm text-white/60">
@@ -124,7 +125,7 @@ export function LikedCollection() {
     );
   return (
     <section aria-label="Коллекция Apollo" className="text-white">
-      <div className="mb-4 flex items-center justify-between gap-3">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-base font-semibold tracking-normal">
           Моя коллекция
         </h2>
@@ -132,6 +133,17 @@ export function LikedCollection() {
           {query.data && (
             <span className="tabular-nums">Загружено: {items.length}</span>
           )}
+          <Button
+            type="button"
+            size="sm"
+            className="h-9 rounded-md bg-[#8ddbd4] px-3 text-[#071315] hover:bg-[#abe9e3]"
+            aria-label="Воспроизвести загруженные треки"
+            disabled={items.length === 0}
+            onClick={() => void playCollection(items.map(playableTrack))}
+          >
+            <Play className="mr-1.5 h-4 w-4 fill-current" />
+            Воспроизвести
+          </Button>
           <Button
             type="button"
             size="icon"
@@ -224,6 +236,7 @@ export function LikedCollection() {
               >
                 <Play className="h-4 w-4" />
               </Button>
+              <PlaylistAction track={playableTrack(item)} />
               <Button
                 type="button"
                 variant="ghost"

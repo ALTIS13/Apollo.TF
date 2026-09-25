@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { TrackCard } from "@/components/TrackCard";
-import { CollectionActions } from "@/components/PlaylistAction";
+import { CollectionActions } from "@/components/CollectionActions";
 import { useLikedTrackLookup } from "@/hooks/use-liked-collection";
 import { Sparkles, Music2, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";

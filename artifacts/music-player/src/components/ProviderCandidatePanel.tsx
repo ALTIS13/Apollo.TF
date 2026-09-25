@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import { searchTracks, type SearchResponse } from "@workspace/api-client-react";
 import { AlertCircle, Loader2, Search, X } from "lucide-react";
 import { useTfAuth } from "@/auth/tf-auth";
-import { CollectionActions } from "@/components/PlaylistAction";
+import { CollectionActions } from "@/components/CollectionActions";
 import { TrackCard } from "@/components/TrackCard";
 import { useLikedTrackLookup } from "@/hooks/use-liked-collection";
 import {

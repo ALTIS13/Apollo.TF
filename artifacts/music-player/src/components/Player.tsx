@@ -6,8 +6,8 @@ import {
   Music, Loader2, ScrollText,
   Shuffle, Repeat, Repeat1,
 } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
-import type { KeyboardEvent } from "react";
+import { useState, useEffect } from "react";
+import type { CSSProperties, KeyboardEvent } from "react";
 import { LyricsPanel } from "./LyricsPanel";
 
 function keepSpaceOnButton(event: KeyboardEvent<HTMLButtonElement>) {
@@ -25,8 +25,6 @@ export function Player() {
     repeatMode, shuffleEnabled, cycleRepeatMode, toggleShuffle,
   } = usePlayer();
 
-  const seekBarRef = useRef<HTMLDivElement>(null);
-  const [isDragging, setIsDragging] = useState(false);
   const [lyricsOpen, setLyricsOpen] = useState(false);
 
   useEffect(() => {
@@ -35,27 +33,7 @@ export function Player() {
 
   const hasNext = queueIndex < queue.length - 1 || (repeatMode === "all" && queue.length > 0);
   const hasPrev = queueIndex > 0 || progress > 3;
-  const progressPct = duration > 0 ? (progress / duration) * 100 : 0;
-
-  const computeSeekPct = (e: MouseEvent | React.MouseEvent) => {
-    if (!seekBarRef.current) return 0;
-    const rect = seekBarRef.current.getBoundingClientRect();
-    return Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
-  };
-
-  const handleSeekDown = (e: React.MouseEvent) => {
-    seekTo(computeSeekPct(e));
-    setIsDragging(true);
-  };
-
-  useEffect(() => {
-    if (!isDragging) return;
-    const onMove = (e: MouseEvent) => seekTo(computeSeekPct(e));
-    const onUp = () => setIsDragging(false);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-  }, [isDragging, seekTo]);
+  const progressPct = duration > 0 ? Math.max(0, Math.min(100, (progress / duration) * 100)) : 0;
 
   const VolumeIcon = volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
   const repeatLabel = repeatMode === "off" ? "Повтор: выключен" : repeatMode === "all" ? "Повтор: все треки" : "Повтор: один трек";
@@ -150,20 +128,19 @@ export function Player() {
           {/* Seek bar + time */}
           <div className="col-span-3 row-start-2 flex w-full items-center gap-2">
             <span className="text-[10px] font-mono text-muted-foreground w-8 text-right">{formatDuration(progress)}</span>
-            <div
-              ref={seekBarRef}
-              className="flex-1 h-1 bg-white/15 rounded-full cursor-pointer group relative"
-              onMouseDown={handleSeekDown}
-            >
-              <div
-                className="absolute top-0 left-0 h-full bg-white rounded-full group-hover:bg-primary transition-colors"
-                style={{ width: `${progressPct}%` }}
-              />
-              <div
-                className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
-                style={{ left: `${progressPct}%`, transform: "translate(-50%, -50%)" }}
-              />
-            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={0.1}
+              value={Number(progressPct.toFixed(1))}
+              onChange={(event) => seekTo(Number(event.currentTarget.value))}
+              disabled={!currentTrack || duration <= 0}
+              aria-label="Позиция воспроизведения"
+              aria-valuetext={`${formatDuration(progress)} из ${formatDuration(duration)}`}
+              className="player-seek h-7 min-w-0 flex-1 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+              style={{ "--seek-progress": `${progressPct}%` } as CSSProperties}
+            />
             <span className="text-[10px] font-mono text-muted-foreground w-8">{formatDuration(duration || currentTrack?.duration || 0)}</span>
           </div>
         </div>

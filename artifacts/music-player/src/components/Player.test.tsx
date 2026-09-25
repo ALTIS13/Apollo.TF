@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Player } from "./Player";
@@ -132,4 +132,17 @@ it("opens and closes the lyrics panel without changing playback", async () => {
   await user.click(screen.getByRole("button", { name: "Закрыть текст" }));
   expect(screen.queryByRole("dialog", { name: "Текст песни" })).toBeNull();
   expect(player.togglePlayPause).not.toHaveBeenCalled();
+});
+
+it("offers a native seek slider for touch and keyboard instead of a mouse-only bar", async () => {
+  const user = userEvent.setup();
+  render(<Player />);
+  const seek = screen.getByRole("slider", { name: "Позиция воспроизведения" });
+  expect(seek).toHaveValue("16.7");
+  fireEvent.change(seek, { target: { value: "50" } });
+  expect(player.seekTo).toHaveBeenCalledWith(50);
+  seek.focus();
+  await user.keyboard("{ArrowRight}");
+  expect(seek).toHaveFocus();
+  expect(globalShortcut).not.toHaveBeenCalled();
 });

@@ -3,7 +3,6 @@ import { ListMusic, Loader2, Plus } from "lucide-react";
 import type { TrackResult } from "@workspace/api-client-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { SaveLikedTrackButton } from "@/components/LikedCollection";
 import { useCollectionAccess } from "@/hooks/use-liked-collection";
 import { useAddPlaylistTrack, useCreatePlaylist, usePlaylists } from "@/hooks/use-playlists";
 import { useToast } from "@/hooks/use-toast";
@@ -97,11 +96,4 @@ export function PlaylistAction({ track }: { track: TrackResult }) {
       </DialogContent>
     </Dialog>
   </>;
-}
-
-export function CollectionActions({ track, saved, checking = false }: { track: TrackResult; saved: boolean; checking?: boolean }) {
-  return <div className="flex items-center gap-1">
-    <SaveLikedTrackButton track={track} saved={saved} checking={checking} />
-    <PlaylistAction track={track} />
-  </div>;
 }
