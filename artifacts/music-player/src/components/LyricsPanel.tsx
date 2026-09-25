@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { TrackResult } from "@workspace/api-client-react";
-import { AlertCircle, Loader2, ScrollText } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, Loader2, LocateFixed, ScrollText } from "lucide-react";
 import { useTfAuth } from "@/auth/tf-auth";
 import { formatDuration } from "@/lib/utils";
 import { tfFetch } from "@/lib/tf-session-client";
@@ -34,6 +35,10 @@ export function LyricsPanel({
   const { status, session, hasEntitlement } = useTfAuth();
   const accountId = status === "authenticated" ? session?.accountId : null;
   const allowed = accountId !== null && hasEntitlement("tf.search");
+  const [followState, setFollowState] = useState({ trackId: track.id, enabled: true });
+  const following = followState.trackId === track.id ? followState.enabled : true;
+  const scrollViewportRef = useRef<HTMLDivElement>(null);
+  const activeLineRef = useRef<HTMLButtonElement>(null);
   const lyrics = useQuery({
     queryKey: ["tf", "lyrics", accountId, track.id, track.artist, track.title, track.duration],
     enabled: open && allowed,
@@ -48,7 +53,10 @@ export function LyricsPanel({
     retry: false,
   });
 
-  const syncedLines = parseSyncedLyrics(lyrics.data?.syncedLyrics);
+  const syncedLines = useMemo(
+    () => parseSyncedLyrics(lyrics.data?.syncedLyrics),
+    [lyrics.data?.syncedLyrics],
+  );
   let activeLine = -1;
   for (let index = 0; index < syncedLines.length; index += 1) {
     if (syncedLines[index].time <= progress) activeLine = index;
@@ -57,6 +65,28 @@ export function LyricsPanel({
   const seekDuration = duration > 0 ? duration : track.duration;
   const plainText = lyrics.data?.plainLyrics?.trim() ||
     (syncedLines.length === 0 ? lyrics.data?.syncedLyrics?.trim() : null);
+  const scrollToActiveLine = useCallback(() => {
+    const viewport = scrollViewportRef.current;
+    const line = activeLineRef.current;
+    if (!viewport || !line) return;
+    const lineTop = line.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop;
+    const top = lineTop - (viewport.clientHeight - line.clientHeight) / 2;
+    viewport.scrollTo?.({
+      top: Math.max(0, top),
+      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
+  }, []);
+  const pauseFollowing = useCallback(() => {
+    setFollowState((current) =>
+      current.trackId === track.id && !current.enabled
+        ? current
+        : { trackId: track.id, enabled: false },
+    );
+  }, [track.id]);
+
+  useEffect(() => {
+    if (open && following && activeLine >= 0) scrollToActiveLine();
+  }, [activeLine, following, open, scrollToActiveLine, track.id, lyrics.data?.syncedLyrics]);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -66,14 +96,45 @@ export function LyricsPanel({
         className="flex w-full flex-col border-white/10 bg-[#11151d] p-0 text-white motion-reduce:transition-none sm:max-w-md"
       >
         <header className="shrink-0 border-b border-white/10 px-5 py-6 pr-12">
-          <SheetTitle className="flex items-center gap-2 text-base text-white">
-            <ScrollText className="h-4 w-4 text-primary" />
-            Текст песни
-          </SheetTitle>
+          <div className="flex items-center justify-between gap-2">
+            <SheetTitle className="flex items-center gap-2 text-base text-white">
+              <ScrollText className="h-4 w-4 text-primary" />
+              Текст песни
+            </SheetTitle>
+            <button
+              type="button"
+              aria-label="Следить за текущей строкой"
+              aria-pressed={following}
+              title={following ? "Следить за текущей строкой" : "Вернуться к текущей строке"}
+              disabled={syncedLines.length === 0}
+              onClick={() => {
+                if (following) scrollToActiveLine();
+                else setFollowState({ trackId: track.id, enabled: true });
+              }}
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:outline-2 focus-visible:outline-white disabled:opacity-40 ${following ? "text-primary" : "text-white/50 hover:bg-white/10 hover:text-white"}`}
+            >
+              <LocateFixed className="h-4 w-4" />
+            </button>
+          </div>
           <p className="mt-3 truncate text-sm font-medium text-white">{track.title}</p>
           <p className="truncate text-xs text-white/50">{track.artist}</p>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6">
+        <div
+          ref={scrollViewportRef}
+          role="region"
+          aria-label="Текст песни"
+          onWheel={pauseFollowing}
+          onTouchMove={pauseFollowing}
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) pauseFollowing();
+          }}
+          onKeyDown={(event) => {
+            if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) {
+              pauseFollowing();
+            }
+          }}
+          className="min-h-0 flex-1 overflow-y-auto px-5 py-6"
+        >
           {!allowed ? (
             <p className="text-sm text-white/60">Текст недоступен для этого аккаунта.</p>
           ) : lyrics.isPending ? (
@@ -93,6 +154,7 @@ export function LyricsPanel({
               {syncedLines.map((line, index) => (
                 <button
                   key={`${line.time}-${index}`}
+                  ref={index === activeLine ? activeLineRef : undefined}
                   type="button"
                   aria-label={`Перейти к ${formatDuration(line.time)}: ${line.text}`}
                   aria-current={index === activeLine ? "true" : undefined}

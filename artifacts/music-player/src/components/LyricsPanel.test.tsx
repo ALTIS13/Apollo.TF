@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { TrackResult } from "@workspace/api-client-react";
@@ -30,20 +30,28 @@ const track: TrackResult = {
 function renderPanel(overrides: Partial<React.ComponentProps<typeof LyricsPanel>> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const seekTo = vi.fn();
-  render(
+  const props: React.ComponentProps<typeof LyricsPanel> = {
+    track,
+    progress: 14,
+    duration: 180,
+    seekTo,
+    open: true,
+    onOpenChange: vi.fn(),
+    ...overrides,
+  };
+  const view = render(
     <QueryClientProvider client={client}>
-      <LyricsPanel
-        track={track}
-        progress={14}
-        duration={180}
-        seekTo={seekTo}
-        open
-        onOpenChange={vi.fn()}
-        {...overrides}
-      />
+      <LyricsPanel {...props} />
     </QueryClientProvider>,
   );
-  return { seekTo };
+  return {
+    seekTo,
+    rerenderPanel: (next: Partial<React.ComponentProps<typeof LyricsPanel>>) => view.rerender(
+      <QueryClientProvider client={client}>
+        <LyricsPanel {...props} {...next} />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 beforeEach(() => tfFetch.mockReset());
@@ -101,4 +109,38 @@ it("identifies an unverified lyrics fallback without presenting it as a matched 
   expect(await screen.findByText("Fallback line")).toBeInTheDocument();
   expect(screen.getByText("Источник: lyrics.ovh")).toBeInTheDocument();
   expect(screen.getByText("Совпадение с записью не проверено")).toBeInTheDocument();
+});
+
+it("follows the active line, yields to manual scrolling, and resumes on command", async () => {
+  tfFetch.mockResolvedValue({
+    plainLyrics: null,
+    syncedLyrics: "[00:03.00]First line\n[00:12.50]Second line\n[00:18.00]Third line",
+  });
+  const scrollTo = vi.fn();
+  const originalScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
+  Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: scrollTo });
+
+  try {
+    const { rerenderPanel } = renderPanel();
+    const user = userEvent.setup();
+    await screen.findByRole("button", { name: "Перейти к 0:12: Second line" });
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+
+    const followButton = screen.getByRole("button", { name: "Следить за текущей строкой" });
+    expect(followButton).toHaveAttribute("aria-pressed", "true");
+    fireEvent.wheel(screen.getByRole("region", { name: "Текст песни" }));
+    expect(followButton).toHaveAttribute("aria-pressed", "false");
+
+    const previousScrolls = scrollTo.mock.calls.length;
+    rerenderPanel({ progress: 19 });
+    expect(screen.getByRole("button", { name: "Перейти к 0:18: Third line" })).toHaveAttribute("aria-current", "true");
+    expect(scrollTo).toHaveBeenCalledTimes(previousScrolls);
+
+    await user.click(followButton);
+    expect(followButton).toHaveAttribute("aria-pressed", "true");
+    expect(scrollTo).toHaveBeenCalledTimes(previousScrolls + 1);
+  } finally {
+    if (originalScrollTo) Object.defineProperty(HTMLElement.prototype, "scrollTo", originalScrollTo);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+  }
 });
