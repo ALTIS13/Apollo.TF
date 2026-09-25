@@ -1,3 +1,5 @@
+# Source override only. Render with apollo-tf.compose.yml before giving Coolify
+# one Raw Docker Compose definition; this file is not deployable by itself.
 name: apollo-tf-canary
 
 services:
