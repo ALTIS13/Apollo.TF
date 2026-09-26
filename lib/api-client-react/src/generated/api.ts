@@ -37,11 +37,14 @@ import type {
   GetTrackStreamParams,
   GetTrackSuggestionsParams,
   HealthStatus,
+  LikedOrderConflictResponse,
+  LikedOrderMutationResponse,
   LikedTrackLookupRequest,
   LikedTrackLookupResponse,
   LikedTrackMutationResponse,
   LikedTrackPage,
   ListLikedTracksParams,
+  MoveLikedTrackRequest,
   PlaylistDetailResponse,
   PlaylistListResponse,
   PlaylistMutationResponse,
@@ -1119,7 +1122,7 @@ export const getListLikedTracksQueryKey = (params?: ListLikedTracksParams) => {
 
 export const getListLikedTracksQueryOptions = <
   TData = Awaited<ReturnType<typeof listLikedTracks>>,
-  TError = ErrorType<CollectionErrorResponse>,
+  TError = ErrorType<CollectionErrorResponse | LikedOrderConflictResponse>,
 >(
   params?: ListLikedTracksParams,
   options?: {
@@ -1149,7 +1152,9 @@ export const getListLikedTracksQueryOptions = <
 export type ListLikedTracksQueryResult = NonNullable<
   Awaited<ReturnType<typeof listLikedTracks>>
 >;
-export type ListLikedTracksQueryError = ErrorType<CollectionErrorResponse>;
+export type ListLikedTracksQueryError = ErrorType<
+  CollectionErrorResponse | LikedOrderConflictResponse
+>;
 
 /**
  * @summary List tracks saved by the current account
@@ -1157,7 +1162,7 @@ export type ListLikedTracksQueryError = ErrorType<CollectionErrorResponse>;
 
 export function useListLikedTracks<
   TData = Awaited<ReturnType<typeof listLikedTracks>>,
-  TError = ErrorType<CollectionErrorResponse>,
+  TError = ErrorType<CollectionErrorResponse | LikedOrderConflictResponse>,
 >(
   params?: ListLikedTracksParams,
   options?: {
@@ -1177,6 +1182,94 @@ export function useListLikedTracks<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * @summary Move one liked track before another in the current account order
+ */
+export const getMoveLikedTrackUrl = () => {
+  return `/api/collections/liked/order`;
+};
+
+export const moveLikedTrack = async (
+  moveLikedTrackRequest: MoveLikedTrackRequest,
+  options?: RequestInit,
+): Promise<LikedOrderMutationResponse> => {
+  return customFetch<LikedOrderMutationResponse>(getMoveLikedTrackUrl(), {
+    ...options,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(moveLikedTrackRequest),
+  });
+};
+
+export const getMoveLikedTrackMutationOptions = <
+  TError = ErrorType<CollectionErrorResponse | LikedOrderConflictResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof moveLikedTrack>>,
+    TError,
+    { data: BodyType<MoveLikedTrackRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof moveLikedTrack>>,
+  TError,
+  { data: BodyType<MoveLikedTrackRequest> },
+  TContext
+> => {
+  const mutationKey = ["moveLikedTrack"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof moveLikedTrack>>,
+    { data: BodyType<MoveLikedTrackRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return moveLikedTrack(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type MoveLikedTrackMutationResult = NonNullable<
+  Awaited<ReturnType<typeof moveLikedTrack>>
+>;
+export type MoveLikedTrackMutationBody = BodyType<MoveLikedTrackRequest>;
+export type MoveLikedTrackMutationError = ErrorType<
+  CollectionErrorResponse | LikedOrderConflictResponse
+>;
+
+/**
+ * @summary Move one liked track before another in the current account order
+ */
+export const useMoveLikedTrack = <
+  TError = ErrorType<CollectionErrorResponse | LikedOrderConflictResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof moveLikedTrack>>,
+    TError,
+    { data: BodyType<MoveLikedTrackRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof moveLikedTrack>>,
+  TError,
+  { data: BodyType<MoveLikedTrackRequest> },
+  TContext
+> => {
+  return useMutation(getMoveLikedTrackMutationOptions(options));
+};
 
 /**
  * @summary Check which requested tracks are saved by the current account

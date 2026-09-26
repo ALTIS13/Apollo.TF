@@ -40,6 +40,7 @@ const json = (body: unknown) =>
 function fixture() {
   let account = accountA;
   let rows: (typeof item)[] = [];
+  let revision = 0;
   const fetchMock = vi.fn(
     async (url: RequestInfo | URL, init?: RequestInit) => {
       const path = String(url);
@@ -64,6 +65,21 @@ function fixture() {
         return json({ playlists: [{ id: 7, name: "Evening", trackCount: 0 }] });
       if (path.endsWith("/playlists/7/tracks") && init?.method === "POST")
         return json({ added: true });
+      if (path.endsWith("/collections/liked/order") && init?.method === "PATCH") {
+        const move = JSON.parse(String(init.body)) as {
+          trackId: string; beforeTrackId: string | null; expectedRevision: string;
+        };
+        if (move.expectedRevision !== String(revision))
+          return new Response(JSON.stringify({ error: "liked_order_conflict", revision: String(revision) }), {
+            status: 409, headers: { "Content-Type": "application/json" },
+          });
+        const source = rows.find((row) => row.trackId === move.trackId)!;
+        rows = rows.filter((row) => row.trackId !== move.trackId);
+        const before = move.beforeTrackId === null ? rows.length : rows.findIndex((row) => row.trackId === move.beforeTrackId);
+        rows.splice(before, 0, source);
+        revision += 1;
+        return json({ revision: String(revision) });
+      }
       if (init?.method === "PUT") {
         rows = [item];
         return json({ item });
@@ -72,7 +88,7 @@ function fixture() {
         rows = [];
         return new Response(null, { status: 204 });
       }
-      return json({ items: rows, nextCursor: null });
+      return json({ items: rows, nextCursor: null, revision: String(revision) });
     },
   );
   vi.stubGlobal("fetch", fetchMock);
@@ -140,6 +156,27 @@ it("plays the loaded liked tracks in order and adds one to an Apollo playlist", 
   const add = f.fetchMock.mock.calls.find(([url]) => String(url).endsWith("/playlists/7/tracks"))!;
   expect(JSON.parse(String(add[1]?.body))).toMatchObject({ trackId: "yt_track", artist: "Artist", title: "Track" });
   expect(JSON.parse(String(add[1]?.body))).not.toHaveProperty("accountId");
+});
+
+it("moves a liked track in the account order and refreshes the visible list", async () => {
+  const f = fixture();
+  f.setRows([item, { ...item, trackId: "sc_second", title: "Second" }]);
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  await screen.findByText("Second");
+  await user.click(screen.getByRole("button", { name: "Поднять Second" }));
+  await waitFor(() => {
+    const rows = screen.getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("Second");
+    expect(rows[1]).toHaveTextContent("Track");
+  });
+  const move = f.fetchMock.mock.calls.find(([url]) => String(url).endsWith("/collections/liked/order"))!;
+  expect(move[1]?.method).toBe("PATCH");
+  expect(move[1]?.credentials).toBe("include");
+  expect(new Headers(move[1]?.headers).get("X-CSRF-Token")).toBe("c".repeat(42) + "A");
+  expect(JSON.parse(String(move[1]?.body))).toEqual({
+    trackId: "sc_second", beforeTrackId: "yt_track", expectedRevision: "0",
+  });
 });
 
 it("saves/removes with current cookie/CSRF flow and invalidates the account collection", async () => {
@@ -322,7 +359,7 @@ it("loads the next page with the server cursor in the same account cache", async
     ]),
   );
   expect(String(fetchMock.mock.calls.at(-1)?.[0])).toBe(
-    "/api/collections/liked?limit=50&cursor=bGlrZWQ6Nw",
+    "/api/collections/liked?limit=50&cursor=bGlrZWQ6Nw&sort=manual",
   );
   expect(result.current.collection.query.hasNextPage).toBe(false);
 });

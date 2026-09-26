@@ -12,6 +12,7 @@ import {
   type LikedCollectionStore,
   type LikedTrackRecord,
 } from "./collections.js";
+import { LikedOrderConflict } from "./liked-order.js";
 
 vi.hoisted(() => {
   process.env["DATABASE_URL"] ??= "postgres://unused:unused@127.0.0.1:1/unused";
@@ -48,9 +49,11 @@ function track(
 function store(overrides: Partial<LikedCollectionStore> = {}) {
   return {
     list: vi.fn().mockResolvedValue([]),
+    listManual: vi.fn().mockResolvedValue({ rows: [], revision: "0" }),
     lookup: vi.fn().mockResolvedValue([]),
     save: vi.fn().mockResolvedValue(track(1)),
     remove: vi.fn().mockResolvedValue(undefined),
+    move: vi.fn().mockResolvedValue({ revision: "1" }),
     ...overrides,
   } satisfies LikedCollectionStore;
 }
@@ -161,6 +164,74 @@ describe("liked collection routes", () => {
     });
   });
 
+  it("lists persisted manual order with a revision and rejects a stale cursor", async () => {
+    const ordered = [track(7), track(9), track(4)].map((row) => ({
+      ...row,
+      sortPosition: String(row.storageId),
+    }));
+    const currentStore = store({
+      listManual: vi.fn().mockResolvedValueOnce({ rows: ordered, revision: "3" })
+        .mockResolvedValueOnce({ rows: [], revision: "4" }),
+    });
+    const origin = await startServer(currentStore);
+    const first = await fetch(`${origin}/collections/liked?sort=manual&limit=2`);
+    expect(first.status).toBe(200);
+    const page = await first.json() as {
+      revision: string;
+      items: { trackId: string }[];
+      nextCursor: string;
+    };
+    expect(page.revision).toBe("3");
+    expect(page.items.map((row: { trackId: string }) => row.trackId)).toEqual([
+      "yt_track-7", "yt_track-9",
+    ]);
+    expect(page.nextCursor).toMatch(/^[A-Za-z0-9_-]+$/);
+    const second = await fetch(`${origin}/collections/liked?sort=manual&limit=2&cursor=${page.nextCursor}`);
+    expect(second.status).toBe(409);
+    await expect(second.json()).resolves.toEqual({ error: "liked_order_conflict", revision: "4" });
+    expect(currentStore.listManual).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: ACCOUNT_ID,
+      limit: 3,
+      cursor: expect.objectContaining({ revision: "3" }),
+    }));
+  });
+
+  it("moves a liked track under the principal account with an expected revision", async () => {
+    const currentStore = store();
+    const origin = await startServer(currentStore);
+    const response = await fetch(`${origin}/collections/liked/order`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        trackId: "yt_track-9",
+        beforeTrackId: "sc_track-2",
+        expectedRevision: "3",
+      }),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ revision: "1" });
+    expect(currentStore.move).toHaveBeenCalledWith({
+      accountId: ACCOUNT_ID,
+      trackId: "yt_track-9",
+      beforeTrackId: "sc_track-2",
+      expectedRevision: "3",
+    });
+  });
+
+  it("returns the current revision when a move conflicts with another device", async () => {
+    const currentStore = store({ move: vi.fn().mockRejectedValue(new LikedOrderConflict("4")) });
+    const origin = await startServer(currentStore);
+    const response = await fetch(`${origin}/collections/liked/order`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        trackId: "yt_track-9", beforeTrackId: null, expectedRevision: "3",
+      }),
+    });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "liked_order_conflict", revision: "4" });
+  });
+
   it("upserts metadata under the principal account", async () => {
     const saved = track(15, {
       trackId: "sc_saved-track",
@@ -228,10 +299,28 @@ describe("liked collection routes", () => {
     ],
     ["invalid limit", "/collections/liked?limit=101", "GET", undefined],
     [
+      "out-of-range manual cursor",
+      `/collections/liked?sort=manual&cursor=${Buffer.from("o:0:999999999999999999999999").toString("base64url")}`,
+      "GET",
+      undefined,
+    ],
+    [
       "foreign owner field",
       "/collections/liked/yt_track-1",
       "PUT",
       { artist: "Artist", title: "Track", accountId: OTHER_ACCOUNT_ID },
+    ],
+    [
+      "foreign owner on move",
+      "/collections/liked/order",
+      "PATCH",
+      { trackId: "yt_valid", beforeTrackId: null, expectedRevision: "0", accountId: OTHER_ACCOUNT_ID },
+    ],
+    [
+      "self anchor on move",
+      "/collections/liked/order",
+      "PATCH",
+      { trackId: "yt_valid", beforeTrackId: "yt_valid", expectedRevision: "0" },
     ],
   ])("rejects %s before storage access", async (_label, path, method, body) => {
     const currentStore = store();
@@ -247,7 +336,9 @@ describe("liked collection routes", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "bad_request" });
     expect(currentStore.list).not.toHaveBeenCalled();
+    expect(currentStore.listManual).not.toHaveBeenCalled();
     expect(currentStore.save).not.toHaveBeenCalled();
     expect(currentStore.remove).not.toHaveBeenCalled();
+    expect(currentStore.move).not.toHaveBeenCalled();
   });
 });

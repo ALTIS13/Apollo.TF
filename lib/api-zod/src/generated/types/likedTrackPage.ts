@@ -15,4 +15,9 @@ export interface LikedTrackPage {
    * @pattern ^[A-Za-z0-9_-]+$
    */
   nextCursor: string | null;
+  /**
+   * Present only when sort=manual.
+   * @pattern ^(0|[1-9][0-9]*)$
+   */
+  revision?: string;
 }

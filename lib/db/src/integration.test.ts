@@ -434,6 +434,7 @@ const migrationNames = [
   "0001_tf_core_collections.sql",
   "0002_tf_runtime_privileges.sql",
   "0003_lyrics_feedback.sql",
+  "0004_liked_manual_order.sql",
 ] as const;
 const exactHistory = [
   {
@@ -450,6 +451,11 @@ const exactHistory = [
     name: "0003_lyrics_feedback.sql",
     checksum:
       "945c0c134b03d3629fc8e620cba24ed10373d74e1f675d536b38e11ffa1b81ed",
+  },
+  {
+    name: "0004_liked_manual_order.sql",
+    checksum:
+      "6b9fec98e144eb980b80da68a906a2da6ffa375435bb8a15ebdba278493c742e",
   },
 ] as const;
 
@@ -1262,6 +1268,7 @@ async function resetTfState(): Promise<void> {
     drop schema if exists apollo_tf cascade;
     drop table if exists
       public.lyrics_feedback,
+      public.liked_order_revisions,
       public.playlist_tracks,
       public.playlists,
       public.liked_tracks,
@@ -1414,6 +1421,40 @@ describe
         alreadyApplied: [...migrationNames],
       });
       await expectExactHistory(exactHistory);
+    });
+
+    test("grants runtime ordered likes without revision-row deletion or schema ownership", async () => {
+      await runTfMigrations(migratorPool!);
+      const rights = await runtimePool!.query(`
+        select pg_get_userbyid(c.relowner)::text as owner,
+          has_table_privilege(current_user, c.oid, 'SELECT') as can_select,
+          has_table_privilege(current_user, c.oid, 'INSERT') as can_insert,
+          has_table_privilege(current_user, c.oid, 'UPDATE') as can_update,
+          has_table_privilege(current_user, c.oid, 'DELETE') as can_delete
+        from pg_class c where c.oid = 'public.liked_order_revisions'::regclass
+      `);
+      expect(rights.rows).toEqual([{
+        owner: "apollo_tf_migrator",
+        can_select: true,
+        can_insert: true,
+        can_update: true,
+        can_delete: false,
+      }]);
+      const account = "10000000-0000-4000-8000-000000000001";
+      const revision = await runtimePool!.query<{ revision: string }>(
+        `insert into public.liked_order_revisions (account_id) values ($1)
+         returning revision::text as revision`, [account],
+      );
+      expect(revision.rows[0]?.revision).toBe("0");
+      const liked = await runtimePool!.query<{ id: number; sort_position: string }>(
+        `insert into public.liked_tracks (session_id, track_id)
+         values ($1, 'yt_test') returning id, sort_position::text as sort_position`,
+        [account],
+      );
+      expect(BigInt(liked.rows[0]!.sort_position)).toBeGreaterThan(0n);
+      await expect(runtimePool!.query(
+        "delete from public.liked_order_revisions where account_id = $1", [account],
+      )).rejects.toMatchObject({ code: "42501" });
     });
 
     test("stores one bounded lyrics report per account and reason with insert/select-only runtime rights", async () => {
@@ -1647,6 +1688,9 @@ describe
           'play_history_id_seq',
           'liked_tracks',
           'liked_tracks_id_seq',
+          'liked_order_revisions',
+          'lyrics_feedback',
+          'lyrics_feedback_id_seq',
           'playlists',
           'playlists_id_seq',
           'playlist_tracks',
@@ -1655,7 +1699,7 @@ describe
         or (n.nspname = 'apollo_tf' and c.relname = 'schema_migrations')
         order by kind, name
       `);
-      expect(owners.rows).toHaveLength(12);
+      expect(owners.rows).toHaveLength(15);
       expect(
         owners.rows.every((entry) => entry.owner === "apollo_tf_migrator"),
       ).toBe(true);
@@ -1706,7 +1750,7 @@ describe
       ).toBe(true);
 
       await expect(runTfMigrations(migratorPool!)).resolves.toEqual({
-        applied: [migrationNames[1], migrationNames[2]],
+        applied: migrationNames.slice(1),
         alreadyApplied: [migrationNames[0]],
       });
       await expectExactHistory(exactHistory);

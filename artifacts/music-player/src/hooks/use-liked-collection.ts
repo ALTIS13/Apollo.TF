@@ -10,7 +10,9 @@ import {
   lookupLikedTracks,
   saveLikedTrack,
   removeLikedTrack,
+  moveLikedTrack,
   type SaveLikedTrackRequest,
+  type MoveLikedTrackRequest,
 } from "@workspace/api-client-react";
 import { useTfAuth } from "@/auth/tf-auth";
 import {
@@ -102,6 +104,24 @@ export function useRemoveLikedTrack() {
   });
 }
 
+export function useMoveLikedTrack() {
+  const access = useCollectionAccess();
+  const client = useQueryClient();
+  return useMutation({
+    mutationKey: [...likedCollectionKey(access.accountId), "move"],
+    mutationFn: (input: MoveLikedTrackRequest) => access.request(() =>
+      moveLikedTrack(input, tfRequestInit({ method: "PATCH" })),
+    ),
+    onSuccess: () => client.invalidateQueries({
+      queryKey: likedCollectionKey(access.accountId),
+    }),
+    onError: () => client.invalidateQueries({
+      queryKey: likedCollectionKey(access.accountId),
+    }),
+    retry: false,
+  });
+}
+
 export function useLikedTrackLookup(trackIds: readonly string[]) {
   const access = useCollectionAccess();
   const ids = [...new Set(trackIds)].sort().slice(0, 40);
@@ -125,7 +145,7 @@ export function useLikedCollection() {
     queryFn: ({ pageParam, signal }) => {
       return access.request(() =>
         listLikedTracks(
-          { limit: 50, ...(pageParam === null ? {} : { cursor: pageParam }) },
+          { limit: 50, ...(pageParam === null ? {} : { cursor: pageParam }), sort: "manual" },
           tfRequestInit({ signal }),
         ),
       );
@@ -135,9 +155,12 @@ export function useLikedCollection() {
     retry: false,
   });
   const remove = useRemoveLikedTrack();
+  const move = useMoveLikedTrack();
   return {
     query,
     remove,
+    move,
+    revision: query.data?.pages[0]?.revision,
     allowed: access.allowed,
     items: access.allowed
       ? (query.data?.pages.flatMap((page) => page.items) ?? [])

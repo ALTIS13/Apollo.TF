@@ -1,25 +1,24 @@
 # TF Liked Collection PostgreSQL Proof
 
-Status: prepared for remote execution; no real PostgreSQL execution claimed.
-The proof image has not been built locally.
+Status: prepared for remote execution; local PostgreSQL 16 checks are separate
+from the required PostgreSQL 17/Coolify proof. The proof image has not been built.
 
 The source-only three-service Coolify Application package is documented in
 `tf-liked-proof-application.md`. It adds fresh isolated provisioning, canonical
-migration and terminal evidence capture around this unchanged runner. Root must
+migration and terminal evidence capture around this runner. Root must
 separately approve its exact resource/run/source inputs before execution.
 
 ## Execution Contract
 
 - Infra owns all provisioning. Every proof/persistent container must be a Coolify
   Application. Do not use raw SSH/docker containers. This runner provisions nothing.
-- Use the local `codex/tf-product-finish` commit adding this proof, or a supplied
-  archive of that exact revision. The remote branch may not contain this proof;
+- Use a newly reviewed source revision containing migration 0004 and the fifth
+  real-store case. The remote branch may not contain this proof;
   publication is not authorized by this runbook.
 - Proof target: **PostgreSQL 17.x**, matching the coordinator's selected
   Supabase staging component snapshot. This is an explicit validation baseline,
   not a TF SQL feature requirement. It supersedes the initial PG18 selection.
-  The legacy `lib/db/src/integration.test.ts` PG16 suite and migrations are
-  not invoked or modified.
+  Local `lib/db/src/integration.test.ts` PG16 checks are not PG17 acceptance.
 - Runtime login: `apollo_tf_runtime`, LOGIN, NOINHERIT, NOSUPERUSER, NOCREATEDB,
   NOCREATEROLE, NOREPLICATION, NOBYPASSRLS, no memberships. Do not pass admin or
   migrator credentials to the runner.
@@ -27,8 +26,8 @@ separately approve its exact resource/run/source inputs before execution.
   `^[a-z0-9](?:[a-z0-9_]{6,30}[a-z0-9])$` (8-32 lowercase letters/digits/underscores).
 - The database comment must be exactly `apollo.tf.integration-run:<runId>`.
   The infra owner applies this marker only to the designated disposable database.
-- Apply the canonical TF migrations `0001_tf_core_collections.sql` and
-  `0002_tf_runtime_privileges.sql` through the existing TF migrator first; matching
+- Apply the canonical TF migrations 0001 through 0004 through the existing TF
+  migrator first; matching
   `apollo_tf.schema_migrations` checksums are required. The runner performs no DDL,
   migration, role changes, truncate, reset, or database creation.
 - `public.liked_tracks` must be owned by `apollo_tf_migrator`. Runtime needs schema
@@ -76,15 +75,19 @@ Prefer the Node runner: missing environment exits 2 rather than skipping the pro
 
 ## Expected Evidence
 
-Exit 0, **3 passed, 0 skipped**: three real-store cases.
+Exit 0, **5 passed, 0 skipped**: five real-store cases.
 
 1. SELECT with/without cursor: two interleaved owners, descending storage IDs,
    limit, exclusive cursor boundary, foreign-owner cursors, and exhausted pages.
-2. Upsert: same track ID creates two owner rows; repeated identical saves preserve
+2. Lookup: requested liked IDs are scoped to the current account, including a
+   track ID shared with another account.
+3. Upsert: same track ID creates two owner rows; repeated identical saves preserve
    storage ID and historical `likedAt`; changed/null/restored metadata updates one
    row only; independent SQL proves row count, stored duration, and unchanged B.
-3. DELETE: deleting A's shared track removes only that row; repeated deletion and
+4. DELETE: deleting A's shared track removes only that row; repeated deletion and
    A deleting a B-only track are no-ops; A's other tracks and every B row remain.
+5. Manual order: account-owned positions across pages, no-op move, new-like
+   placement, stale revision conflict and cross-account isolation.
 
 Fixtures use fresh random account UUIDs and interleaved inserts through the actual
 `defaultLikedCollectionStore`, without mocking DB, Drizzle, or store methods.

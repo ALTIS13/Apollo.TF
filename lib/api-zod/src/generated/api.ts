@@ -490,6 +490,12 @@ export const ListLikedTracksQueryParams = zod
       .max(listLikedTracksQueryCursorMax)
       .regex(listLikedTracksQueryCursorRegExp)
       .optional(),
+    sort: zod
+      .enum(["manual"])
+      .optional()
+      .describe(
+        "Omit for the legacy newest-first order; manual uses the account's saved order.",
+      ),
   })
   .strict();
 
@@ -513,6 +519,9 @@ export const listLikedTracksResponseNextCursorMax = 64;
 
 export const listLikedTracksResponseNextCursorRegExp = new RegExp(
   "^[A-Za-z0-9_-]+$",
+);
+export const listLikedTracksResponseRevisionRegExp = new RegExp(
+  "^(0|[1-9][0-9]\*)$",
 );
 
 export const ListLikedTracksResponse = zod
@@ -554,6 +563,62 @@ export const ListLikedTracksResponse = zod
       .max(listLikedTracksResponseNextCursorMax)
       .regex(listLikedTracksResponseNextCursorRegExp)
       .nullable(),
+    revision: zod
+      .string()
+      .regex(listLikedTracksResponseRevisionRegExp)
+      .optional()
+      .describe("Present only when sort=manual."),
+  })
+  .strict();
+
+/**
+ * @summary Move one liked track before another in the current account order
+ */
+export const moveLikedTrackBodyTrackIdMin = 4;
+export const moveLikedTrackBodyTrackIdMax = 4096;
+
+export const moveLikedTrackBodyTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const moveLikedTrackBodyBeforeTrackIdMin = 4;
+export const moveLikedTrackBodyBeforeTrackIdMax = 4096;
+
+export const moveLikedTrackBodyBeforeTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const moveLikedTrackBodyExpectedRevisionMax = 20;
+
+export const moveLikedTrackBodyExpectedRevisionRegExp = new RegExp(
+  "^(0|[1-9][0-9]\*)$",
+);
+
+export const MoveLikedTrackBody = zod
+  .object({
+    trackId: zod
+      .string()
+      .min(moveLikedTrackBodyTrackIdMin)
+      .max(moveLikedTrackBodyTrackIdMax)
+      .regex(moveLikedTrackBodyTrackIdRegExp),
+    beforeTrackId: zod
+      .string()
+      .min(moveLikedTrackBodyBeforeTrackIdMin)
+      .max(moveLikedTrackBodyBeforeTrackIdMax)
+      .regex(moveLikedTrackBodyBeforeTrackIdRegExp)
+      .nullable(),
+    expectedRevision: zod
+      .string()
+      .max(moveLikedTrackBodyExpectedRevisionMax)
+      .regex(moveLikedTrackBodyExpectedRevisionRegExp),
+  })
+  .strict();
+
+export const moveLikedTrackResponseRevisionRegExp = new RegExp(
+  "^(0|[1-9][0-9]\*)$",
+);
+
+export const MoveLikedTrackResponse = zod
+  .object({
+    revision: zod.string().regex(moveLikedTrackResponseRevisionRegExp),
   })
   .strict();
 

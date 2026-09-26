@@ -5,6 +5,7 @@
  * Music Player API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { ListLikedTracksSort } from "./listLikedTracksSort";
 
 export type ListLikedTracksParams = {
   /**
@@ -18,4 +19,8 @@ export type ListLikedTracksParams = {
    * @pattern ^[A-Za-z0-9_-]+$
    */
   cursor?: string;
+  /**
+   * Omit for the legacy newest-first order; manual uses the account's saved order.
+   */
+  sort?: ListLikedTracksSort;
 };

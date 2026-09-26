@@ -8,6 +8,8 @@ import {
   Trash2,
   ChevronDown,
   LockKeyhole,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import type {
   TrackResult,
@@ -114,8 +116,33 @@ function playableTrack(item: LikedTrack): TrackResult {
 }
 
 export function LikedCollection() {
-  const { query, items, remove, allowed } = useLikedCollection();
+  const { query, items, remove, move, revision, allowed } = useLikedCollection();
   const { playTrack, playCollection } = usePlayer();
+  const { toast } = useToast();
+  const moveItem = (index: number, direction: -1 | 1) => {
+    if (revision === undefined) return;
+    if (direction > 0 && query.hasNextPage && index >= items.length - 2) return;
+    const track = items[index];
+    const beforeTrackId = direction < 0
+      ? items[index - 1]?.trackId
+      : items[index + 2]?.trackId ?? null;
+    if (!track) return;
+    move.mutate({ trackId: track.trackId, beforeTrackId, expectedRevision: revision }, {
+      onError: (error) => {
+        const data = typeof error === "object" && error !== null && "data" in error
+          ? error.data : null;
+        const conflict = typeof error === "object" && error !== null &&
+          "status" in error && error.status === 409 &&
+          typeof data === "object" && data !== null &&
+          "error" in data && data.error === "liked_order_conflict";
+        toast({
+          title: conflict ? "Порядок изменился на другом устройстве" : "Не удалось изменить порядок",
+          description: conflict ? "Коллекция обновлена. Повторите перемещение." : "Повторите попытку позже.",
+          variant: "destructive",
+        });
+      },
+    });
+  };
   if (!allowed)
     return (
       <div className="flex items-center gap-3 py-12 text-sm text-white/60">
@@ -195,10 +222,10 @@ export function LikedCollection() {
       )}
       {items.length > 0 && (
         <ul className="divide-y divide-white/5 border-y border-white/10 bg-[#11151d]/40">
-          {items.map((item) => (
+          {items.map((item, index) => (
             <li
               key={item.trackId}
-              className="flex min-w-0 items-center gap-3 px-2 py-3 sm:px-3"
+              className="flex min-w-0 items-center gap-2 px-2 py-3 sm:gap-3 sm:px-3"
             >
               {item.thumbnailUrl ? (
                 <img
@@ -225,6 +252,28 @@ export function LikedCollection() {
                   ? "—"
                   : formatDuration(item.durationSeconds)}
               </span>
+              {revision !== undefined && items.length > 1 && (
+                <div className="flex w-8 shrink-0 flex-col items-center" aria-label="Порядок трека">
+                  <Button
+                    type="button" variant="ghost" size="icon"
+                    className="h-6 w-8 rounded-sm text-white/70 hover:bg-white/10 hover:text-white"
+                    title="Поднять трек"
+                    aria-label={`Поднять ${item.title ?? "трек"}`}
+                    disabled={index === 0 || move.isPending}
+                    onClick={() => moveItem(index, -1)}
+                  ><ArrowUp className="h-4 w-4" /></Button>
+                  <Button
+                    type="button" variant="ghost" size="icon"
+                    className="h-6 w-8 rounded-sm text-white/70 hover:bg-white/10 hover:text-white"
+                    title={query.hasNextPage && index >= items.length - 2
+                      ? "Загрузите следующую страницу" : "Опустить трек"}
+                    aria-label={`Опустить ${item.title ?? "трек"}`}
+                    disabled={index === items.length - 1 ||
+                      (query.hasNextPage && index >= items.length - 2) || move.isPending}
+                    onClick={() => moveItem(index, 1)}
+                  ><ArrowDown className="h-4 w-4" /></Button>
+                </div>
+              )}
               <Button
                 type="button"
                 variant="ghost"

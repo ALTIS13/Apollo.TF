@@ -150,6 +150,13 @@ export const TF_ROUTE_POLICIES: readonly TfRoutePolicy[] = Object.freeze([
     live: true,
   },
   {
+    method: "PATCH",
+    path: "/api/collections/liked/order",
+    pattern: /^\/api\/collections\/liked\/order$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
     method: "PUT",
     path: "/api/collections/liked/:trackId",
     pattern: /^\/api\/collections\/liked\/[^/]+$/,

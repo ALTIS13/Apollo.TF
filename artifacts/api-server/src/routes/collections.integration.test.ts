@@ -313,5 +313,57 @@ describe.skipIf(runtimeUrl === undefined && runId === undefined)(
       expect(await snapshot(accountB)).toEqual(untouchedB);
       expect(await list(accountB)).toEqual([bNew, bShared, bOld]);
     });
+
+    it("persists account order across pages and rejects a stale move revision", async () => {
+      const original = await store.listManual({ accountId: accountA, cursor: null, limit: 2 });
+      expect(original.rows.map((row) => row.trackId)).toEqual([aNew.trackId, aShared.trackId]);
+      const otherBefore = await store.listManual({ accountId: accountB, cursor: null, limit: 10 });
+      const moved = await store.move({
+        accountId: accountA,
+        trackId: aOld.trackId,
+        beforeTrackId: aNew.trackId,
+        expectedRevision: original.revision,
+      });
+      expect(BigInt(moved.revision)).toBe(BigInt(original.revision) + 1n);
+      await expect(store.move({
+        accountId: accountA,
+        trackId: aNew.trackId,
+        beforeTrackId: aShared.trackId,
+        expectedRevision: moved.revision,
+      })).resolves.toEqual(moved);
+      const first = await store.listManual({ accountId: accountA, cursor: null, limit: 2 });
+      expect(first.rows.map((row) => row.trackId)).toEqual([aOld.trackId, aNew.trackId]);
+      const second = await store.listManual({
+        accountId: accountA,
+        cursor: { revision: first.revision, sortPosition: first.rows[1]!.sortPosition },
+        limit: 2,
+      });
+      expect(second.rows.map((row) => row.trackId)).toEqual([aShared.trackId]);
+      const fresh = await seed(accountA, `yt_fresh_${randomUUID()}`);
+      const withFresh = await store.listManual({ accountId: accountA, cursor: null, limit: 10 });
+      expect(withFresh.rows.map((row) => row.trackId)).toEqual([
+        fresh.trackId, aOld.trackId, aNew.trackId, aShared.trackId,
+      ]);
+      expect(BigInt(withFresh.revision)).toBe(BigInt(moved.revision) + 1n);
+      await expect(store.move({
+        accountId: accountA,
+        trackId: aNew.trackId,
+        beforeTrackId: null,
+        expectedRevision: original.revision,
+      })).rejects.toMatchObject({ code: "liked_order_conflict", revision: withFresh.revision });
+      await expect(store.move({
+        accountId: accountA,
+        trackId: bNew.trackId,
+        beforeTrackId: null,
+        expectedRevision: withFresh.revision,
+      })).rejects.toMatchObject({ code: "liked_track_not_found" });
+      await store.remove(accountA, aNew.trackId);
+      const afterDelete = await store.listManual({ accountId: accountA, cursor: null, limit: 10 });
+      expect(BigInt(afterDelete.revision)).toBe(BigInt(withFresh.revision) + 1n);
+      expect(afterDelete.rows.map((row) => row.trackId)).toEqual([
+        fresh.trackId, aOld.trackId, aShared.trackId,
+      ]);
+      expect(await store.listManual({ accountId: accountB, cursor: null, limit: 10 })).toEqual(otherBefore);
+    });
   },
 );

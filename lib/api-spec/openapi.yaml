@@ -523,6 +523,13 @@ paths:
             minLength: 1
             maxLength: 64
             pattern: ^[A-Za-z0-9_-]+$
+        - name: sort
+          in: query
+          required: false
+          description: Omit for the legacy newest-first order; manual uses the account's saved order.
+          schema:
+            type: string
+            enum: [manual]
       responses:
         "200":
           description: Current account liked tracks
@@ -532,6 +539,54 @@ paths:
                 $ref: "#/components/schemas/LikedTrackPage"
         "400":
           description: Invalid pagination input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "409":
+          description: Manual-order cursor belongs to an older collection revision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikedOrderConflictResponse"
+        "401":
+          description: TF session is missing or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "403":
+          description: Current account lacks tf.collections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "503":
+          description: Live Platform policy could not be confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+  /collections/liked/order:
+    patch:
+      operationId: moveLikedTrack
+      tags: [collections]
+      summary: Move one liked track before another in the current account order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveLikedTrackRequest"
+      responses:
+        "200":
+          description: Current order revision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikedOrderMutationResponse"
+        "400":
+          description: Invalid move input
           content:
             application/json:
               schema:
@@ -548,6 +603,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CollectionErrorResponse"
+        "404":
+          description: Track or anchor is absent from this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "409":
+          description: Expected revision is stale
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikedOrderConflictResponse"
         "503":
           description: Live Platform policy could not be confirmed
           content:
@@ -1342,7 +1409,53 @@ components:
           nullable: true
           maxLength: 64
           pattern: ^[A-Za-z0-9_-]+$
+        revision:
+          type: string
+          pattern: ^(0|[1-9][0-9]*)$
+          description: Present only when sort=manual.
       required: [items, nextCursor]
+
+    MoveLikedTrackRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        trackId:
+          type: string
+          minLength: 4
+          maxLength: 4096
+          pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+        beforeTrackId:
+          type: string
+          nullable: true
+          minLength: 4
+          maxLength: 4096
+          pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+        expectedRevision:
+          type: string
+          maxLength: 20
+          pattern: ^(0|[1-9][0-9]*)$
+      required: [trackId, beforeTrackId, expectedRevision]
+
+    LikedOrderMutationResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        revision:
+          type: string
+          pattern: ^(0|[1-9][0-9]*)$
+      required: [revision]
+
+    LikedOrderConflictResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum: [liked_order_conflict]
+        revision:
+          type: string
+          pattern: ^(0|[1-9][0-9]*)$
+      required: [error, revision]
 
     LikedTrackLookupRequest:
       type: object
@@ -1421,6 +1534,7 @@ components:
             - policy_unavailable
             - internal_error
             - playlist_not_found
+            - liked_track_not_found
       required: [error]
 
     Playlist:

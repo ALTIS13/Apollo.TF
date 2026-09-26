@@ -1,8 +1,8 @@
 # TF Liked Proof: Disposable Coolify Application
 
-Status: source-only package; **no image build, PostgreSQL run or remote deployment evidence yet**.
-This complements `tf-liked-collection-postgres-proof.md`; the accepted runner,
-three real-store tests and canonical SQL migrations from `8756bca` are unchanged.
+Status: source-only package; **no image build or remote deployment evidence yet**.
+This complements `tf-liked-collection-postgres-proof.md`. The current source adds
+migration 0004 and a fifth real-store test; rebuild from a newly reviewed revision.
 
 ## Ownership And Root Execute Gate
 
@@ -75,7 +75,7 @@ root must still verify the actual Coolify checkout and resulting image digests.
 - Migration waits for healthy TCP PostgreSQL, then invokes the existing TF
   migrator with a mode-0600 temporary URL file. It neither baselines old schemas
   nor maintains a second migration implementation. The file is removed on exit.
-- Proof waits for migration exit 0 and launches the unchanged official
+- Proof waits for migration exit 0 and launches the official
   `run-liked-collection.mjs`, with only the runtime credential and a 180s bound.
 - Successful `migrate`/`proof` services are intentionally **exited (0)**, not
   long-running healthy web services. Do not enable a healthcheck/restart loop on
@@ -105,7 +105,7 @@ to redeploy, stop and resolve that through the Application configuration.
    passed/skipped counts, `accepted` and SHA-256 of the preceding redacted
    concatenated stdout/stderr transcript (ANSI controls stripped).
 5. Accept only proof service exit **0**, official runner exit **0**,
-   `accepted: true`, **passed: 3, skipped: 0**, correct run/revision and actual
+   `accepted: true`, **passed: 5, skipped: 0**, correct run/revision and actual
    PostgreSQL17 identity/privilege checks from the real suite. A healthy DB, a
    migration-only success or missing outcome is not proof success. Non-zero,
    timeout, skipped/missing test counts or interruption is pending/failed evidence.
@@ -124,6 +124,6 @@ The gate can be checked with missing environment: both entrypoints must refuse
 before touching PGDATA or contacting a database.
 
 These checks do **not** establish successful Docker image builds, Linux container
-bootstrap, migration SQL execution, Coolify one-shot lifecycle, or the 3/0 proof.
-Root owns those remaining validation gates. Do not rerun the unchanged UI/store
+bootstrap, migration SQL execution, Coolify one-shot lifecycle, or the 5/0 proof.
+Root owns those remaining validation gates. Do not rerun unrelated UI/store
 unit suites to substitute for the missing real database evidence.

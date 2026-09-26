@@ -57,6 +57,7 @@ function exactInventory(): TfProtectedRoute[] {
     { method: "GET", path: "/api/tracks/recommendations" },
     { method: "GET", path: "/api/collections/liked" },
     { method: "POST", path: "/api/collections/liked/lookup" },
+    { method: "PATCH", path: "/api/collections/liked/order" },
     { method: "PUT", path: "/api/collections/liked/:trackId" },
     { method: "DELETE", path: "/api/collections/liked/:trackId" },
     { method: "GET", path: "/api/collections/playlists" },
@@ -178,7 +179,7 @@ describe("protected route policy coverage", () => {
     ];
 
     expect(trackRoutes).toHaveLength(17);
-    expect(collectionRoutes).toHaveLength(4);
+    expect(collectionRoutes).toHaveLength(5);
     expect(playlistRoutes).toHaveLength(7);
     expect(spotifyRoutes).toHaveLength(9);
     expect(yandexRoutes).toHaveLength(6);

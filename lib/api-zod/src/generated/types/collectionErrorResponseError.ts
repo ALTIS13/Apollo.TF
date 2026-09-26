@@ -17,4 +17,5 @@ export const CollectionErrorResponseError = {
   policy_unavailable: "policy_unavailable",
   internal_error: "internal_error",
   playlist_not_found: "playlist_not_found",
+  liked_track_not_found: "liked_track_not_found",
 } as const;

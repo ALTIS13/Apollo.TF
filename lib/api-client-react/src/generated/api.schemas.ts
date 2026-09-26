@@ -368,6 +368,49 @@ export interface LikedTrackPage {
    * @pattern ^[A-Za-z0-9_-]+$
    */
   nextCursor: string | null;
+  /**
+   * Present only when sort=manual.
+   * @pattern ^(0|[1-9][0-9]*)$
+   */
+  revision?: string;
+}
+
+export interface MoveLikedTrackRequest {
+  /**
+   * @minLength 4
+   * @maxLength 4096
+   * @pattern ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+   */
+  trackId: string;
+  /**
+   * @minLength 4
+   * @maxLength 4096
+   * @pattern ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+   */
+  beforeTrackId: string | null;
+  /**
+   * @maxLength 20
+   * @pattern ^(0|[1-9][0-9]*)$
+   */
+  expectedRevision: string;
+}
+
+export interface LikedOrderMutationResponse {
+  /** @pattern ^(0|[1-9][0-9]*)$ */
+  revision: string;
+}
+
+export type LikedOrderConflictResponseError =
+  (typeof LikedOrderConflictResponseError)[keyof typeof LikedOrderConflictResponseError];
+
+export const LikedOrderConflictResponseError = {
+  liked_order_conflict: "liked_order_conflict",
+} as const;
+
+export interface LikedOrderConflictResponse {
+  error: LikedOrderConflictResponseError;
+  /** @pattern ^(0|[1-9][0-9]*)$ */
+  revision: string;
 }
 
 export interface LikedTrackLookupRequest {
@@ -418,6 +461,7 @@ export const CollectionErrorResponseError = {
   policy_unavailable: "policy_unavailable",
   internal_error: "internal_error",
   playlist_not_found: "playlist_not_found",
+  liked_track_not_found: "liked_track_not_found",
 } as const;
 
 export interface CollectionErrorResponse {
@@ -642,4 +686,15 @@ export type ListLikedTracksParams = {
    * @pattern ^[A-Za-z0-9_-]+$
    */
   cursor?: string;
+  /**
+   * Omit for the legacy newest-first order; manual uses the account's saved order.
+   */
+  sort?: ListLikedTracksSort;
 };
+
+export type ListLikedTracksSort =
+  (typeof ListLikedTracksSort)[keyof typeof ListLikedTracksSort];
+
+export const ListLikedTracksSort = {
+  manual: "manual",
+} as const;

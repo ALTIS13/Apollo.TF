@@ -71,7 +71,7 @@ try {
   const counts = transcript.match(/^\s*Tests\s+(\d+) passed\s+\((\d+)\)\s*$/m);
   const accepted =
     completed &&
-    (mode === "migrate" || (counts?.[1] === "3" && counts[2] === "3"));
+    (mode === "migrate" || (counts?.[1] === "5" && counts[2] === "5"));
   const outcome = {
     event: "tf_liked_proof_outcome",
     mode,
