@@ -158,13 +158,15 @@ it("plays the loaded liked tracks in order and adds one to an Apollo playlist", 
   expect(JSON.parse(String(add[1]?.body))).not.toHaveProperty("accountId");
 });
 
-it("moves a liked track in the account order and refreshes the visible list", async () => {
+it("moves a liked track with the keyboard drag handle and refreshes the visible list", async () => {
   const f = fixture();
   f.setRows([item, { ...item, trackId: "sc_second", title: "Second" }]);
   const user = userEvent.setup();
   render(<LikedCollection />, { wrapper: f.wrapper });
   await screen.findByText("Second");
-  await user.click(screen.getByRole("button", { name: "Поднять Second" }));
+  const handle = screen.getByRole("button", { name: "Переместить Second" });
+  handle.focus();
+  await user.keyboard("{ArrowUp}");
   await waitFor(() => {
     const rows = screen.getAllByRole("listitem");
     expect(rows[0]).toHaveTextContent("Second");
