@@ -12,5 +12,8 @@
     "@types/node": "catalog:",
     "tsx": "catalog:",
     "vitest": "^4.0.18"
+  },
+  "dependencies": {
+    "parse5": "8.0.1"
   }
 }

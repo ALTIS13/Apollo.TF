@@ -9,9 +9,10 @@ import {
   rm,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
+import { parse, type DefaultTreeAdapterTypes } from "parse5";
 
 import { verifyTfOnlyOperatorReleaseEvidence } from "./operator-release.js";
 import type { TfOnlyReleaseArtifact } from "./release-images.js";
@@ -26,6 +27,7 @@ const productionOrigins = [
 ];
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const containerIdPattern = /^[a-f0-9]{64}$/;
+const maxImageBytes = 256 * 1024 * 1024;
 
 async function defaultDockerCommand(args: readonly string[]): Promise<string> {
   const timeout = args[0] === "pull" ? 10 * 60_000 : 2 * 60_000;
@@ -69,13 +71,40 @@ function assertCanaryOrigin(origin: unknown): asserts origin is string {
   }
 }
 
+function entryScriptPaths(indexHtml: string): string[] {
+  const pending: DefaultTreeAdapterTypes.Node[] = [parse(indexHtml)];
+  const paths: string[] = [];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if ("tagName" in node && node.tagName === "script") {
+      const attributes = new Map(
+        node.attrs.map(({ name, value }) => [name, value]),
+      );
+      const src = attributes.get("src");
+      if (
+        attributes.get("type") !== "module" ||
+        src === undefined ||
+        !/^\/assets\/[a-zA-Z0-9._-]+\.js$/.test(src)
+      ) {
+        throw new Error("unsafe_tf_web_bundle");
+      }
+      paths.push(src.slice(1));
+    }
+    if ("childNodes" in node) pending.push(...node.childNodes);
+  }
+  if (paths.length !== 1) throw new Error("unsafe_tf_web_bundle");
+  return paths;
+}
+
 async function scanWebBundle(root: string, apiOrigin: string): Promise<number> {
   const indexPath = join(root, "index.html");
   const indexStat = await lstat(indexPath);
   if (!indexStat.isFile() || indexStat.size > 2 * 1024 * 1024) {
     throw new Error("unsafe_tf_web_bundle");
   }
-  const contents = [await readFile(indexPath, "utf8")];
+  const indexHtml = await readFile(indexPath, "utf8");
+  const entryPaths = entryScriptPaths(indexHtml);
+  const jsAssets = new Map<string, string>();
   const assetsRoot = join(root, "assets");
   const assetsStat = await lstat(assetsRoot);
   if (!assetsStat.isDirectory()) throw new Error("unsafe_tf_web_bundle");
@@ -100,14 +129,18 @@ async function scanWebBundle(root: string, apiOrigin: string): Promise<number> {
         if (totalBytes > 64 * 1024 * 1024 || jsAssetCount > 256) {
           throw new Error("unsafe_tf_web_bundle");
         }
-        contents.push(await readFile(path, "utf8"));
+        jsAssets.set(
+          relative(root, path).replaceAll("\\", "/"),
+          await readFile(path, "utf8"),
+        );
       }
     }
   }
   if (
     jsAssetCount === 0 ||
-    !contents.slice(1).some((value) => value.includes(apiOrigin)) ||
-    contents.some((value) =>
+    !entryPaths.every((path) => jsAssets.has(path)) ||
+    !entryPaths.some((path) => jsAssets.get(path)!.includes(apiOrigin)) ||
+    [indexHtml, ...jsAssets.values()].some((value) =>
       productionOrigins.some((origin) => value.includes(origin)),
     )
   ) {
@@ -174,22 +207,41 @@ export async function inspectTfWebImage(
   if (!Array.isArray(repoDigests) || !repoDigests.includes(imageReference)) {
     throw new Error("tf_web_digest_mismatch");
   }
+  const sizeText = await checkedDocker(
+    docker,
+    ["image", "inspect", "--format", "{{.Size}}", imageReference],
+    "tf_web_inspect_failed",
+  );
+  const imageBytes = Number(sizeText.trim());
+  if (
+    !Number.isSafeInteger(imageBytes) ||
+    imageBytes <= 0 ||
+    imageBytes > maxImageBytes
+  ) {
+    throw new Error("tf_web_image_too_large");
+  }
 
   const temporaryRoot = await mkdtemp(join(tmpdir(), "apollo-tf-web-inspect-"));
+  const inspectionId = randomUUID();
+  const containerName = `apollo-tf-web-inspect-${inspectionId}`;
+  const ownershipLabel = `org.apollo.tf.inspection=${inspectionId}`;
   let containerId: string | undefined;
+  let createAttempted = false;
   let result:
     | { apiOrigin: string; imageReference: string; jsAssetCount: number }
     | undefined;
   let failure: unknown;
   try {
-    const name = `apollo-tf-web-inspect-${randomUUID()}`;
+    createAttempted = true;
     containerId = (
       await checkedDocker(
         docker,
         [
           "create",
           "--name",
-          name,
+          containerName,
+          "--label",
+          ownershipLabel,
           "--network",
           "none",
           "--read-only",
@@ -222,8 +274,36 @@ export async function inspectTfWebImage(
   }
   let cleanupFailed = false;
   try {
-    if (containerId !== undefined && containerIdPattern.test(containerId)) {
-      await checkedDocker(docker, ["rm", containerId], "tf_web_cleanup_failed");
+    if (createAttempted) {
+      const listed = await checkedDocker(
+        docker,
+        [
+          "ps",
+          "-a",
+          "--no-trunc",
+          "--filter",
+          `label=${ownershipLabel}`,
+          "--format",
+          "{{.ID}} {{.Names}}",
+        ],
+        "tf_web_cleanup_failed",
+      );
+      const lines = listed.trim() === "" ? [] : listed.trim().split(/\r?\n/);
+      if (lines.length > 1) throw new Error("tf_web_cleanup_failed");
+      if (lines.length === 1) {
+        const [ownedId, ownedName, unexpected] = lines[0]!.split(" ");
+        if (
+          !containerIdPattern.test(ownedId ?? "") ||
+          ownedName !== containerName ||
+          unexpected !== undefined ||
+          (containerId !== undefined &&
+            containerIdPattern.test(containerId) &&
+            ownedId !== containerId)
+        ) {
+          throw new Error("tf_web_cleanup_failed");
+        }
+        await checkedDocker(docker, ["rm", ownedId!], "tf_web_cleanup_failed");
+      }
     }
   } catch {
     cleanupFailed = true;

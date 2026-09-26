@@ -259,10 +259,12 @@ if ($LASTEXITCODE -ne 0) { throw 'TF web image inspection failed' }
 ```
 
 This pulls `tf-web` by the manifest's immutable digest, confirms the local
-image's `RepoDigests`, creates a stopped inspection container, copies nginx's
-static bundle, and rejects missing canary API origin or embedded production
-TF/Platform API origins. It removes only its own container and temporary
-directory. Docker daemon access and authorized GHCR pull access are required;
+image's `RepoDigests`, rejects an oversized image before copying, and creates
+a stopped inspection container. It requires the canary API origin in the
+single executable JS entry loaded by `index.html` and rejects embedded production TF/Platform API
+origins across the bundle. Cleanup reconciles its unique container label and
+name even after an incomplete create response; only that container and its
+temporary directory may be removed. Docker daemon access and authorized GHCR pull access are required;
 source tests do not replace this image check. Static inspection still does not
 replace post-deploy browser network proof.
 
