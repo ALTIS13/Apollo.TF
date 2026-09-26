@@ -250,6 +250,22 @@ the bundled API origin and absence of the production TF/Platform API origins,
 then confirm real browser requests target only the canary API. Keep this as a
 separate release gate; a locally rehashed manifest alone is insufficient.
 
+After TF-only publication, run the source inspector with the independently
+approved origin (not a value copied from the manifest):
+
+```powershell
+pnpm --silent release:verify:tf-web --manifest '<TF_ONLY_RELEASE_MANIFEST>' --expected-api-origin $canaryApiOrigin
+if ($LASTEXITCODE -ne 0) { throw 'TF web image inspection failed' }
+```
+
+This pulls `tf-web` by the manifest's immutable digest, confirms the local
+image's `RepoDigests`, creates a stopped inspection container, copies nginx's
+static bundle, and rejects missing canary API origin or embedded production
+TF/Platform API origins. It removes only its own container and temporary
+directory. Docker daemon access and authorized GHCR pull access are required;
+source tests do not replace this image check. Static inspection still does not
+replace post-deploy browser network proof.
+
 GHCR repository existence, private read/write access, package visibility, tag
 absence, post-push digest/revision inventory, and a Coolify pull remain runtime
 prerequisites. No registry access, publication, visibility change, or runtime
