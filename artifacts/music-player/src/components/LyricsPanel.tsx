@@ -3,7 +3,7 @@ import type { TrackResult } from "@workspace/api-client-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Flag, Loader2, LocateFixed, ScrollText, Send } from "lucide-react";
 import { useTfAuth } from "@/auth/tf-auth";
-import { formatDuration } from "@/lib/utils";
+import { expectedDurationSeconds, formatDuration } from "@/lib/utils";
 import { tfFetch } from "@/lib/tf-session-client";
 import { parseSyncedLyrics } from "@/lib/lyrics";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -96,7 +96,7 @@ export function LyricsPanel({
           trackId,
           artist: track.artist,
           title: track.title,
-          durationSeconds: track.duration > 0 ? Math.round(track.duration) : 0,
+          durationSeconds: expectedDurationSeconds(track.duration) ?? 0,
           lyricsSource: lyrics.data?.source ?? "none",
           reason,
         }),

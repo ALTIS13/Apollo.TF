@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { getGetTrackStreamQueryOptions } from "@workspace/api-client-react";
 import type { TrackResult, TrackSource, TrackType } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 import {
   buildTfWebSocketUrl,
   createWebSocketTicket,
@@ -22,6 +23,7 @@ import { successorWebSocketEnabled } from "@/lib/tf-successor-ws-config";
 import { clearUpcoming, getNextQueueIndex, insertNext, moveUpcoming, reorderUpcoming, shuffleUpcomingIds } from "@/lib/queue-operations";
 import type { RepeatMode } from "@/lib/queue-operations";
 import { readQueueSnapshot, writeQueueSnapshot } from "@/lib/queue-persistence";
+import { expectedDurationSeconds } from "@/lib/utils";
 
 interface PlayerContextType {
   currentTrack: TrackResult | null;
@@ -76,9 +78,9 @@ function playbackErrorDescription(error: unknown): string {
     ? data.error
     : null;
   if (code === "preview_rejected")
-    return "Источник содержит только фрагмент трека. Выберите другую запись.";
+    return "Доступен только фрагмент трека.";
   if (code === "duration_unverified")
-    return "Не удалось проверить длительность записи. Попробуйте другой источник.";
+    return "Длительность записи не подтверждена.";
   return "Не удалось загрузить трек.";
 }
 
@@ -250,10 +252,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setDuration(track.duration || 0);
       audioRef.current.pause();
       audioRef.current.src = "";
+      const expectedDuration = expectedDurationSeconds(track.duration);
       const params = {
         ...(track.source === "deezer" ? { artist: track.artist, title: track.title } : {}),
-        ...(Number.isInteger(track.duration) && track.duration >= 1 && track.duration <= 86_400
-          ? { expectedDurationSeconds: track.duration }
+        ...(expectedDuration !== undefined
+          ? { expectedDurationSeconds: expectedDuration }
           : {}),
       };
       const res = await queryClient.fetchQuery(getGetTrackStreamQueryOptions(track.id, params, {
@@ -278,8 +281,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       reportTfAuthError(err);
       setCurrentTrack(null);
       setIsPlaying(false);
-      toast({ title: "Ошибка воспроизведения", description: playbackErrorDescription(err), variant: "destructive" });
-      if (live() && isUnavailableTrackSource(err)) return "recoverable" as const;
+      const recoverableSource = isUnavailableTrackSource(err);
+      toast({
+        title: "Ошибка воспроизведения",
+        description: playbackErrorDescription(err),
+        variant: "destructive",
+        ...(recoverableSource ? {
+          action: (
+            <ToastAction altText="Найти другую запись" asChild>
+              <a href={`${import.meta.env.BASE_URL}?${new URLSearchParams({ artist: track.artist, title: track.title })}`}>
+                Найти другую запись
+              </a>
+            </ToastAction>
+          ),
+        } : {}),
+      });
+      if (live() && recoverableSource) return "recoverable" as const;
     } finally {
       if (mountedRef.current && load === loadGeneration.current) setIsLoading(false);
     }

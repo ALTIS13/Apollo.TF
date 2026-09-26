@@ -100,8 +100,8 @@ describe("useTrackDownload", () => {
 
     await act(async () => {
       await Promise.all([
-        result.current.start(track),
-        result.current.start(track),
+        result.current.start({ ...track, duration: 180.4 }),
+        result.current.start({ ...track, duration: 180.4 }),
       ]);
     });
 
@@ -114,7 +114,7 @@ describe("useTrackDownload", () => {
             artist: track.artist,
             title: track.title,
             quality: "320",
-            expectedDurationSeconds: track.duration,
+            expectedDurationSeconds: 180,
           },
         ],
       },

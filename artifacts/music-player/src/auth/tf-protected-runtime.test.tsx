@@ -219,8 +219,8 @@ afterEach(() => {
 
 describe("protected generated API auth failures", () => {
   it.each([
-    [422, "preview_rejected", "Источник содержит только фрагмент трека. Выберите другую запись."],
-    [503, "duration_unverified", "Не удалось проверить длительность записи. Попробуйте другой источник."],
+    [422, "preview_rejected", "Доступен только фрагмент трека."],
+    [503, "duration_unverified", "Длительность записи не подтверждена."],
   ])("keeps the session active after media admission %s %s", async (status, code, description) => {
     runtime.fetchSession.mockResolvedValueOnce(session);
     runtime.streamQuery.mockRejectedValueOnce(generatedError(status, code));
@@ -228,11 +228,17 @@ describe("protected generated API auth failures", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Play generated stream" }));
 
-    await waitFor(() => expect(runtime.toast).toHaveBeenCalledWith({
+    await waitFor(() => expect(runtime.toast).toHaveBeenCalledWith(expect.objectContaining({
       title: "Ошибка воспроизведения",
       description,
       variant: "destructive",
-    }));
+    })));
+    const action = runtime.toast.mock.lastCall?.[0]?.action;
+    expect(action).toBeDefined();
+    const { getByRole } = render(action.props.children);
+    expect(getByRole("link", { name: "Найти другую запись" })).toHaveAttribute(
+      "href", "/?artist=Test+Artist&title=Test+Track",
+    );
     expect(canUseTfProtectedActivity()).toBe(true);
     expect(screen.getByTestId("protected-runtime")).toBeInTheDocument();
   });
@@ -257,11 +263,11 @@ describe("protected generated API auth failures", () => {
 
     await waitFor(() => expect(runtime.streamQuery).toHaveBeenCalledTimes(1));
     await waitFor(() =>
-      expect(runtime.toast).toHaveBeenCalledWith({
+      expect(runtime.toast).toHaveBeenCalledWith(expect.objectContaining({
         title: "Ошибка воспроизведения",
         description: "Не удалось загрузить трек.",
         variant: "destructive",
-      }),
+      })),
     );
     expect(FakeAudio.instances[0].src).toBe("");
     expect(FakeAudio.instances[0].play).not.toHaveBeenCalled();
@@ -478,7 +484,7 @@ it("replaces the queue with the full playlist and restarts its first track on re
 });
 
 it.each([
-  [422, "preview_rejected", "Источник содержит только фрагмент трека. Выберите другую запись."],
+  [422, "preview_rejected", "Доступен только фрагмент трека."],
   [500, "stream_error", "Не удалось загрузить трек."],
 ])("skips an unavailable %s %s source after natural end while preserving feedback and queue order", async (status, code, description) => {
   runtime.fetchSession.mockResolvedValueOnce(session);
@@ -496,11 +502,11 @@ it.each([
   await waitFor(() => expect(screen.getByTestId("recovery-queue")).toHaveAttribute("data-current", "track-3"));
   expect(screen.getByTestId("recovery-queue")).toHaveAttribute("data-index", "2");
   expect(screen.getByTestId("recovery-queue")).toHaveAttribute("data-ids", "track-1,track-2,track-3");
-  expect(runtime.toast).toHaveBeenCalledWith({
+  expect(runtime.toast).toHaveBeenCalledWith(expect.objectContaining({
     title: "Ошибка воспроизведения",
     description,
     variant: "destructive",
-  });
+  }));
   expect(runtime.streamQuery).toHaveBeenCalledTimes(3);
 });
 

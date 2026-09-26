@@ -213,7 +213,7 @@ it("passes Deezer fallback metadata and expected full duration to stream admissi
       id: "dz_existing-library-track",
       title: "Track / Live",
       artist: "Artist & Guest",
-      duration: 205,
+      duration: 205.4,
       thumbnailUrl: null,
       source: "deezer",
       type: "original",

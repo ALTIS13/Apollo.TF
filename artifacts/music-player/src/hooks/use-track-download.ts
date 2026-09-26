@@ -10,6 +10,7 @@ import {
   type TrackResult,
 } from "@workspace/api-client-react";
 import { apiUrl } from "@/lib/api-config";
+import { expectedDurationSeconds } from "@/lib/utils";
 import { reportTfAuthError, tfRequestInit } from "@/lib/tf-session-client";
 
 export type TrackDownloadState =
@@ -262,6 +263,7 @@ export function useTrackDownload(): TrackDownloadController {
       commit(generation, { state: "waiting", progress: 0 });
 
       try {
+        const expectedDuration = expectedDurationSeconds(track.duration);
         const response = await queueTrackDownloads(
           {
             tracks: [
@@ -270,8 +272,8 @@ export function useTrackDownload(): TrackDownloadController {
                 artist: track.artist,
                 title: track.title,
                 quality,
-                ...(Number.isInteger(track.duration) && track.duration >= 1 && track.duration <= 86_400
-                  ? { expectedDurationSeconds: track.duration }
+                ...(expectedDuration !== undefined
+                  ? { expectedDurationSeconds: expectedDuration }
                   : {}),
               },
             ],
