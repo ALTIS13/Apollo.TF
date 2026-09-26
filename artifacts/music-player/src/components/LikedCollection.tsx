@@ -168,53 +168,59 @@ function LikedTrackRow({
           }}
         ><GripVertical className="h-5 w-5" /></button>
       )}
-      {item.thumbnailUrl ? (
-        <img src={item.thumbnailUrl} alt="" referrerPolicy="no-referrer"
-          className="h-10 w-10 shrink-0 rounded-md object-cover" />
-      ) : (
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-white/5">
-          <Music2 className="h-4 w-4 text-white/40" />
-        </span>
-      )}
-      <div className="min-w-0 flex-1 pl-1 sm:pl-0">
-        <p className="truncate text-sm font-medium">{item.title ?? "Без названия"}</p>
-        <p className="truncate text-xs text-white/50">{item.artist ?? "Неизвестный исполнитель"}</p>
-      </div>
-      <span className="hidden text-xs tabular-nums text-white/40 sm:inline">
-        {item.durationSeconds === null ? "—" : formatDuration(item.durationSeconds)}
-      </span>
-      {canMove && (
-        <div className="hidden w-8 shrink-0 flex-col items-center sm:flex" aria-label="Порядок трека">
-          <Button type="button" variant="ghost" size="icon"
-            className="h-6 w-8 rounded-sm text-white/60 hover:bg-white/10 hover:text-white"
-            title="Поднять трек" aria-label={`Поднять ${title}`}
-            disabled={index === 0 || movePending}
-            onClick={() => onMove(index, -1)}
-          ><ArrowUp className="h-4 w-4" /></Button>
-          <Button type="button" variant="ghost" size="icon"
-            className="h-6 w-8 rounded-sm text-white/60 hover:bg-white/10 hover:text-white"
-            title={hasNextPage && index >= count - 2 ? "Загрузите следующую страницу" : "Опустить трек"}
-            aria-label={`Опустить ${title}`}
-            disabled={cannotMoveDown || movePending}
-            onClick={() => onMove(index, 1)}
-          ><ArrowDown className="h-4 w-4" /></Button>
+      <div className="min-w-0 flex-1 sm:contents">
+        <div className="flex min-w-0 items-center gap-2 sm:contents">
+          {item.thumbnailUrl ? (
+            <img src={item.thumbnailUrl} alt="" referrerPolicy="no-referrer"
+              className="h-10 w-10 shrink-0 rounded-md object-cover" />
+          ) : (
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-white/5">
+              <Music2 className="h-4 w-4 text-white/40" />
+            </span>
+          )}
+          <div className="min-w-0 flex-1 pl-1 sm:pl-0">
+            <p className="overflow-hidden text-sm font-medium [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] sm:block sm:truncate">{item.title ?? "Без названия"}</p>
+            <p className="truncate text-xs text-white/50">{item.artist ?? "Неизвестный исполнитель"}</p>
+          </div>
         </div>
-      )}
-      <Button type="button" variant="ghost" size="icon"
-        className="h-9 w-9 shrink-0 rounded-md text-[#a78bfa]"
-        title="Воспроизвести" aria-label={`Воспроизвести ${title}`}
-        onClick={() => onPlay(item)}
-      ><Play className="h-4 w-4" /></Button>
-      <PlaylistAction track={playableTrack(item)} />
-      <Button type="button" variant="ghost" size="icon"
-        className="h-9 w-9 shrink-0 rounded-md text-white/50"
-        title="Удалить из избранного" aria-label={`Удалить ${title}`}
-        disabled={removePending} onClick={() => onRemove(item.trackId)}
-      >
-        {removePending && removingTrackId === item.trackId
-          ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
-          : <Trash2 className="h-4 w-4" />}
-      </Button>
+        <div className="mt-1 flex items-center justify-end gap-1 [&>button]:size-10 sm:mt-0 sm:contents sm:[&>button]:size-9">
+          <span className="mr-auto text-xs tabular-nums text-white/40 sm:mr-0">
+            {item.durationSeconds === null ? "—" : formatDuration(item.durationSeconds)}
+          </span>
+          {canMove && (
+            <div className="hidden w-8 shrink-0 flex-col items-center sm:flex" aria-label="Порядок трека">
+              <Button type="button" variant="ghost" size="icon"
+                className="h-6 w-8 rounded-sm text-white/60 hover:bg-white/10 hover:text-white"
+                title="Поднять трек" aria-label={`Поднять ${title}`}
+                disabled={index === 0 || movePending}
+                onClick={() => onMove(index, -1)}
+              ><ArrowUp className="h-4 w-4" /></Button>
+              <Button type="button" variant="ghost" size="icon"
+                className="h-6 w-8 rounded-sm text-white/60 hover:bg-white/10 hover:text-white"
+                title={hasNextPage && index >= count - 2 ? "Загрузите следующую страницу" : "Опустить трек"}
+                aria-label={`Опустить ${title}`}
+                disabled={cannotMoveDown || movePending}
+                onClick={() => onMove(index, 1)}
+              ><ArrowDown className="h-4 w-4" /></Button>
+            </div>
+          )}
+          <Button type="button" variant="ghost" size="icon"
+            className="h-9 w-9 shrink-0 rounded-md text-[#a78bfa]"
+            title="Воспроизвести" aria-label={`Воспроизвести ${title}`}
+            onClick={() => onPlay(item)}
+          ><Play className="h-4 w-4" /></Button>
+          <PlaylistAction track={playableTrack(item)} />
+          <Button type="button" variant="ghost" size="icon"
+            className="h-9 w-9 shrink-0 rounded-md text-white/50"
+            title="Удалить из избранного" aria-label={`Удалить ${title}`}
+            disabled={removePending} onClick={() => onRemove(item.trackId)}
+          >
+            {removePending && removingTrackId === item.trackId
+              ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
+              : <Trash2 className="h-4 w-4" />}
+          </Button>
+        </div>
+      </div>
     </Reorder.Item>
   );
 }

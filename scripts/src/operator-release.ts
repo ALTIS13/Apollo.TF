@@ -202,7 +202,7 @@ function isCanaryTfWebApiOrigin(origin: unknown): origin is string {
 }
 
 function assertCanaryTfWebApiOrigin(origin: string, releaseId: string): void {
-  if (!isCanaryTfWebApiOrigin(origin) || !releaseId.includes("-")) {
+  if (!isCanaryTfWebApiOrigin(origin) || !isCanaryReleaseId(releaseId)) {
     throw operatorError("invalid_arguments");
   }
 }
@@ -1705,7 +1705,7 @@ function verifyOperatorReleaseEvidenceForProfile(
     const artifact = artifactValue as ReleaseArtifact | TfOnlyReleaseArtifact;
     validateReleaseArtifactForProfile(profile, artifact);
     if (
-      ("tfWebApiOrigin" in artifact && !releaseId.includes("-")) ||
+      ("tfWebApiOrigin" in artifact && !isCanaryReleaseId(releaseId)) ||
       (profile.artifactSet === "tf-only" &&
         isCanaryReleaseId(releaseId) &&
         !("tfWebApiOrigin" in artifact)) ||
