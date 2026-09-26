@@ -11,6 +11,7 @@
     "release:publish": "pnpm --filter @workspace/scripts exec tsx src/operator-release.ts publish",
     "release:publish:tf-only": "pnpm --filter @workspace/scripts exec tsx src/operator-release.ts publish-tf-only",
     "release:verify:tf-web": "pnpm --filter @workspace/scripts exec tsx src/tf-canary-web-image.ts",
+    "release:validate:tf-canary": "pnpm --filter @workspace/scripts exec tsx src/tf-canary-compose-binding.ts",
     "release:validate": "pnpm --filter @workspace/scripts exec tsx src/coolify-release.ts",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"

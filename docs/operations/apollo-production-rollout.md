@@ -224,8 +224,8 @@ different value at publication fails before Docker starts. A release ID with a
 `canary` segment requires the flag on both phases. The default
 production origin remains `https://api.tf.apollot.ru`; it must never be used
 for a web canary. The separate full Platform/TF publisher does not accept this
-override. The override is rejected for a stable release ID; choose a fresh,
-clearly canary-labeled prerelease ID and inspect the
+override. The override is rejected unless the release ID contains a `canary`
+segment; choose a fresh canary-labeled prerelease ID and inspect the
 verified manifest before allowing Coolify to pull its digests.
 
 ```powershell
@@ -242,6 +242,22 @@ canary still needs a separate healthy Platform/Auth issuer and OAuth client,
 private file-backed credentials, isolated Compose names and ports, DNS/TLS and
 prestate/backup/rollback checks. Do not give the example `.invalid` origins
 or zero digests to Coolify.
+
+Before passing the TF canary definition to Coolify, combine the verified
+TF-only image environment fragment with the reviewed canary bindings in one
+ignored private env file. Validate that exact input and manifest locally:
+
+```powershell
+pnpm --silent release:validate:tf-canary --env-file '<PRIVATE_COMBINED_CANARY_ENV>' --release-manifest '<TF_ONLY_RELEASE_MANIFEST>'
+if ($LASTEXITCODE -ne 0) { throw 'TF canary Compose binding failed' }
+```
+
+This read-only check renders the base TF Compose plus its canary override with
+Docker Compose, then compares the verified manifest's ten immutable image
+references and web API origin with the rendered services, callback/issuer
+origins, loopback ports, and isolated resource names. It does not start
+containers, inspect the pulled image, or prove the Platform/Auth target works.
+
 The local claim/receipt/manifest can be edited by their filesystem owner and
 are not a cryptographic attestation of the web
 image's bundled API URL. Before deployment, compare the approved origin with
@@ -250,7 +266,7 @@ the bundled API origin and absence of the production TF/Platform API origins,
 then confirm real browser requests target only the canary API. Keep this as a
 separate release gate; a locally rehashed manifest alone is insufficient.
 
-After TF-only publication, run the source inspector with the independently
+After TF-only publication, run the image inspector with the independently
 approved origin (not a value copied from the manifest):
 
 ```powershell
