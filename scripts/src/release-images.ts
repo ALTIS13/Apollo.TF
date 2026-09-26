@@ -135,6 +135,7 @@ export type TfOnlyReleaseArtifact = {
   formatVersion: 1;
   images: ReleaseArtifactImage[];
   sourceCommit: string;
+  tfWebApiOrigin?: string;
 };
 
 type CatalogImageNames<Catalog extends readonly { readonly name: string }[]> = {

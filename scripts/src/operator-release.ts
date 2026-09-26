@@ -72,6 +72,7 @@ export type OperatorReleaseOptions = {
   sourceCommit: string;
   repositoryRoot: string;
   tfSuccessorWsEnabled?: boolean;
+  tfWebApiOrigin?: string;
 };
 
 export type OperatorReleasePublicationOptions = OperatorReleaseOptions & {
@@ -162,7 +163,10 @@ const publicationArgumentFlags = new Set([
   ...publicationRequiredArgumentFlags,
   "--tf-successor-ws-enabled",
 ]);
-const tfOnlyArgumentFlags = new Set(requiredArgumentFlags);
+const tfOnlyArgumentFlags = new Set([
+  ...requiredArgumentFlags,
+  "--tf-web-api-origin",
+]);
 const captureSourceFailureFlag = "--capture-source-failure";
 const tfOnlyPreparationArgumentFlags = new Set([
   ...tfOnlyArgumentFlags,
@@ -172,10 +176,50 @@ const privateFailureFileName = "source-validation-failure.json";
 const privateFailureStreamBytes = 65_536;
 const privateFailureFileBytes = 176_000;
 const tfOnlyPublicationArgumentFlags = new Set(
-  publicationRequiredArgumentFlags,
+  [...publicationRequiredArgumentFlags, "--tf-web-api-origin"],
 );
 const sourceRepository = "https://github.com/ALTIS13/Apollo.TF";
 const tfWebApiOrigin = "https://api.tf.apollot.ru";
+
+function isCanaryTfWebApiOrigin(origin: unknown): origin is string {
+  if (typeof origin !== "string") return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  return !(
+    origin.length > 200 ||
+    parsed.protocol !== "https:" ||
+    parsed.hostname === "apollot.ru" ||
+    !parsed.hostname.startsWith("api.") ||
+    !parsed.hostname.split(".").includes("canary") ||
+    !parsed.hostname.endsWith(".apollot.ru") ||
+    parsed.origin !== origin ||
+    origin === tfWebApiOrigin
+  );
+}
+
+function assertCanaryTfWebApiOrigin(origin: string, releaseId: string): void {
+  if (!isCanaryTfWebApiOrigin(origin) || !releaseId.includes("-")) {
+    throw operatorError("invalid_arguments");
+  }
+}
+
+function isCanaryReleaseId(releaseId: string): boolean {
+  return /(?:[.-])canary(?:[.-]|$)/.test(releaseId);
+}
+
+function assertTfOnlyWebOriginSelection(options: OperatorReleaseOptions): void {
+  if (options.tfWebApiOrigin === undefined) {
+    if (isCanaryReleaseId(options.releaseId)) {
+      throw operatorError("invalid_arguments");
+    }
+    return;
+  }
+  assertCanaryTfWebApiOrigin(options.tfWebApiOrigin, options.releaseId);
+}
 const builderIdPattern = /^[a-z0-9][a-z0-9-]{0,47}$/;
 const absentManifestPattern = /(?:manifest unknown|not found)/i;
 const absentBuilderPattern = /(?:no builder|not found)/i;
@@ -594,7 +638,7 @@ export async function prepareOperatorRelease(
   options: OperatorReleaseOptions,
   dependencies: OperatorReleaseDependencies = defaultOperatorReleaseDependencies,
 ): Promise<OperatorReleasePreparationOutput> {
-  if ("captureSourceFailure" in options)
+  if ("captureSourceFailure" in options || options.tfWebApiOrigin !== undefined)
     throw operatorError("invalid_arguments");
   return prepareOperatorReleaseForProfile(
     legacyReleaseProfile,
@@ -614,6 +658,7 @@ export async function prepareTfOnlyOperatorRelease(
   ) {
     throw operatorError("invalid_arguments");
   }
+  assertTfOnlyWebOriginSelection(options);
   return prepareOperatorReleaseForProfile(
     tfOnlyReleaseProfile,
     { ...options, tfSuccessorWsEnabled: false },
@@ -710,6 +755,9 @@ async function prepareOperatorReleaseForProfile(
               protocolVersion: 2,
               releaseId: options.releaseId,
               sourceCommit: options.sourceCommit,
+              ...(options.tfWebApiOrigin === undefined
+                ? {}
+                : { tfWebApiOrigin: options.tfWebApiOrigin }),
             },
         null,
         2,
@@ -838,6 +886,9 @@ async function prepareOperatorReleaseForProfile(
               releaseId: options.releaseId,
               sourceCommit: options.sourceCommit,
               sourceTreeSha256,
+              ...(options.tfWebApiOrigin === undefined
+                ? {}
+                : { tfWebApiOrigin: options.tfWebApiOrigin }),
             },
         null,
         2,
@@ -993,6 +1044,7 @@ function parseTfOnlyOperatorReleaseArguments(argv: readonly string[]): {
   releaseId: string;
   sourceCommit: string;
   captureSourceFailure: boolean;
+  tfWebApiOrigin?: string;
 } {
   const values = parsePairwiseArguments(
     argv,
@@ -1003,6 +1055,7 @@ function parseTfOnlyOperatorReleaseArguments(argv: readonly string[]): {
   return {
     ...parseReleaseIdentity(values),
     captureSourceFailure: values.has(captureSourceFailureFlag),
+    tfWebApiOrigin: values.get("--tf-web-api-origin"),
   };
 }
 
@@ -1013,6 +1066,7 @@ function parseTfOnlyOperatorReleasePublicationArguments(
   receiptPath: string;
   releaseId: string;
   sourceCommit: string;
+  tfWebApiOrigin?: string;
 } {
   const values = parsePairwiseArguments(
     argv,
@@ -1024,7 +1078,11 @@ function parseTfOnlyOperatorReleasePublicationArguments(
   if (receiptPath === undefined || receiptPath.trim() === "") {
     throw operatorError("invalid_arguments");
   }
-  return { ...identity, receiptPath };
+  return {
+    ...identity,
+    receiptPath,
+    tfWebApiOrigin: values.get("--tf-web-api-origin"),
+  };
 }
 
 export function operatorReleaseOutputDirectory(
@@ -1291,11 +1349,12 @@ function throwIfCancelled(signal: AbortSignal | undefined): void {
 export function operatorReleaseBuildArguments(
   targetName: string,
   tfSuccessorWsEnabled = false,
+  webApiOrigin = tfWebApiOrigin,
 ): readonly string[] {
   if (targetName !== "tf-web") return [];
   return [
     "--build-arg",
-    `VITE_API_URL=${tfWebApiOrigin}`,
+    `VITE_API_URL=${webApiOrigin}`,
     "--build-arg",
     `VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED=${String(tfSuccessorWsEnabled)}`,
   ];
@@ -1410,9 +1469,11 @@ function validateReleaseArtifactForProfile(
 ): void {
   if (
     (profile.artifactSet === undefined
-      ? "artifactSet" in artifact
+      ? "artifactSet" in artifact || "tfWebApiOrigin" in artifact
       : !("artifactSet" in artifact) ||
-        artifact.artifactSet !== profile.artifactSet) ||
+        artifact.artifactSet !== profile.artifactSet ||
+        ("tfWebApiOrigin" in artifact &&
+          !isCanaryTfWebApiOrigin(artifact.tfWebApiOrigin))) ||
     artifact.formatVersion !== 1 ||
     artifact.sourceCommit === zeroSourceCommit ||
     !sourceCommitPattern.test(artifact.sourceCommit) ||
@@ -1480,6 +1541,9 @@ function renderReleaseEnvironmentForProfile(
     `RELEASE_SOURCE_COMMIT=${artifact.sourceCommit}`,
     `TF_SUCCESSOR_WS_ENABLED=${String(tfSuccessorWsEnabled)}`,
   ];
+  if ("tfWebApiOrigin" in artifact && artifact.tfWebApiOrigin !== undefined) {
+    lines.push(`TF_WEB_API_ORIGIN=${artifact.tfWebApiOrigin}`);
+  }
   for (const environmentName of profile.environmentOrder) {
     const imageName = profile.environmentNames[environmentName];
     const reference = references.get(imageName);
@@ -1606,7 +1670,15 @@ function verifyOperatorReleaseEvidenceForProfile(
         artifactValue,
         profile.artifactSet === undefined
           ? ["formatVersion", "images", "sourceCommit"]
-          : ["artifactSet", "formatVersion", "images", "sourceCommit"],
+          : [
+              "artifactSet",
+              "formatVersion",
+              "images",
+              "sourceCommit",
+              ...(Object.hasOwn(artifactValue, "tfWebApiOrigin")
+                ? ["tfWebApiOrigin"]
+                : []),
+            ],
       ) ||
       (profile.artifactSet !== undefined &&
         artifactValue.artifactSet !== profile.artifactSet) ||
@@ -1633,6 +1705,10 @@ function verifyOperatorReleaseEvidenceForProfile(
     const artifact = artifactValue as ReleaseArtifact | TfOnlyReleaseArtifact;
     validateReleaseArtifactForProfile(profile, artifact);
     if (
+      ("tfWebApiOrigin" in artifact && !releaseId.includes("-")) ||
+      (profile.artifactSet === "tf-only" &&
+        isCanaryReleaseId(releaseId) &&
+        !("tfWebApiOrigin" in artifact)) ||
       artifact.sourceCommit !== completionValue.sourceCommit ||
       environmentContents !==
         renderReleaseEnvironmentForProfile(
@@ -1812,6 +1888,7 @@ type OperatorReleaseReceipt = {
   releaseId: string;
   sourceCommit: string;
   sourceTreeSha256: string;
+  tfWebApiOrigin?: string;
 };
 
 async function loadOperatorReleaseReceipt(
@@ -1856,6 +1933,9 @@ async function loadOperatorReleaseReceipt(
               "releaseId",
               "sourceCommit",
               "sourceTreeSha256",
+              ...(options.tfWebApiOrigin === undefined
+                ? []
+                : ["tfWebApiOrigin"]),
             ],
       ) ||
       (profile.artifactSet !== undefined &&
@@ -1869,10 +1949,38 @@ async function loadOperatorReleaseReceipt(
       value.protocolVersion !== 2 ||
       value.releaseId !== options.releaseId ||
       value.sourceCommit !== options.sourceCommit ||
+      value.tfWebApiOrigin !== options.tfWebApiOrigin ||
       typeof value.sourceTreeSha256 !== "string" ||
       !sha256Pattern.test(value.sourceTreeSha256)
     ) {
       throw operatorError("invalid_release_receipt");
+    }
+    if (profile.artifactSet === "tf-only" && options.tfWebApiOrigin !== undefined) {
+      const claimPath = join(claimDirectory, "claim.json");
+      const claimStat = await lstat(claimPath);
+      if (!claimStat.isFile() || claimStat.isSymbolicLink()) {
+        throw operatorError("invalid_release_receipt");
+      }
+      const claim = JSON.parse(await readFile(claimPath, "utf8")) as unknown;
+      if (
+        !isRecord(claim) ||
+        !hasExactKeys(claim, [
+          "artifactSet",
+          "formatVersion",
+          "protocolVersion",
+          "releaseId",
+          "sourceCommit",
+          "tfWebApiOrigin",
+        ]) ||
+        claim.artifactSet !== "tf-only" ||
+        claim.formatVersion !== 1 ||
+        claim.protocolVersion !== 2 ||
+        claim.releaseId !== options.releaseId ||
+        claim.sourceCommit !== options.sourceCommit ||
+        claim.tfWebApiOrigin !== options.tfWebApiOrigin
+      ) {
+        throw operatorError("invalid_release_receipt");
+      }
     }
     return value as OperatorReleaseReceipt;
   } catch {
@@ -1884,6 +1992,9 @@ export async function publishOperatorRelease(
   options: OperatorReleasePublicationOptions,
   dependencies: OperatorReleaseDependencies = defaultOperatorReleaseDependencies,
 ): Promise<OperatorReleaseOutput> {
+  if (options.tfWebApiOrigin !== undefined) {
+    throw operatorError("invalid_arguments");
+  }
   return (await publishOperatorReleaseForProfile(
     legacyReleaseProfile,
     options,
@@ -1898,6 +2009,7 @@ export async function publishTfOnlyOperatorRelease(
   if (options.tfSuccessorWsEnabled !== undefined) {
     throw operatorError("invalid_arguments");
   }
+  assertTfOnlyWebOriginSelection(options);
   return (await publishOperatorReleaseForProfile(
     tfOnlyReleaseProfile,
     { ...options, tfSuccessorWsEnabled: false },
@@ -2225,6 +2337,7 @@ async function publishOperatorReleaseForProfile(
           ...operatorReleaseBuildArguments(
             target.name,
             options.tfSuccessorWsEnabled,
+            options.tfWebApiOrigin ?? tfWebApiOrigin,
           ),
           "--label",
           `org.opencontainers.image.source=${sourceRepository}`,
@@ -2334,6 +2447,9 @@ async function publishOperatorReleaseForProfile(
             formatVersion: 1,
             images,
             sourceCommit: options.sourceCommit,
+            ...(options.tfWebApiOrigin === undefined
+              ? {}
+              : { tfWebApiOrigin: options.tfWebApiOrigin }),
           };
     validateReleaseArtifactForProfile(profile, releaseArtifact);
     try {

@@ -4111,6 +4111,194 @@ describe("operator release CLI", () => {
   });
 
   describe("TF-only operator release", () => {
+    it("binds a canary web API origin from preparation through the image and evidence", async () => {
+      const canaryOrigin = "https://api.canary.tf.apollot.ru";
+      const harness = await publisherHarness({ targets: tfOnlyOperatorReleaseImageTargets });
+      try {
+        await prepareTfOnlyOperatorRelease(
+          {
+            mode: "production",
+            releaseId,
+            repositoryRoot: harness.repositoryRoot,
+            sourceCommit,
+            tfWebApiOrigin: canaryOrigin,
+          },
+          harness.dependencies,
+        );
+        harness.commands.length = 0;
+        const receipt = JSON.parse(await readFile(harness.tfOnlyReleaseReceipt, "utf8"));
+        expect(receipt.tfWebApiOrigin).toBe(canaryOrigin);
+
+        await expect(
+          publishTfOnlyOperatorRelease(tfOnlyPublicationOptions(harness), harness.dependencies),
+        ).rejects.toThrowError(/^invalid_release_receipt$/);
+        expect(harness.commands.some(({ executable }) => executable === "docker")).toBe(false);
+
+        const stdout: string[] = [];
+        const stderr: string[] = [];
+        expect(await runOperatorReleaseCli(
+          "publish-tf-only",
+          [...validArguments, "--receipt", harness.tfOnlyReleaseReceipt, "--tf-web-api-origin", canaryOrigin],
+          harness.dependencies,
+          {
+            repositoryRoot: harness.repositoryRoot,
+            stdout: (value) => stdout.push(value),
+            stderr: (value) => stderr.push(value),
+          },
+        )).toBe(0);
+        expect(stderr).toEqual([]);
+        const output = JSON.parse(stdout[0]!) as Awaited<ReturnType<typeof publishTfOnlyOperatorRelease>>;
+        const webBuild = harness.commands.find(
+          ({ args, executable }) =>
+            executable === "docker" &&
+            args[0] === "buildx" &&
+            args[1] === "build" &&
+            args.includes(`ghcr.io/altis13/apollo-tf-web:${releaseId}`),
+        );
+        expect(webBuild?.args).toContain(`VITE_API_URL=${canaryOrigin}`);
+        expect(webBuild?.args).not.toContain("VITE_API_URL=https://api.tf.apollot.ru");
+        expect(output.releaseArtifact).toMatchObject({ tfWebApiOrigin: canaryOrigin });
+        expect(await readFile(output.envFragmentPath, "utf8")).toContain(
+          `TF_WEB_API_ORIGIN=${canaryOrigin}\n`,
+        );
+        expect(verifyTfOnlyOperatorReleaseEvidence(output.manifestPath)).toEqual(
+          output.releaseArtifact,
+        );
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    });
+
+    it.each([
+      "http://api.canary.tf.apollot.ru",
+      "https://api.tf.apollot.ru",
+      "https://api.apollot.ru",
+      "https://admin.apollot.ru",
+      "https://api.canary.tf.apollot.ru/path",
+      "https://api.canary.tf.apollot.ru@evil.example",
+    ])("rejects an unsafe canary web API origin before claiming: %s", async (tfWebApiOrigin) => {
+      const harness = await publisherHarness({ targets: tfOnlyOperatorReleaseImageTargets });
+      try {
+        await expect(
+          prepareTfOnlyOperatorRelease(
+            { mode: "production", releaseId, repositoryRoot: harness.repositoryRoot, sourceCommit, tfWebApiOrigin },
+            harness.dependencies,
+          ),
+        ).rejects.toThrowError(/^invalid_arguments$/);
+        expect(await pathExists(harness.tfOnlyReleaseClaim)).toBe(false);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    });
+
+    it("rejects a canary web API origin on a stable release ID", async () => {
+      const harness = await publisherHarness({ targets: tfOnlyOperatorReleaseImageTargets });
+      try {
+        await expect(prepareTfOnlyOperatorRelease(
+          {
+            mode: "production",
+            releaseId: "v0.1.0",
+            repositoryRoot: harness.repositoryRoot,
+            sourceCommit,
+            tfWebApiOrigin: "https://api.canary.tf.apollot.ru",
+          },
+          harness.dependencies,
+        )).rejects.toThrowError(/^invalid_arguments$/);
+        expect(await pathExists(harness.tfOnlyReleaseClaim)).toBe(false);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    });
+
+    it("requires an API origin for a canary release ID before either phase", async () => {
+      const harness = await publisherHarness({ targets: tfOnlyOperatorReleaseImageTargets });
+      const canaryReleaseId = "v0.1.0-canary.1";
+      try {
+        await expect(prepareTfOnlyOperatorRelease(
+          {
+            mode: "production",
+            releaseId: canaryReleaseId,
+            repositoryRoot: harness.repositoryRoot,
+            sourceCommit,
+          },
+          harness.dependencies,
+        )).rejects.toThrowError(/^invalid_arguments$/);
+        await expect(publishTfOnlyOperatorRelease(
+          {
+            mode: "production",
+            releaseId: canaryReleaseId,
+            receiptPath: join(tfOnlyOperatorReleaseClaimDirectory(harness.repositoryRoot, canaryReleaseId), "prepare-receipt.json"),
+            repositoryRoot: harness.repositoryRoot,
+            sourceCommit,
+          },
+          harness.dependencies,
+        )).rejects.toThrowError(/^invalid_arguments$/);
+        expect(await pathExists(tfOnlyOperatorReleaseClaimDirectory(harness.repositoryRoot, canaryReleaseId))).toBe(false);
+        expect(harness.commands.some(({ executable }) => executable === "docker")).toBe(false);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    });
+
+    it("rejects a canary origin changed only in the preparation receipt", async () => {
+      const originalOrigin = "https://api.canary.tf.apollot.ru";
+      const substitutedOrigin = "https://api.canary.alt.apollot.ru";
+      const harness = await publisherHarness({ targets: tfOnlyOperatorReleaseImageTargets });
+      try {
+        await prepareTfOnlyOperatorRelease(
+          {
+            mode: "production",
+            releaseId,
+            repositoryRoot: harness.repositoryRoot,
+            sourceCommit,
+            tfWebApiOrigin: originalOrigin,
+          },
+          harness.dependencies,
+        );
+        harness.commands.length = 0;
+        const receipt = JSON.parse(await readFile(harness.tfOnlyReleaseReceipt, "utf8"));
+        await writeFile(
+          harness.tfOnlyReleaseReceipt,
+          `${JSON.stringify({ ...receipt, tfWebApiOrigin: substitutedOrigin }, null, 2)}\n`,
+          "utf8",
+        );
+
+        await expect(publishTfOnlyOperatorRelease(
+          { ...tfOnlyPublicationOptions(harness), tfWebApiOrigin: substitutedOrigin },
+          harness.dependencies,
+        )).rejects.toThrowError(/^invalid_release_receipt$/);
+        expect(harness.commands.some(({ executable }) => executable === "docker")).toBe(false);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    });
+
+    it("accepts the canary origin only on the TF-only preparation CLI", async () => {
+      const canaryOrigin = "https://api.canary.tf.apollot.ru";
+      const harness = await publisherHarness({ targets: tfOnlyOperatorReleaseImageTargets });
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const io = {
+        repositoryRoot: harness.repositoryRoot,
+        stdout: (value: string) => stdout.push(value),
+        stderr: (value: string) => stderr.push(value),
+      };
+      try {
+        expect(await runOperatorReleaseCli(
+          "prepare-tf-only",
+          [...validArguments, "--tf-web-api-origin", canaryOrigin],
+          harness.dependencies,
+          io,
+        )).toBe(0);
+        expect(stderr).toEqual([]);
+        expect(stdout).toHaveLength(1);
+        const receipt = JSON.parse(await readFile(harness.tfOnlyReleaseReceipt, "utf8"));
+        expect(receipt.tfWebApiOrigin).toBe(canaryOrigin);
+      } finally {
+        await rm(harness.root, { force: true, recursive: true });
+      }
+    });
+
     it("defines the exact closed TF image profile without Platform authority", () => {
       expect(tfOnlyReleaseImageCatalog).toEqual([
         ...releaseImageCatalog.slice(2, 11),

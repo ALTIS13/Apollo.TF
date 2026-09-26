@@ -215,6 +215,41 @@ TF Web build and emitted environment both fix that selection to `false`.
 The complete `release:validate` command intentionally rejects TF-only evidence,
 which is not a complete Platform/TF Coolify release environment.
 
+For an isolated TF canary, pass the same explicit `--tf-web-api-origin`
+(`https://api.canary.<scope>.apollot.ru`) to **both** TF-only preparation and
+publication. The non-production HTTPS origin is bound in the preparation
+claim and receipt, used as the immutable `tf-web` `VITE_API_URL` build argument and
+recorded in the TF-only manifest and environment fragment. Omission or a
+different value at publication fails before Docker starts. A release ID with a
+`canary` segment requires the flag on both phases. The default
+production origin remains `https://api.tf.apollot.ru`; it must never be used
+for a web canary. The separate full Platform/TF publisher does not accept this
+override. The override is rejected for a stable release ID; choose a fresh,
+clearly canary-labeled prerelease ID and inspect the
+verified manifest before allowing Coolify to pull its digests.
+
+```powershell
+$canaryApiOrigin = 'https://api.canary.tf.apollot.ru'
+$canaryReleaseId = '<NEW_UNIQUE_CANARY_RELEASE_ID>'
+$preparation = pnpm --silent release:prepare:tf-only --mode production --release-id $canaryReleaseId --source-commit $approvedSourceCommit --tf-web-api-origin $canaryApiOrigin | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'TF canary preparation failed' }
+pnpm --silent release:publish:tf-only --mode production --release-id $canaryReleaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath --tf-web-api-origin $canaryApiOrigin
+if ($LASTEXITCODE -ne 0) { throw 'TF canary publication failed' }
+```
+
+This is image-binding support, not authorization to publish or deploy. The
+canary still needs a separate healthy Platform/Auth issuer and OAuth client,
+private file-backed credentials, isolated Compose names and ports, DNS/TLS and
+prestate/backup/rollback checks. Do not give the example `.invalid` origins
+or zero digests to Coolify.
+The local claim/receipt/manifest can be edited by their filesystem owner and
+are not a cryptographic attestation of the web
+image's bundled API URL. Before deployment, compare the approved origin with
+both phase inputs, inspect the pulled `tf-web` image by immutable digest for
+the bundled API origin and absence of the production TF/Platform API origins,
+then confirm real browser requests target only the canary API. Keep this as a
+separate release gate; a locally rehashed manifest alone is insufficient.
+
 GHCR repository existence, private read/write access, package visibility, tag
 absence, post-push digest/revision inventory, and a Coolify pull remain runtime
 prerequisites. No registry access, publication, visibility change, or runtime
