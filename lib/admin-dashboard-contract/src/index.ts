@@ -345,3 +345,45 @@ export type LyricsFeedbackList = z.infer<typeof lyricsFeedbackListSchema>;
 export function parseLyricsFeedbackList(value: unknown): LyricsFeedbackList {
   return lyricsFeedbackListSchema.parse(value);
 }
+
+export const lyricsFeedbackStatusSchema = z.enum(["open", "reviewing", "resolved", "dismissed"]);
+
+export const lyricsFeedbackTriageReportSchema = lyricsFeedbackListSchema.shape.reports.element.extend({
+  status: lyricsFeedbackStatusSchema,
+  revision: z.number().int().positive(),
+  updatedAt: timestampSchema,
+  resolutionNote: z.string().trim().min(3).max(500).nullable(),
+});
+
+export const lyricsFeedbackTriageListSchema = z.object({
+  schemaVersion: z.literal(1),
+  reports: z.array(lyricsFeedbackTriageReportSchema).max(25),
+  nextCursor: z.number().int().positive().nullable(),
+}).strict();
+
+export const lyricsFeedbackTriageUpdateSchema = z.object({
+  status: lyricsFeedbackStatusSchema,
+  expectedRevision: z.number().int().positive(),
+  note: z.string().trim().min(3).max(500).optional(),
+}).strict().superRefine(({ status, note }, context) => {
+  if ((status === "resolved" || status === "dismissed") && note === undefined) {
+    context.addIssue({ code: "custom", path: ["note"], message: "Resolution requires a note" });
+  }
+  if ((status === "open" || status === "reviewing") && note !== undefined) {
+    context.addIssue({ code: "custom", path: ["note"], message: "Only terminal states accept a note" });
+  }
+});
+
+export const lyricsFeedbackTriageUpdateResultSchema = z.object({
+  schemaVersion: z.literal(1),
+  report: lyricsFeedbackTriageReportSchema,
+}).strict();
+
+export type LyricsFeedbackStatus = z.infer<typeof lyricsFeedbackStatusSchema>;
+export type LyricsFeedbackTriageList = z.infer<typeof lyricsFeedbackTriageListSchema>;
+export type LyricsFeedbackTriageReport = z.infer<typeof lyricsFeedbackTriageReportSchema>;
+export type LyricsFeedbackTriageUpdate = z.infer<typeof lyricsFeedbackTriageUpdateSchema>;
+
+export function parseLyricsFeedbackTriageList(value: unknown): LyricsFeedbackTriageList {
+  return lyricsFeedbackTriageListSchema.parse(value);
+}

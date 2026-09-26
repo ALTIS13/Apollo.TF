@@ -28,6 +28,8 @@ describe("TF immutable migration manifest", () => {
       "0001_tf_core_collections.sql",
       "0002_tf_runtime_privileges.sql",
       "0003_lyrics_feedback.sql",
+      "0004_liked_manual_order.sql",
+      "0005_lyrics_feedback_triage.sql",
     ]);
     expect(recomputed).toEqual(TF_MIGRATION_MANIFEST);
   });

@@ -12,8 +12,8 @@ separately approve its exact resource/run/source inputs before execution.
 
 - Infra owns all provisioning. Every proof/persistent container must be a Coolify
   Application. Do not use raw SSH/docker containers. This runner provisions nothing.
-- Use a newly reviewed source revision containing migration 0004 and the fifth
-  real-store case. The remote branch may not contain this proof;
+- Use a newly reviewed source revision containing migrations 0004-0005 and the
+  fifth liked-store case. The remote branch may not contain this proof;
   publication is not authorized by this runbook.
 - Proof target: **PostgreSQL 17.x**, matching the coordinator's selected
   Supabase staging component snapshot. This is an explicit validation baseline,
@@ -26,7 +26,7 @@ separately approve its exact resource/run/source inputs before execution.
   `^[a-z0-9](?:[a-z0-9_]{6,30}[a-z0-9])$` (8-32 lowercase letters/digits/underscores).
 - The database comment must be exactly `apollo.tf.integration-run:<runId>`.
   The infra owner applies this marker only to the designated disposable database.
-- Apply the canonical TF migrations 0001 through 0004 through the existing TF
+- Apply the canonical TF migrations 0001 through 0005 through the existing TF
   migrator first; matching
   `apollo_tf.schema_migrations` checksums are required. The runner performs no DDL,
   migration, role changes, truncate, reset, or database creation.

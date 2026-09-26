@@ -949,6 +949,10 @@ describe("baselineTfStartupSchema", () => {
       join(canonicalMigrationDirectory, TF_MIGRATION_MANIFEST[3]!.name),
       "utf8",
     );
+    const fifth = await readFile(
+      join(canonicalMigrationDirectory, TF_MIGRATION_MANIFEST[4]!.name),
+      "utf8",
+    );
     const pool = new MigrationPoolDouble();
 
     await expect(
@@ -964,6 +968,7 @@ describe("baselineTfStartupSchema", () => {
         "0002_tf_runtime_privileges.sql",
         "0003_lyrics_feedback.sql",
         "0004_liked_manual_order.sql",
+        "0005_lyrics_feedback_triage.sql",
       ],
       alreadyApplied: [],
     });
@@ -971,9 +976,10 @@ describe("baselineTfStartupSchema", () => {
     expect(pool.client.queries.some(({ text }) => text === second)).toBe(true);
     expect(pool.client.queries.some(({ text }) => text === third)).toBe(true);
     expect(pool.client.queries.some(({ text }) => text === fourth)).toBe(true);
+    expect(pool.client.queries.some(({ text }) => text === fifth)).toBe(true);
     expect(
       pool.client.queries.filter(({ text }) => /owner to/i.test(text)),
-    ).toHaveLength(13);
+    ).toHaveLength(14);
 
     const statements = pool.client.queries.map(({ text }) => text);
     const begins = statements
@@ -994,8 +1000,8 @@ describe("baselineTfStartupSchema", () => {
       text.includes("insert into apollo_tf.schema_migrations"),
     );
 
-    expect(begins).toHaveLength(4);
-    expect(commits).toHaveLength(4);
+    expect(begins).toHaveLength(5);
+    expect(commits).toHaveLength(5);
     expect(lock).toBeGreaterThan(baselineBegin);
     expect(catalog).toBeGreaterThan(lock);
     expect(owner).toBeGreaterThan(catalog);

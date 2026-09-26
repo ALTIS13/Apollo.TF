@@ -192,7 +192,7 @@ describe("admin dashboard delivery contracts", () => {
     expect(nginxRuntimeDefaults).not.toContain("${ADMIN_ACCESS_PASSWORD:-}");
   });
 
-  it("limits the tokenized proxy to exact GET dashboard requests with deferred DNS", () => {
+  it("limits tokenized proxy routes to dashboard reads and exact feedback triage writes", () => {
     const dashboardLocationStart = nginxConfig.indexOf(
       "location = /api/admin/dashboard",
     );
@@ -200,8 +200,16 @@ describe("admin dashboard delivery contracts", () => {
       "location = /api/admin/lyrics-feedback",
     );
     const fallbackApiLocationStart = nginxConfig.indexOf(
-      "location ^~ /api/",
+      "location ^~ /api/ {",
       feedbackLocationStart,
+    );
+    const triageLocationStart = nginxConfig.indexOf(
+      "location = /api/admin/lyrics-feedback/triage",
+      feedbackLocationStart,
+    );
+    const updateLocationStart = nginxConfig.indexOf(
+      "location ^~ /api/admin/lyrics-feedback/",
+      triageLocationStart,
     );
     const dashboardLocation = nginxConfig.slice(
       dashboardLocationStart,
@@ -209,6 +217,14 @@ describe("admin dashboard delivery contracts", () => {
     );
     const feedbackLocation = nginxConfig.slice(
       feedbackLocationStart,
+      triageLocationStart,
+    );
+    const triageLocation = nginxConfig.slice(
+      triageLocationStart,
+      updateLocationStart,
+    );
+    const updateLocation = nginxConfig.slice(
+      updateLocationStart,
       fallbackApiLocationStart,
     );
     const fallbackApiLocation = nginxConfig.slice(
@@ -241,11 +257,17 @@ describe("admin dashboard delivery contracts", () => {
       'proxy_set_header X-Admin-Dashboard-Token "${ADMIN_DASHBOARD_TOKEN}"',
     );
     expect(feedbackLocation).toContain("proxy_pass $apollo_api_upstream$request_uri");
+    expect(triageLocation).toContain("if ($request_method != GET)");
+    expect(triageLocation).toContain('proxy_set_header X-Admin-Dashboard-Token "${ADMIN_DASHBOARD_TOKEN}"');
+    expect(updateLocation).toContain("if ($request_method != PATCH)");
+    expect(updateLocation).toContain("if ($uri !~ ^/api/admin/lyrics-feedback/[1-9][0-9]*$)");
+    expect(updateLocation).toContain("client_max_body_size 2k");
+    expect(updateLocation).toContain('proxy_set_header X-Admin-Dashboard-Token "${ADMIN_DASHBOARD_TOKEN}"');
     expect(fallbackApiLocation).toContain("return 404");
     expect(fallbackApiLocation).not.toContain("proxy_pass");
     expect(fallbackApiLocation).not.toContain("X-Admin-Dashboard-Token");
-    expect(nginxConfig.match(/proxy_pass/g)).toHaveLength(2);
-    expect(nginxConfig.match(/X-Admin-Dashboard-Token/g)).toHaveLength(2);
+    expect(nginxConfig.match(/proxy_pass/g)).toHaveLength(4);
+    expect(nginxConfig.match(/X-Admin-Dashboard-Token/g)).toHaveLength(4);
     expect(nginxConfig).toMatch(
       /location\s+\/\s*{[^}]*try_files\s+\$uri\s+\$uri\/\s+\/index\.html/s,
     );

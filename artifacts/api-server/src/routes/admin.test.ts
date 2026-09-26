@@ -80,6 +80,7 @@ async function startAdminServer(
   options: Parameters<typeof createAdminRouter>[0],
 ) {
   const app = express();
+  app.use(express.json());
   app.use("/api", createAdminRouter(options));
   const server = app.listen(0, "127.0.0.1");
   servers.push(server);
@@ -259,5 +260,83 @@ describe("GET /api/admin/lyrics-feedback", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toEqual(await loadLyricsFeedback.mock.results[0]?.value);
     expect(loadLyricsFeedback).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("lyrics feedback triage", () => {
+  const report = {
+    id: 4,
+    accountId: "10000000-0000-4000-8000-000000000001",
+    trackId: "yt_first",
+    artist: "Artist",
+    title: "First song",
+    lyricsSource: "lrclib",
+    reason: "wrong_track",
+    createdAt: "2026-09-26T12:00:00.000Z",
+    status: "open",
+    revision: 1,
+    updatedAt: "2026-09-26T12:00:00.000Z",
+    resolutionNote: null,
+  } as const;
+
+  it("requires the operator token before loading triage data", async () => {
+    const loadLyricsFeedbackTriage = vi.fn().mockResolvedValue({
+      schemaVersion: 1,
+      reports: [report],
+      nextCursor: null,
+    });
+    const dashboardUrl = await startAdminServer({ token: "admin-secret", loadLyricsFeedbackTriage });
+    const url = dashboardUrl.replace(/\/dashboard$/, "/lyrics-feedback/triage?status=open");
+
+    expect((await fetch(url)).status).toBe(401);
+    expect(loadLyricsFeedbackTriage).not.toHaveBeenCalled();
+    const response = await fetch(url, { headers: { "X-Admin-Dashboard-Token": "admin-secret" } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ schemaVersion: 1, reports: [report], nextCursor: null });
+    expect(loadLyricsFeedbackTriage).toHaveBeenCalledWith("open", null);
+  });
+
+  it("validates and revision-gates write actions behind the operator token", async () => {
+    const updateLyricsFeedback = vi.fn().mockResolvedValue({
+      kind: "updated",
+      report: { ...report, status: "reviewing", revision: 2 },
+    });
+    const dashboardUrl = await startAdminServer({ token: "admin-secret", updateLyricsFeedback });
+    const url = dashboardUrl.replace(/\/dashboard$/, "/lyrics-feedback/4");
+    const body = JSON.stringify({ status: "reviewing", expectedRevision: 1 });
+
+    expect((await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status).toBe(401);
+    expect(updateLyricsFeedback).not.toHaveBeenCalled();
+    const invalid = await fetch(url, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Admin-Dashboard-Token": "admin-secret" },
+      body: JSON.stringify({ status: "resolved", expectedRevision: 1 }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(updateLyricsFeedback).not.toHaveBeenCalled();
+
+    const response = await fetch(url, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Admin-Dashboard-Token": "admin-secret" },
+      body,
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(updateLyricsFeedback).toHaveBeenCalledWith(4, { status: "reviewing", expectedRevision: 1 }, expect.any(String));
+    expect(await response.json()).toEqual({ schemaVersion: 1, report: { ...report, status: "reviewing", revision: 2 } });
+  });
+
+  it("returns a stable conflict code for concurrent operator updates", async () => {
+    const dashboardUrl = await startAdminServer({
+      token: "admin-secret",
+      updateLyricsFeedback: async () => ({ kind: "conflict" }),
+    });
+    const response = await fetch(dashboardUrl.replace(/\/dashboard$/, "/lyrics-feedback/4"), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Admin-Dashboard-Token": "admin-secret" },
+      body: JSON.stringify({ status: "reviewing", expectedRevision: 1 }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "admin_lyrics_feedback_conflict" });
   });
 });

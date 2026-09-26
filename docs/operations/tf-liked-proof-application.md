@@ -2,7 +2,7 @@
 
 Status: source-only package; **no image build or remote deployment evidence yet**.
 This complements `tf-liked-collection-postgres-proof.md`. The current source adds
-migration 0004 and a fifth real-store test; rebuild from a newly reviewed revision.
+migrations 0004-0005 and a fifth liked-store test; rebuild from a newly reviewed revision.
 
 ## Ownership And Root Execute Gate
 

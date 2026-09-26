@@ -435,6 +435,7 @@ const migrationNames = [
   "0002_tf_runtime_privileges.sql",
   "0003_lyrics_feedback.sql",
   "0004_liked_manual_order.sql",
+  "0005_lyrics_feedback_triage.sql",
 ] as const;
 const exactHistory = [
   {
@@ -456,6 +457,11 @@ const exactHistory = [
     name: "0004_liked_manual_order.sql",
     checksum:
       "6b9fec98e144eb980b80da68a906a2da6ffa375435bb8a15ebdba278493c742e",
+  },
+  {
+    name: "0005_lyrics_feedback_triage.sql",
+    checksum:
+      "db5fc236822b33f7747e2e520460907ce40f23e1c9edc284a8c227532000abb5",
   },
 ] as const;
 
@@ -1267,6 +1273,7 @@ async function resetTfState(): Promise<void> {
   await adminPool!.query(`
     drop schema if exists apollo_tf cascade;
     drop table if exists
+      public.lyrics_feedback_events,
       public.lyrics_feedback,
       public.liked_order_revisions,
       public.playlist_tracks,
@@ -1457,7 +1464,7 @@ describe
       )).rejects.toMatchObject({ code: "42501" });
     });
 
-    test("stores one bounded lyrics report per account and reason with insert/select-only runtime rights", async () => {
+    test("stores one bounded lyrics report with column-limited runtime triage rights", async () => {
       await runTfMigrations(migratorPool!);
       await expect(createTfMigrationReadinessProbe(runtimePool!)()).resolves.toBe(true);
       const values = [
@@ -1490,6 +1497,19 @@ describe
         artist: "Artist",
         reason: "wrong_track",
       }]);
+      const changed = await runtimePool!.query<{ status: string; revision: number }>(
+        `update public.lyrics_feedback
+         set status = 'reviewing', revision = revision + 1, updated_at = now()
+         where id = $1 returning status, revision`,
+        [first.rows[0]!.id],
+      );
+      expect(changed.rows).toEqual([{ status: "reviewing", revision: 2 }]);
+      await runtimePool!.query(
+        `insert into public.lyrics_feedback_events
+          (id, feedback_id, from_status, to_status, request_id, operator_identity)
+         values ($1, $2, 'open', 'reviewing', $3, 'admin-dashboard-token')`,
+        ["e1000000-0000-4000-8000-000000000001", first.rows[0]!.id, "e2000000-0000-4000-8000-000000000002"],
+      );
       await expect(runtimePool!.query(
         "update public.lyrics_feedback set title = 'changed' where id = $1",
         [first.rows[0]!.id],
@@ -1691,6 +1711,7 @@ describe
           'liked_order_revisions',
           'lyrics_feedback',
           'lyrics_feedback_id_seq',
+          'lyrics_feedback_events',
           'playlists',
           'playlists_id_seq',
           'playlist_tracks',
@@ -1699,7 +1720,7 @@ describe
         or (n.nspname = 'apollo_tf' and c.relname = 'schema_migrations')
         order by kind, name
       `);
-      expect(owners.rows).toHaveLength(15);
+      expect(owners.rows).toHaveLength(16);
       expect(
         owners.rows.every((entry) => entry.owner === "apollo_tf_migrator"),
       ).toBe(true);
