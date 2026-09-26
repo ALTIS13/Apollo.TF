@@ -123,6 +123,22 @@ describe("TF auth boundary", () => {
     expect(await screen.findByTestId("protected-canary")).toBeInTheDocument();
   });
 
+  it("keeps a long-lived session active until its actual expiry", async () => {
+    fetchTfSessionMock.mockResolvedValueOnce({
+      ...session,
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+
+    renderAuth();
+
+    expect(await screen.findByTestId("protected-canary")).toBeInTheDocument();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(screen.getByTestId("protected-canary")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Повторить" })).toBeNull();
+  });
+
   it("shows sign in after a 401 and navigates through /auth/start", async () => {
     fetchTfSessionMock.mockRejectedValueOnce(new TfApiError(401, "unauthorized", "unauthenticated"));
     const user = userEvent.setup();

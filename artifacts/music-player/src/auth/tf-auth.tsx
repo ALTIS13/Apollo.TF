@@ -48,6 +48,21 @@ const TfAuthContext = createContext<TfAuthContextValue | null>(null);
 const visibleOrPlaying = () =>
   document.visibilityState !== "hidden" || isTfPlaybackActive();
 const tuple = (s: TfBrowserSession) => `${s.accountId}:${s.installationId}`;
+const maxTimeoutDelay = 2_147_483_647;
+
+function armUntil(
+  dueAt: number,
+  timer: { current: ReturnType<typeof setTimeout> | null },
+  onDue: () => void,
+): void {
+  timer.current = setTimeout(() => {
+    if (Date.now() < dueAt) {
+      armUntil(dueAt, timer, onDue);
+      return;
+    }
+    onDue();
+  }, Math.max(0, Math.min(dueAt - Date.now(), maxTimeoutDelay)));
+}
 
 export function TfAuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
@@ -109,31 +124,26 @@ export function TfAuthProvider({ children }: { children: ReactNode }) {
       failures.current = 0;
       retryAt.current = 0;
       cycleStarted.current = null;
-      const remaining = Date.parse(session.expiresAt) - Date.now();
+      const expiresAt = Date.parse(session.expiresAt);
+      const remaining = expiresAt - Date.now();
       renewalDue.current =
         Date.now() + remaining - Math.min(60_000, Math.max(0, remaining / 5));
-      deadline.current = setTimeout(
-        () => {
-          if (current.current.status === "authenticated")
-            suspend(
-              new TfApiError(401, "TF_RENEWAL_ACCESS_EXPIRED", "expired"),
-            );
-          if (
-            session.renewalProfile &&
-            visibleOrPlaying() &&
-            Date.now() >= retryAt.current
-          )
-            void runRef.current("renew");
-        },
-        Math.max(0, remaining),
-      );
+      armUntil(expiresAt, deadline, () => {
+        if (current.current.status === "authenticated")
+          suspend(
+            new TfApiError(401, "TF_RENEWAL_ACCESS_EXPIRED", "expired"),
+          );
+        if (
+          session.renewalProfile &&
+          visibleOrPlaying() &&
+          Date.now() >= retryAt.current
+        )
+          void runRef.current("renew");
+      });
       if (session.renewalProfile)
-        timer.current = setTimeout(
-          () => {
-            if (visibleOrPlaying()) void runRef.current("renew");
-          },
-          Math.max(0, renewalDue.current - Date.now()),
-        );
+        armUntil(renewalDue.current, timer, () => {
+          if (visibleOrPlaying()) void runRef.current("renew");
+        });
     },
     [clearTimers, suspend],
   );
