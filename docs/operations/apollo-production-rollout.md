@@ -257,6 +257,9 @@ Docker Compose, then compares the verified manifest's ten immutable image
 references and web API origin with the rendered services, callback/issuer
 origins, loopback ports, isolated resource names, file-backed secret paths,
 and absence of host bind mounts.
+`APOLLO_PLATFORM_ISSUER` is the exact Platform API origin that issues TF-audience
+assertions; it is not the Supabase Auth issuer ending in `/auth/v1`. The
+isolated canary must provide both services and register the TF OAuth client.
 The secret and admin-credential directories must be absolute normalized host
 paths with an `apollo-tf-canary` path component. This is a string-level check:
 verify their resolved host paths and permissions before deployment so a
