@@ -141,30 +141,36 @@ it("includes the external Redis digest in the frozen image catalog", async () =>
   expect(result.sourceBlockers).toContain("image_tuple_mismatch");
 });
 
-it("does not let the proposed one-use ID bypass native preclaim admission", async () => {
-  const setup = await fixture();
-  const common = {
-    mode: "production" as const,
-    releaseId: tfCanaryPublisherCandidate.releaseId,
-    repositoryRoot: setup.repositoryRoot,
-    sourceCommit: tfCanaryPublisherCandidate.sourceCommit,
-    tfWebApiOrigin: tfCanaryPublisherCandidate.tfWebApiOrigin,
-  };
+it.each([
+  tfCanaryPublisherCandidate.releaseId,
+  "v0.1.0-canary.20260928.replacement",
+])(
+  "does not let canary ID %s bypass native preclaim admission",
+  async (releaseId) => {
+    const setup = await fixture();
+    const common = {
+      mode: "production" as const,
+      releaseId,
+      repositoryRoot: setup.repositoryRoot,
+      sourceCommit: tfCanaryPublisherCandidate.sourceCommit,
+      tfWebApiOrigin: tfCanaryPublisherCandidate.tfWebApiOrigin,
+    };
 
-  await expect(prepareTfOnlyOperatorRelease(common)).rejects.toThrow(
-    "publisher_preflight_required",
-  );
-  await expect(
-    publishTfOnlyOperatorRelease({ ...common, receiptPath: "not-created" }),
-  ).rejects.toThrow("publisher_preflight_required");
-  await expect(prepareOperatorRelease(common)).rejects.toThrow(
-    "publisher_preflight_required",
-  );
-  await expect(
-    publishOperatorRelease({ ...common, receiptPath: "not-created" }),
-  ).rejects.toThrow("publisher_preflight_required");
-  expect(await readdir(setup.repositoryRoot)).toEqual(["source.tar"]);
-});
+    await expect(prepareTfOnlyOperatorRelease(common)).rejects.toThrow(
+      "publisher_preflight_required",
+    );
+    await expect(
+      publishTfOnlyOperatorRelease({ ...common, receiptPath: "not-created" }),
+    ).rejects.toThrow("publisher_preflight_required");
+    await expect(prepareOperatorRelease(common)).rejects.toThrow(
+      "publisher_preflight_required",
+    );
+    await expect(
+      publishOperatorRelease({ ...common, receiptPath: "not-created" }),
+    ).rejects.toThrow("publisher_preflight_required");
+    expect(await readdir(setup.repositoryRoot)).toEqual(["source.tar"]);
+  },
+);
 
 it("pins the candidate archive hash to the actual selected Git object", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));

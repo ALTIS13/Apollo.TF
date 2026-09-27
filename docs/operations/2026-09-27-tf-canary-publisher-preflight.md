@@ -100,10 +100,15 @@ The source-only command `pnpm --silent release:preflight:tf-canary` checks the
 local source archive, candidate paths and image tuple without writing a claim.
 It deliberately exits nonzero with `decision: blocked` and names the unresolved
 native gates. Both TF-only and legacy `prepare`/`publish` entrypoints reject
-this exact proposed ID with `publisher_preflight_required` before claim or
-publication; the legacy profile shares the TF GHCR repositories. Unblocking
-requires a reviewed operator-tool change
-after native proof; never remove the guard merely because local checks pass.
+every otherwise-valid canary-segment release ID with
+`publisher_preflight_required` before claim or publication; the legacy profile
+shares the TF GHCR repositories. Invalid origins still fail their existing
+argument check. Ordinary production release IDs and the historical F
+publication path remain unchanged. Unblocking requires a reviewed operator-tool
+change after native proof; never remove the guard merely because local checks
+pass.
+When the gate is opened, restore focused tests for canary origin binding through
+the web build argument, release evidence, and receipt tamper rejection.
 
 These checks establish identity, readable registry state and source/tool
 consistency, **not effective write access**. Therefore the present gate remains
