@@ -328,32 +328,41 @@ function renderTfCanaryCompose(
   environmentPath: string,
   environment: Readonly<Record<string, string>>,
 ): ComposeDocument {
-  const rendered = spawnSync(
-    "docker",
-    [
-      "compose",
-      "--env-file",
-      environmentPath,
-      "-f",
-      resolve(repositoryRoot, "deploy/coolify/apollo-tf.compose.yml"),
-      "-f",
-      resolve(repositoryRoot, "deploy/coolify/apollo-tf.canary.compose.yml"),
-      "config",
-      "--format",
-      "json",
-    ],
-    {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-      env: isolatedComposeEnvironment({ ...environment }),
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 30_000,
-      windowsHide: true,
-    },
-  );
-  if (rendered.status !== 0) throw new Error("canary_compose_render_failed");
+  const render = (files: readonly string[]): string => {
+    const rendered = spawnSync(
+      "docker",
+      [
+        "compose",
+        "--env-file",
+        environmentPath,
+        ...files.flatMap((file) => ["-f", resolve(repositoryRoot, file)]),
+        "config",
+        "--format",
+        "json",
+      ],
+      {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        env: isolatedComposeEnvironment({ ...environment }),
+        maxBuffer: 4 * 1024 * 1024,
+        timeout: 30_000,
+        windowsHide: true,
+      },
+    );
+    if (rendered.status !== 0) throw new Error("canary_compose_render_failed");
+    return rendered.stdout;
+  };
+  const gitCompose = render([
+    "deploy/coolify/apollo-tf.canary.git.compose.yml",
+  ]);
+  const sourceCompose = render([
+    "deploy/coolify/apollo-tf.compose.yml",
+    "deploy/coolify/apollo-tf.canary.compose.yml",
+  ]);
+  if (gitCompose !== sourceCompose)
+    throw new Error("canary_compose_snapshot_drift");
   try {
-    const compose = JSON.parse(rendered.stdout) as ComposeDocument;
+    const compose = JSON.parse(gitCompose) as ComposeDocument;
     if (
       typeof compose !== "object" ||
       compose === null ||
@@ -412,6 +421,7 @@ export function runTfCanaryComposeBindingCli(
       "invalid_release_manifest",
       "invalid_canary_environment",
       "canary_compose_render_failed",
+      "canary_compose_snapshot_drift",
       "canary_origin_mismatch",
       "canary_image_environment_mismatch",
       "canary_resource_isolation_failed",
