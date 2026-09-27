@@ -8,12 +8,11 @@ import { useLikedTrackLookup } from "@/hooks/use-liked-collection";
 import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, reportTfAuthError, TfApiError, tfRequestInit } from "@/lib/tf-session-client";
 import { useTfAuth } from "@/auth/tf-auth";
 import { clearRecentSearches, readRecentSearches, rememberRecentSearch, removeRecentSearch, type RecentSearch } from "@/lib/recent-searches";
+import { loadSourcePrefs, saveSourcePrefs, type SourceKey, type SourceMode } from "@/lib/source-preferences";
 import { Search, Music2, Loader2, AlertCircle, Clock3, X } from "lucide-react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 
 type FilterType = TrackType | "all";
-type SourceKey = "yt" | "sc" | "bc" | "dz";
-type SourceMode = "auto" | "manual";
 type SearchMode = "quick" | "exact";
 type HomeSearchRequest = SearchRequest & {
   mode: SourceMode;
@@ -26,18 +25,6 @@ const SOURCE_INFO: { key: SourceKey; label: string; dot: string }[] = [
   { key: "bc", label: "Bandcamp", dot: "bg-cyan-400" },
   { key: "dz", label: "Deezer", dot: "bg-purple-400" },
 ];
-
-function loadSourcePrefs(): { mode: SourceMode; sources: Record<SourceKey, boolean> } {
-  try {
-    const raw = localStorage.getItem("tf_source_prefs");
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return { mode: "auto", sources: { yt: true, sc: true, bc: true, dz: true } };
-}
-
-function saveSourcePrefs(mode: SourceMode, sources: Record<SourceKey, boolean>) {
-  localStorage.setItem("tf_source_prefs", JSON.stringify({ mode, sources }));
-}
 
 function parseExplicitTrackQuery(value: string): { artist: string; title: string } | null {
   const match = value.trim().match(/^(.+?)\s+[-–—]\s+(.+)$/u);
@@ -171,7 +158,7 @@ export default function Home() {
   }
 
   function buildFreeSearchData(query: string): FreeSearchRequest {
-    const sources = sourceMode === "manual" && enabledSources.length < 4
+    const sources = sourceMode === "manual" && enabledSources.length > 0 && enabledSources.length < 4
       ? enabledSources
       : undefined;
     return { query, mode: sources ? "manual" : "auto", sources };
