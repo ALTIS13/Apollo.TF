@@ -87,6 +87,9 @@ function environment(release: TfOnlyReleaseArtifact): Record<string, string> {
     TF_CANARY_API_PORT: "19201",
     TF_CANARY_WEB_PORT: "19202",
     TF_CANARY_ADMIN_PORT: "19203",
+    TF_CANARY_SECRET_DIRECTORY: "/var/lib/apollo-tf-canary/secrets",
+    TF_CANARY_ADMIN_CREDENTIAL_DIRECTORY:
+      "/var/lib/apollo-tf-canary/admin-credentials",
     PLATFORM_CANARY_PUBLIC_ORIGIN: platformOrigin,
     TF_POSTGRES_IMAGE: image["tf-postgres"]!,
     TF_REDIS_IMAGE: image.redis!,
@@ -134,6 +137,14 @@ function compose(release: TfOnlyReleaseArtifact): ComposeDocument {
   return {
     name: "apollo-tf-canary",
     services,
+    secrets: {
+      admin_access_htpasswd: {
+        file: "/var/lib/apollo-tf-canary/admin-credentials/admin_access_htpasswd",
+      },
+      tf_client_secret: {
+        file: "/var/lib/apollo-tf-canary/secrets/tf_client_secret",
+      },
+    },
     networks: Object.fromEntries(
       [
         "data",
@@ -341,6 +352,31 @@ describe("TF-only canary Compose binding", () => {
     expect(() =>
       validateTfCanaryComposeBinding(release, environment(release), rendered),
     ).toThrow("canary_origin_mismatch");
+  });
+
+  it("rejects a production secret file substituted into rendered canary Compose", () => {
+    const release = artifact();
+    const rendered = compose(release);
+    rendered.secrets!.tf_client_secret!.file =
+      "/var/lib/apollo-tf/secrets/tf_client_secret";
+    expect(() =>
+      validateTfCanaryComposeBinding(release, environment(release), rendered),
+    ).toThrow("canary_resource_isolation_failed");
+  });
+
+  it("rejects a host bind mount substituted into a canary service", () => {
+    const release = artifact();
+    const rendered = compose(release);
+    rendered.services["tf-api"]!.volumes = [
+      {
+        type: "bind",
+        source: "/var/lib/apollo-tf/secrets",
+        target: "/run/secrets",
+      },
+    ];
+    expect(() =>
+      validateTfCanaryComposeBinding(release, environment(release), rendered),
+    ).toThrow("canary_resource_isolation_failed");
   });
 
   it("rejects a digest-pinned image changed only in the environment", () => {

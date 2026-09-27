@@ -255,8 +255,13 @@ if ($LASTEXITCODE -ne 0) { throw 'TF canary Compose binding failed' }
 This read-only check renders the base TF Compose plus its canary override with
 Docker Compose, then compares the verified manifest's ten immutable image
 references and web API origin with the rendered services, callback/issuer
-origins, loopback ports, and isolated resource names. It does not start
-containers, inspect the pulled image, or prove the Platform/Auth target works.
+origins, loopback ports, isolated resource names, file-backed secret paths,
+and absence of host bind mounts.
+The secret and admin-credential directories must be absolute normalized host
+paths with an `apollo-tf-canary` path component. This is a string-level check:
+verify their resolved host paths and permissions before deployment so a
+symlink cannot point the canary at production credentials. The command does
+not start containers, inspect the pulled image, or prove Platform/Auth works.
 
 The local claim/receipt/manifest can be edited by their filesystem owner and
 are not a cryptographic attestation of the web

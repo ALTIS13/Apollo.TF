@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -89,6 +89,41 @@ function assertResourceNames(
   }
 }
 
+function isCanaryHostDirectory(value: string | undefined): value is string {
+  return (
+    value !== undefined &&
+    posix.isAbsolute(value) &&
+    posix.normalize(value) === value &&
+    value.split("/").includes("apollo-tf-canary")
+  );
+}
+
+function assertCanarySecretFiles(
+  environment: Readonly<Record<string, string>>,
+  compose: ComposeDocument,
+): void {
+  const secretDirectory = environment.TF_CANARY_SECRET_DIRECTORY;
+  const adminDirectory = environment.TF_CANARY_ADMIN_CREDENTIAL_DIRECTORY;
+  const secrets = compose.secrets;
+  if (
+    !isCanaryHostDirectory(secretDirectory) ||
+    !isCanaryHostDirectory(adminDirectory) ||
+    secretDirectory === adminDirectory ||
+    secrets === undefined ||
+    Object.keys(secrets).length === 0 ||
+    Object.entries(secrets).some(([name, definition]) => {
+      const directory =
+        name === "admin_access_htpasswd" ? adminDirectory : secretDirectory;
+      return (
+        !/^[a-z][a-z0-9_]*$/.test(name) ||
+        definition.file !== posix.join(directory, name)
+      );
+    })
+  ) {
+    throw new Error("canary_resource_isolation_failed");
+  }
+}
+
 export function validateTfCanaryComposeBinding(
   artifact: TfOnlyReleaseArtifact,
   environment: Readonly<Record<string, string>>,
@@ -133,6 +168,7 @@ export function validateTfCanaryComposeBinding(
     throw new Error("canary_resource_isolation_failed");
   }
   assertResourceNames(compose.volumes, volumeNames);
+  assertCanarySecretFiles(environment, compose);
 
   const publishedPorts = Object.values(servicePorts).map(
     ({ environmentName }) => environment[environmentName],
@@ -166,6 +202,13 @@ export function validateTfCanaryComposeBinding(
     }
     if (
       service.network_mode !== undefined ||
+      service.volumes?.some(
+        (mount) =>
+          typeof mount === "string" ||
+          mount.type !== "volume" ||
+          mount.source === undefined ||
+          !(mount.source in volumeNames),
+      ) ||
       (service.networks !== undefined &&
         (Array.isArray(service.networks)
           ? service.networks
