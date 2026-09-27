@@ -43,6 +43,10 @@ import {
   recordLyricsFeedback,
   type LyricsFeedbackInput,
 } from "../lib/lyrics-feedback-store.js";
+import {
+  MediaLinkResolutionError,
+  resolvePastedMediaLink,
+} from "../lib/media-link.js";
 
 interface RecentTrack {
   readonly trackId: string;
@@ -59,6 +63,7 @@ interface RecordPlayInput {
 
 export interface TrackRouteDependencies {
   readonly searchGateway: TfSearchGateway;
+  readonly resolveMediaLink: typeof resolvePastedMediaLink;
   readonly loadRecentTracks: (
     accountId: string,
     limit: number,
@@ -81,6 +86,9 @@ export interface TrackRouteDependencies {
 }
 
 const ALL_SEARCH_SOURCES: readonly TfSearchSource[] = ["yt", "sc", "bc", "dz"];
+const mediaLinkBodySchema = z.object({
+  url: z.string().trim().min(1).max(500),
+}).strict();
 const expectedDurationQuerySchema = z.string()
   .regex(/^[1-9]\d*$/)
   .transform(Number)
@@ -297,6 +305,7 @@ function decodeTrackUrl(id: string): { source: string; url: string } | null {
 
 const defaultTrackRouteDependencies: TrackRouteDependencies = {
   searchGateway: unavailableGateway(),
+  resolveMediaLink: resolvePastedMediaLink,
   async loadRecentTracks(accountId, limit) {
     const result = await db.execute(sql`
       SELECT t.track_id, t.artist, t.title
@@ -438,6 +447,29 @@ export function createTracksRouter(
       });
     } catch {
       res.status(503).json({ error: "search_unavailable" });
+    }
+  });
+
+  router.post("/tracks/link-metadata", async (req, res) => {
+    const parsed = mediaLinkBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
+    try {
+      const metadata = await routeDependencies.resolveMediaLink(parsed.data.url);
+      res.json({
+        schemaVersion: 1,
+        source: metadata.source,
+        title: metadata.title,
+        ...(metadata.artist ? { artist: metadata.artist } : {}),
+        ...(metadata.durationSeconds ? { durationSeconds: metadata.durationSeconds } : {}),
+      });
+    } catch (error) {
+      const code = error instanceof MediaLinkResolutionError
+        ? error.code
+        : "media_link_unavailable";
+      res.status(code === "unsupported_media_link" ? 422 : 503).json({ error: code });
     }
   });
 

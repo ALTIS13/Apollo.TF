@@ -54,6 +54,51 @@ export interface TrackResult {
   score: number;
 }
 
+export interface MediaLinkMetadataRequest {
+  /**
+   * @minLength 1
+   * @maxLength 500
+   */
+  url: string;
+}
+
+export type MediaLinkMetadataResponseSchemaVersion =
+  (typeof MediaLinkMetadataResponseSchemaVersion)[keyof typeof MediaLinkMetadataResponseSchemaVersion];
+
+export const MediaLinkMetadataResponseSchemaVersion = {
+  NUMBER_1: 1,
+} as const;
+
+export type MediaLinkMetadataResponseSource =
+  (typeof MediaLinkMetadataResponseSource)[keyof typeof MediaLinkMetadataResponseSource];
+
+export const MediaLinkMetadataResponseSource = {
+  youtube: "youtube",
+  soundcloud: "soundcloud",
+  bandcamp: "bandcamp",
+  deezer: "deezer",
+} as const;
+
+export interface MediaLinkMetadataResponse {
+  schemaVersion: MediaLinkMetadataResponseSchemaVersion;
+  source: MediaLinkMetadataResponseSource;
+  /**
+   * @minLength 1
+   * @maxLength 300
+   */
+  title: string;
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  artist?: string;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   */
+  durationSeconds?: number;
+}
+
 export type FreeSearchRequestMode =
   (typeof FreeSearchRequestMode)[keyof typeof FreeSearchRequestMode];
 

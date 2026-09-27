@@ -162,11 +162,11 @@ afterEach(async () => {
 });
 
 describe("TF route policy map", () => {
-  it("contains the exact 45 anchored capability policies", () => {
-    expect(TF_ROUTE_POLICIES).toHaveLength(45);
+  it("contains the exact 46 anchored capability policies", () => {
+    expect(TF_ROUTE_POLICIES).toHaveLength(46);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === false),
-    ).toHaveLength(7);
+    ).toHaveLength(8);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === true),
     ).toHaveLength(38);

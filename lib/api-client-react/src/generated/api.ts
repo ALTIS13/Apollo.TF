@@ -44,6 +44,8 @@ import type {
   LikedTrackMutationResponse,
   LikedTrackPage,
   ListLikedTracksParams,
+  MediaLinkMetadataRequest,
+  MediaLinkMetadataResponse,
   MoveLikedTrackRequest,
   PlaylistDetailResponse,
   PlaylistListResponse,
@@ -334,6 +336,97 @@ export const useFreeSearchTracks = <
   TContext
 > => {
   return useMutation(getFreeSearchTracksMutationOptions(options));
+};
+
+/**
+ * Returns metadata only. The link is not admitted as playable media; clients must search and select a separately verified candidate.
+ * @summary Read metadata from a supported public track link
+ */
+export const getResolveTrackLinkMetadataUrl = () => {
+  return `/api/tracks/link-metadata`;
+};
+
+export const resolveTrackLinkMetadata = async (
+  mediaLinkMetadataRequest: MediaLinkMetadataRequest,
+  options?: RequestInit,
+): Promise<MediaLinkMetadataResponse> => {
+  return customFetch<MediaLinkMetadataResponse>(
+    getResolveTrackLinkMetadataUrl(),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(mediaLinkMetadataRequest),
+    },
+  );
+};
+
+export const getResolveTrackLinkMetadataMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof resolveTrackLinkMetadata>>,
+    TError,
+    { data: BodyType<MediaLinkMetadataRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof resolveTrackLinkMetadata>>,
+  TError,
+  { data: BodyType<MediaLinkMetadataRequest> },
+  TContext
+> => {
+  const mutationKey = ["resolveTrackLinkMetadata"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof resolveTrackLinkMetadata>>,
+    { data: BodyType<MediaLinkMetadataRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return resolveTrackLinkMetadata(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ResolveTrackLinkMetadataMutationResult = NonNullable<
+  Awaited<ReturnType<typeof resolveTrackLinkMetadata>>
+>;
+export type ResolveTrackLinkMetadataMutationBody =
+  BodyType<MediaLinkMetadataRequest>;
+export type ResolveTrackLinkMetadataMutationError = ErrorType<void>;
+
+/**
+ * @summary Read metadata from a supported public track link
+ */
+export const useResolveTrackLinkMetadata = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof resolveTrackLinkMetadata>>,
+    TError,
+    { data: BodyType<MediaLinkMetadataRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof resolveTrackLinkMetadata>>,
+  TError,
+  { data: BodyType<MediaLinkMetadataRequest> },
+  TContext
+> => {
+  return useMutation(getResolveTrackLinkMetadataMutationOptions(options));
 };
 
 /**

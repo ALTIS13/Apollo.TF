@@ -106,6 +106,38 @@ export const FreeSearchTracksResponse = zod.object({
 });
 
 /**
+ * Returns metadata only. The link is not admitted as playable media; clients must search and select a separately verified candidate.
+ * @summary Read metadata from a supported public track link
+ */
+export const resolveTrackLinkMetadataBodyUrlMax = 500;
+
+export const ResolveTrackLinkMetadataBody = zod.object({
+  url: zod.string().min(1).max(resolveTrackLinkMetadataBodyUrlMax),
+});
+
+export const resolveTrackLinkMetadataResponseTitleMax = 300;
+
+export const resolveTrackLinkMetadataResponseArtistMax = 200;
+
+export const resolveTrackLinkMetadataResponseDurationSecondsMax = 86400;
+
+export const ResolveTrackLinkMetadataResponse = zod.object({
+  schemaVersion: zod.literal(1),
+  source: zod.enum(["youtube", "soundcloud", "bandcamp", "deezer"]),
+  title: zod.string().min(1).max(resolveTrackLinkMetadataResponseTitleMax),
+  artist: zod
+    .string()
+    .min(1)
+    .max(resolveTrackLinkMetadataResponseArtistMax)
+    .optional(),
+  durationSeconds: zod
+    .number()
+    .min(1)
+    .max(resolveTrackLinkMetadataResponseDurationSecondsMax)
+    .optional(),
+});
+
+/**
  * Searches enabled open media sources for variants of a track. Returns all found variants (original, remix, live, cover) without auto-selecting.
  * @summary Search for track variants
  */

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { freeSearchTracks, getTrackSuggestions, searchTracks } from "@workspace/api-client-react";
-import type { FreeSearchRequest, SearchRequest, TrackSuggestionsResponse, TrackType } from "@workspace/api-client-react";
+import type { FreeSearchRequest, MediaLinkMetadataResponse, SearchRequest, TrackSuggestionsResponse, TrackType } from "@workspace/api-client-react";
 import { TrackCard } from "@/components/TrackCard";
 import { CollectionActions } from "@/components/CollectionActions";
 import { useLikedTrackLookup } from "@/hooks/use-liked-collection";
@@ -9,6 +9,7 @@ import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, reportTfAut
 import { useTfAuth } from "@/auth/tf-auth";
 import { clearRecentSearches, readRecentSearches, rememberRecentSearch, removeRecentSearch, type RecentSearch } from "@/lib/recent-searches";
 import { loadSourcePrefs, saveSourcePrefs, type SourceKey, type SourceMode } from "@/lib/source-preferences";
+import { apiUrl } from "@/lib/api-config";
 import { Search, Music2, Loader2, AlertCircle, Clock3, X } from "lucide-react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 
@@ -35,6 +36,19 @@ function parseExplicitTrackQuery(value: string): { artist: string; title: string
   return { artist, title };
 }
 
+function isPastedUrl(value: string): boolean {
+  return /^(?:https?:\/\/|www\.)/i.test(value.trim());
+}
+
+function isMediaLinkMetadata(value: unknown): value is MediaLinkMetadataResponse {
+  if (!value || typeof value !== "object") return false;
+  const metadata = value as Partial<MediaLinkMetadataResponse>;
+  return metadata.schemaVersion === 1 &&
+    ["youtube", "soundcloud", "bandcamp", "deezer"].includes(metadata.source ?? "") &&
+    typeof metadata.title === "string" && metadata.title.trim().length > 0 && metadata.title.length <= 300 &&
+    (metadata.artist === undefined || (typeof metadata.artist === "string" && metadata.artist.length <= 200));
+}
+
 export default function Home() {
   const reduceMotion = useReducedMotion();
   const { session } = useTfAuth();
@@ -48,6 +62,9 @@ export default function Home() {
       : "",
   );
   const [quickError, setQuickError] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkPending, setLinkPending] = useState(false);
+  const linkRequestRef = useRef(0);
   const [suggestions, setSuggestions] = useState<TrackSuggestionsResponse["suggestions"]>([]);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
@@ -67,6 +84,13 @@ export default function Home() {
     items: [],
   });
   const recentSearches = recentState.identityKey === recentIdentityKey ? recentState.items : [];
+
+  useEffect(() => {
+    linkRequestRef.current += 1;
+    setLinkError(null);
+    setLinkPending(false);
+    return () => { linkRequestRef.current += 1; };
+  }, [recentIdentityKey]);
 
   useEffect(() => {
     if (!recentAccountId || !recentInstallationId) {
@@ -171,7 +195,7 @@ export default function Home() {
     const query = (searchMode === "quick"
       ? quickQuery.trim()
       : `${artist.trim()} ${title.trim()}`.trim()).slice(0, 200);
-    if (!session || query.length < 2 || suggestionsSuppressed) return;
+    if (!session || query.length < 2 || suggestionsSuppressed || isPastedUrl(query)) return;
 
     const generation = captureTfSecurityGeneration();
     const controller = new AbortController();
@@ -208,6 +232,9 @@ export default function Home() {
   }, [suggestionsOpen]);
 
   const chooseSuggestion = (suggestion: TrackSuggestionsResponse["suggestions"][number]) => {
+    linkRequestRef.current += 1;
+    setLinkPending(false);
+    setLinkError(null);
     setSuggestionsSuppressed(true);
     setSuggestionsOpen(false);
     setSuggestions([]);
@@ -250,6 +277,66 @@ export default function Home() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    const requestId = ++linkRequestRef.current;
+    if (searchMode === "quick" && isPastedUrl(quickQuery)) {
+      const url = quickQuery.trim();
+      searchMutation.reset();
+      setHasSearched(false);
+      setQuickError(false);
+      setLinkError(null);
+      setLinkPending(true);
+      setSuggestionsSuppressed(true);
+      setSuggestionsOpen(false);
+      const generation = captureTfSecurityGeneration();
+      void (async () => {
+        try {
+          const response = await fetch(apiUrl("/tracks/link-metadata"), tfRequestInit({
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url }),
+          }));
+          if (requestId !== linkRequestRef.current || !isCurrentTfSecurityGeneration(generation)) return;
+          if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+              reportTfAuthError(new TfApiError(
+                response.status,
+                response.status === 401 ? "unauthorized" : "module_access_denied",
+                response.status === 401 ? "unauthenticated" : "forbidden",
+                false,
+                generation,
+              ));
+            }
+            setLinkError(response.status === 422
+              ? "Эта ссылка не поддерживается. Используйте ссылку на отдельный трек из доступных источников."
+              : "Не удалось прочитать ссылку. Повторите попытку позже.");
+            return;
+          }
+          const metadata: unknown = await response.json();
+          if (requestId !== linkRequestRef.current || !isCurrentTfSecurityGeneration(generation)) return;
+          if (!isMediaLinkMetadata(metadata)) {
+            setLinkError("Источник вернул неполные данные трека.");
+            return;
+          }
+          const resolvedArtist = metadata.artist?.trim() ?? "";
+          const resolvedTitle = metadata.title.trim();
+          setArtist(resolvedArtist);
+          setTitle(resolvedTitle);
+          setQuickQuery(resolvedArtist ? `${resolvedArtist} — ${resolvedTitle}` : resolvedTitle);
+          setHasSearched(true);
+          if (resolvedArtist) searchMutation.mutate(buildSearchData(resolvedArtist, resolvedTitle));
+          else searchMutation.mutate(buildFreeSearchData(resolvedTitle));
+        } catch {
+          if (requestId === linkRequestRef.current && isCurrentTfSecurityGeneration(generation)) {
+            setLinkError("Не удалось прочитать ссылку. Повторите попытку позже.");
+          }
+        } finally {
+          if (requestId === linkRequestRef.current) setLinkPending(false);
+        }
+      })();
+      return;
+    }
+    setLinkPending(false);
+    setLinkError(null);
     const pair = searchMode === "quick"
       ? parseExplicitTrackQuery(quickQuery)
       : artist.trim() && title.trim()
@@ -283,6 +370,9 @@ export default function Home() {
   };
 
   const repeatRecentSearch = (entry: RecentSearch) => {
+    linkRequestRef.current += 1;
+    setLinkPending(false);
+    setLinkError(null);
     setQuickError(false);
     setSuggestionsSuppressed(true);
     setSuggestionsOpen(false);
@@ -395,10 +485,13 @@ export default function Home() {
                     <Search className="h-4 w-4 shrink-0" />
                     <input
                       type="text"
-                      placeholder="Трек или исполнитель"
+                      placeholder="Трек, исполнитель или ссылка"
                       value={quickQuery}
                       maxLength={500}
                       onChange={(event) => {
+                        linkRequestRef.current += 1;
+                        setLinkPending(false);
+                        setLinkError(null);
                         setQuickQuery(event.target.value);
                         setSuggestionsSuppressed(false);
                         setQuickError(false);
@@ -465,15 +558,15 @@ export default function Home() {
             )}
             <button
               type="submit"
-              disabled={searchMutation.isPending}
+              disabled={searchMutation.isPending || linkPending}
               className="flex h-11 min-w-32 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/85 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:opacity-50"
             >
-              {searchMutation.isPending ? (
+              {searchMutation.isPending || linkPending ? (
                 <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
               ) : (
                 <Search className="h-4 w-4" />
               )}
-              {searchMutation.isPending ? "Поиск..." : "Найти"}
+              {searchMutation.isPending || linkPending ? "Поиск..." : "Найти"}
             </button>
           </form>
           {searchMode === "quick" && quickError && (
@@ -481,6 +574,7 @@ export default function Home() {
               Введите не менее двух символов для поиска.
             </p>
           )}
+          {linkError && <p role="alert" className="mt-2 text-xs text-destructive">{linkError}</p>}
           <fieldset className="mt-4">
             <legend className="mb-2 text-xs text-muted-foreground">
               Источники
@@ -516,7 +610,7 @@ export default function Home() {
 
       <section
         aria-label={!hasSearched && recentSearches.length > 0 ? "Недавний поиск" : "Результаты поиска"}
-        aria-busy={searchMutation.isPending}
+        aria-busy={searchMutation.isPending || linkPending}
         className="mx-auto max-w-5xl px-4 py-5 sm:px-6"
       >
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -587,7 +681,7 @@ export default function Home() {
             Нет результатов поиска
           </div>
         )}
-        {searchMutation.isPending && (
+        {(searchMutation.isPending || linkPending) && (
           <div role="status" aria-label="Поиск треков" className="space-y-3">
             {[0, 1, 2].map((i) => (
               <div

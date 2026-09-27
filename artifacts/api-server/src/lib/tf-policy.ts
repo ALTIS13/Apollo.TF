@@ -67,6 +67,13 @@ export const TF_ROUTE_POLICIES: readonly TfRoutePolicy[] = Object.freeze([
   },
   {
     method: "POST",
+    path: "/api/tracks/link-metadata",
+    pattern: /^\/api\/tracks\/link-metadata$/,
+    capability: "tf.search",
+    live: false,
+  },
+  {
+    method: "POST",
     path: "/api/tracks/search",
     pattern: /^\/api\/tracks\/search$/,
     capability: "tf.search",

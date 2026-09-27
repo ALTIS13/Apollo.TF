@@ -44,7 +44,7 @@ async function search() {
       "authenticated",
     ),
   );
-  fireEvent.change(screen.getByPlaceholderText("Трек или исполнитель"), {
+  fireEvent.change(screen.getByPlaceholderText("Трек, исполнитель или ссылка"), {
     target: { value: "Unfamiliar song" },
   });
   fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));

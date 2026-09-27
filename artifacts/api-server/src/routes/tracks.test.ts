@@ -9,6 +9,7 @@ import pino from "pino";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TfSearchGateway } from "../lib/tf-search-client.js";
+import { MediaLinkResolutionError } from "../lib/media-link.js";
 import {
   TfDownloadWorkerError,
   type TfDownloadWorkerGateway,
@@ -178,6 +179,13 @@ function downloadWorkerGateway(): TfDownloadWorkerGateway & {
 function routeDependencies(overrides: Partial<TrackRouteDependencies> = {}) {
   const dependencies = {
     searchGateway: searchGateway(),
+    resolveMediaLink: vi.fn().mockResolvedValue({
+      schemaVersion: 1,
+      source: "youtube",
+      artist: "Artist",
+      title: "Track",
+      durationSeconds: 180,
+    }),
     loadRecentTracks: vi.fn().mockResolvedValue([
       {
         trackId: "recent-track",
@@ -253,6 +261,59 @@ afterEach(async () => {
 });
 
 describe("TF search module routing", () => {
+  it("returns pasted track-link metadata without selecting playable media", async () => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies);
+    const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+    const response = await fetch(`${baseUrl}/tracks/link-metadata`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      schemaVersion: 1,
+      source: "youtube",
+      artist: "Artist",
+      title: "Track",
+      durationSeconds: 180,
+    });
+    expect(dependencies.resolveMediaLink).toHaveBeenCalledWith(url);
+    expect(dependencies.searchGateway.search).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid link input before provider metadata lookup", async () => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/link-metadata`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "" }),
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "bad_request" });
+    expect(dependencies.resolveMediaLink).not.toHaveBeenCalled();
+  });
+
+  it("returns stable errors for unsupported and unavailable media links", async () => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies);
+    for (const [code, status] of [
+      ["unsupported_media_link", 422],
+      ["media_link_unavailable", 503],
+    ] as const) {
+      dependencies.resolveMediaLink.mockRejectedValueOnce(new MediaLinkResolutionError(code));
+      const response = await fetch(`${baseUrl}/tracks/link-metadata`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://soundcloud.com/artist/track" }),
+      });
+      expect(response.status).toBe(status);
+      await expect(response.json()).resolves.toEqual({ error: code });
+    }
+  });
+
   it("passes free text with account scope and strips internal result URLs", async () => {
     const gateway = searchGateway();
     gateway.freeSearch.mockResolvedValue({ ...searchResponse(), query: "late night music" });

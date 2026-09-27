@@ -22,6 +22,10 @@ let finishSearch: (response: Response) => void;
 let searchStarted: boolean;
 let searchBody: unknown;
 let searchPath: string;
+let linkBody: unknown;
+let linkResponse: Response;
+let holdLink: boolean;
+let finishLink: (response: Response) => void;
 let suggestionStarted: boolean;
 let holdSuggestion: boolean;
 let finishSuggestion: (response: Response) => void;
@@ -56,6 +60,9 @@ beforeEach(() => {
   searchStarted = false;
   searchBody = null;
   searchPath = "";
+  linkBody = null;
+  linkResponse = json({ schemaVersion: 1, source: "soundcloud", artist: "Artist", title: "Track", durationSeconds: 180 });
+  holdLink = false;
   suggestionStarted = false;
   holdSuggestion = false;
   vi.stubGlobal("Audio", ControlledAudio);
@@ -79,6 +86,11 @@ beforeEach(() => {
       return new Promise<Response>((resolve) => {
         finishSearch = resolve;
       });
+    }
+    if (path.endsWith("/link-metadata")) {
+      linkBody = JSON.parse(String(init?.body));
+      if (holdLink) return new Promise<Response>((resolve) => { finishLink = resolve; });
+      return linkResponse;
     }
     if (path.endsWith("/suggest")) {
       suggestionStarted = true;
@@ -138,7 +150,7 @@ async function startSearch() {
 it("searches an explicit artist-title pair from the quick field", async () => {
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
-  fireEvent.change(screen.getByPlaceholderText("Трек или исполнитель"), {
+  fireEvent.change(screen.getByPlaceholderText("Трек, исполнитель или ссылка"), {
     target: { value: "  Artist — Track - Live  " },
   });
   fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
@@ -152,7 +164,7 @@ it("searches an undelimited quick query without guessing artist and title", asyn
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
   fireEvent.click(screen.getByLabelText("SoundCloud"));
-  fireEvent.change(screen.getByPlaceholderText("Трек или исполнитель"), {
+  fireEvent.change(screen.getByPlaceholderText("Трек, исполнитель или ссылка"), {
     target: { value: "Unfamiliar song" },
   });
   fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
@@ -165,11 +177,76 @@ it("searches an undelimited quick query without guessing artist and title", asyn
   expect(searchBody).not.toHaveProperty("artist");
   await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
 });
+it("resolves a pasted source link to metadata before ordinary candidate search", async () => {
+  renderHome();
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  fireEvent.change(screen.getByPlaceholderText("Трек, исполнитель или ссылка"), {
+    target: { value: "https://soundcloud.com/artist/track" },
+  });
+  fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
+
+  await waitFor(() => expect(searchStarted).toBe(true));
+  expect(linkBody).toEqual({ url: "https://soundcloud.com/artist/track" });
+  expect(searchPath).toBe("/api/tracks/search");
+  expect(searchBody).toMatchObject({ artist: "Artist", title: "Track" });
+  expect(JSON.stringify(searchBody)).not.toContain("soundcloud.com");
+  await settleSearch(json({ results: [], cached: false, sources: ["sc"] }));
+});
+it("keeps an unsupported pasted link out of free search without revoking the session", async () => {
+  linkResponse = json({ error: "unsupported_media_link" }, 422);
+  renderHome();
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  fireEvent.change(screen.getByPlaceholderText("Трек, исполнитель или ссылка"), {
+    target: { value: "https://open.spotify.com/track/example" },
+  });
+  fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
+
+  expect(await screen.findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("ссылк"));
+  expect(searchStarted).toBe(false);
+  expect(auth.status).toBe("authenticated");
+});
+
+it("does not leave old results under a rejected pasted link", async () => {
+  renderHome();
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  const input = screen.getByPlaceholderText("Трек, исполнитель или ссылка");
+  fireEvent.change(input, { target: { value: "Previous" } });
+  fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
+  await waitFor(() => expect(searchStarted).toBe(true));
+  await settleSearch(json({
+    query: "Previous", cached: false, sources: ["yt"], fallbackAvailable: false,
+    results: [{ id: "old", title: "Previous Track", artist: "Old", type: "original", duration: 180,
+      source: "youtube", thumbnailUrl: null, quality: [], score: 90 }],
+  }));
+  expect(screen.getByText("Previous Track")).toBeTruthy();
+
+  linkResponse = json({ error: "unsupported_media_link" }, 422);
+  fireEvent.change(input, { target: { value: "https://open.spotify.com/track/example" } });
+  fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
+  await screen.findByRole("alert");
+  expect(screen.queryByText("Previous Track")).toBeNull();
+});
+
+it("does not search from a link resolved after the account changed", async () => {
+  holdLink = true;
+  renderHome();
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  fireEvent.change(screen.getByPlaceholderText("Трек, исполнитель или ссылка"), {
+    target: { value: "https://soundcloud.com/artist/track" },
+  });
+  fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
+  await waitFor(() => expect(linkBody).not.toBeNull());
+  identity = B;
+  await act(async () => { await auth.refresh(); });
+  await act(async () => { finishLink(json({ schemaVersion: 1, source: "soundcloud", artist: "Old", title: "Private" })); });
+  expect(auth.session?.accountId).toBe(B);
+  expect(searchStarted).toBe(false);
+});
 it("chooses a keyboard suggestion and searches with the current source filters", async () => {
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
   fireEvent.click(screen.getByLabelText("SoundCloud"));
-  const queryInput = screen.getByPlaceholderText("Трек или исполнитель");
+  const queryInput = screen.getByPlaceholderText("Трек, исполнитель или ссылка");
   fireEvent.change(queryInput, { target: { value: "Tr" } });
 
   expect(await screen.findByRole("option", { name: "Artist - Track" })).toBeTruthy();
@@ -191,7 +268,7 @@ it("does not display a delayed suggestion from the previous account", async () =
   holdSuggestion = true;
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
-  fireEvent.change(screen.getByPlaceholderText("Трек или исполнитель"), {
+  fireEvent.change(screen.getByPlaceholderText("Трек, исполнитель или ссылка"), {
     target: { value: "Tr" },
   });
   await waitFor(() => expect(suggestionStarted).toBe(true));
@@ -221,7 +298,7 @@ it("rendered Home ignores the generated client's delayed A401 after B becomes ac
   await settleSearch(json({ error: "unauthorized" }, 401));
   expect(auth.status).toBe("authenticated");
   expect(auth.session?.accountId).toBe(B);
-  expect(screen.getByPlaceholderText("Трек или исполнитель")).toBeTruthy();
+  expect(screen.getByPlaceholderText("Трек, исполнитель или ссылка")).toBeTruthy();
 });
 it("rendered Home cannot publish an old success after same-account generation renewal", async () => {
   await startSearch();
