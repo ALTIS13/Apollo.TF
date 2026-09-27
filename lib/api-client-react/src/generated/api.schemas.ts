@@ -99,6 +99,20 @@ export interface MediaLinkMetadataResponse {
   durationSeconds?: number;
 }
 
+export type MediaLinkErrorResponseError =
+  (typeof MediaLinkErrorResponseError)[keyof typeof MediaLinkErrorResponseError];
+
+export const MediaLinkErrorResponseError = {
+  unsupported_media_link: "unsupported_media_link",
+  media_link_unavailable: "media_link_unavailable",
+  media_link_rate_limited: "media_link_rate_limited",
+  media_link_overloaded: "media_link_overloaded",
+} as const;
+
+export interface MediaLinkErrorResponse {
+  error: MediaLinkErrorResponseError;
+}
+
 export type FreeSearchRequestMode =
   (typeof FreeSearchRequestMode)[keyof typeof FreeSearchRequestMode];
 
@@ -692,7 +706,18 @@ export type GetTrackStreamParams = {
    * @maximum 86400
    */
   expectedDurationSeconds?: number;
+  /**
+   * Bypass the cached stream URL and resolve a new one for non-Deezer tracks. The value must be 1; source-duration admission still applies.
+   */
+  refresh?: GetTrackStreamRefresh;
 };
+
+export type GetTrackStreamRefresh =
+  (typeof GetTrackStreamRefresh)[keyof typeof GetTrackStreamRefresh];
+
+export const GetTrackStreamRefresh = {
+  NUMBER_1: 1,
+} as const;
 
 export type GetTrackDownloadParams = {
   /**

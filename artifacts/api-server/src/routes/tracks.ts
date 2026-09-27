@@ -47,6 +47,11 @@ import {
   MediaLinkResolutionError,
   resolvePastedMediaLink,
 } from "../lib/media-link.js";
+import {
+  admitMediaLink,
+  MediaLinkAdmissionError,
+  type AdmitMediaLink,
+} from "../lib/media-link-admission.js";
 
 interface RecentTrack {
   readonly trackId: string;
@@ -63,6 +68,7 @@ interface RecordPlayInput {
 
 export interface TrackRouteDependencies {
   readonly searchGateway: TfSearchGateway;
+  readonly admitMediaLink: AdmitMediaLink;
   readonly resolveMediaLink: typeof resolvePastedMediaLink;
   readonly loadRecentTracks: (
     accountId: string,
@@ -94,6 +100,7 @@ const expectedDurationQuerySchema = z.string()
   .transform(Number)
   .pipe(z.number().int().min(1).max(86_400))
   .optional();
+const refreshStreamQuerySchema = z.literal("1").optional();
 
 async function streamDurationError(
   sourceUrl: string,
@@ -305,6 +312,7 @@ function decodeTrackUrl(id: string): { source: string; url: string } | null {
 
 const defaultTrackRouteDependencies: TrackRouteDependencies = {
   searchGateway: unavailableGateway(),
+  admitMediaLink,
   resolveMediaLink: resolvePastedMediaLink,
   async loadRecentTracks(accountId, limit) {
     const result = await db.execute(sql`
@@ -457,7 +465,11 @@ export function createTracksRouter(
       return;
     }
     try {
-      const metadata = await routeDependencies.resolveMediaLink(parsed.data.url);
+      const metadata = await routeDependencies.admitMediaLink(
+        req.tfPrincipal!.accountId,
+        parsed.data.url,
+        () => routeDependencies.resolveMediaLink(parsed.data.url),
+      );
       res.json({
         schemaVersion: 1,
         source: metadata.source,
@@ -466,6 +478,12 @@ export function createTracksRouter(
         ...(metadata.durationSeconds ? { durationSeconds: metadata.durationSeconds } : {}),
       });
     } catch (error) {
+      if (error instanceof MediaLinkAdmissionError) {
+        res.setHeader("Retry-After", String(error.retryAfterSeconds));
+        res.status(error.code === "media_link_rate_limited" ? 429 : 503)
+          .json({ error: error.code });
+        return;
+      }
       const code = error instanceof MediaLinkResolutionError
         ? error.code
         : "media_link_unavailable";
@@ -570,7 +588,8 @@ export function createTracksRouter(
     const expected = expectedDurationQuerySchema.safeParse(
       req.query["expectedDurationSeconds"],
     );
-    if (!expected.success) {
+    const refresh = refreshStreamQuerySchema.safeParse(req.query["refresh"]);
+    if (!expected.success || !refresh.success) {
       res.status(400).json({ error: "bad_request" });
       return;
     }
@@ -605,7 +624,7 @@ export function createTracksRouter(
       }
 
       if (!(await admitSourceDuration(decoded.url, expected.data, res))) return;
-      const cached = await getCachedStreamUrl(id);
+      const cached = refresh.data === "1" ? null : await getCachedStreamUrl(id);
       if (cached) {
         res.json({
           id,

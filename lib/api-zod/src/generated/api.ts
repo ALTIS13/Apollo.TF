@@ -250,6 +250,12 @@ export const GetTrackStreamQueryParams = zod.object({
     .max(getTrackStreamQueryExpectedDurationSecondsMax)
     .optional()
     .describe("Full recording duration from the selected result, when known."),
+  refresh: zod
+    .literal(1)
+    .optional()
+    .describe(
+      "Bypass the cached stream URL and resolve a new one for non-Deezer tracks. The value must be 1; source-duration admission still applies.",
+    ),
 });
 
 export const GetTrackStreamResponse = zod.object({

@@ -26,6 +26,7 @@ const runtime = vi.hoisted(() => ({
   logoutSession: vi.fn(),
   tfFetch: vi.fn(),
   streamQuery: vi.fn(),
+  streamRequest: vi.fn(),
   queueDownload: vi.fn(),
   toast: vi.fn(),
   lifecycleOptions: [] as Array<{
@@ -52,10 +53,13 @@ vi.mock("@workspace/api-client-react", async (importOriginal) => {
     await importOriginal<typeof import("@workspace/api-client-react")>();
   return {
     ...actual,
-    getGetTrackStreamQueryOptions: (trackId: string) => ({
-      queryKey: ["test-stream", trackId],
-      queryFn: runtime.streamQuery,
-    }),
+    getGetTrackStreamQueryOptions: (trackId: string, params?: { refresh?: number }) => {
+      runtime.streamRequest(trackId, params);
+      return {
+        queryKey: ["test-stream", trackId, params],
+        queryFn: runtime.streamQuery,
+      };
+    },
     queueTrackDownloads: runtime.queueDownload,
   };
 });
@@ -146,17 +150,17 @@ function PlayerActions({
 }
 
 function PlaylistPlaybackActions() {
-  const { playCollection, togglePlayPause, queue, currentTrack, isPlaying } = usePlayer();
+  const { playCollection, togglePlayPause, queue, currentTrack, isPlaying, progress } = usePlayer();
   const second = { ...track, id: "track-2", title: "Second Track" };
   return <div>
-    <output data-testid="playlist-queue" data-ids={queue.map((item) => item.id).join(",")} data-current={currentTrack?.id ?? ""} data-playing={isPlaying} />
+    <output data-testid="playlist-queue" data-ids={queue.map((item) => item.id).join(",")} data-current={currentTrack?.id ?? ""} data-playing={isPlaying} data-position={progress} />
     <button type="button" onClick={() => void playCollection([track, second])}>Play playlist</button>
     <button type="button" onClick={togglePlayPause}>Resume queue</button>
   </div>;
 }
 
 function NextTrackRecoveryActions() {
-  const { playCollection, playFromQueue, playNext, cycleRepeatMode, queue, queueIndex, currentTrack } = usePlayer();
+  const { playCollection, playFromQueue, playNext, cycleRepeatMode, togglePlayPause, queue, queueIndex, currentTrack } = usePlayer();
   const second = { ...track, id: "track-2" };
   const third = { ...track, id: "track-3" };
   return <div>
@@ -166,6 +170,7 @@ function NextTrackRecoveryActions() {
     <button type="button" onClick={() => void playFromQueue(1)}>Select second track</button>
     <button type="button" onClick={() => void playFromQueue(2)}>Select third track</button>
     <button type="button" onClick={() => void playNext()}>Next track</button>
+    <button type="button" onClick={togglePlayPause}>Resume queue</button>
     <button type="button" onClick={cycleRepeatMode}>Repeat all</button>
   </div>;
 }
@@ -200,6 +205,7 @@ beforeEach(() => {
   runtime.logoutSession.mockReset().mockResolvedValue(undefined);
   runtime.tfFetch.mockReset().mockResolvedValue(undefined);
   runtime.streamQuery.mockReset();
+  runtime.streamRequest.mockReset();
   runtime.queueDownload.mockReset();
   runtime.toast.mockReset();
   runtime.lifecycleOptions.length = 0;
@@ -481,6 +487,87 @@ it("replaces the queue with the full playlist and restarts its first track on re
   await waitFor(() => expect(FakeAudio.instances[0].play).toHaveBeenCalledTimes(2));
   expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-playing", "true");
   expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-current", "track-1");
+});
+
+it("re-resolves an expired paused stream only after explicit retry and keeps queue position", async () => {
+  runtime.fetchSession.mockResolvedValueOnce(session);
+  let resolveRetry!: (value: { streamUrl: string }) => void;
+  runtime.streamQuery
+    .mockResolvedValueOnce({ streamUrl: "https://example.test/old" })
+    .mockImplementationOnce(() => new Promise((resolve) => { resolveRetry = resolve; }));
+  renderProtectedRuntime(<PlaylistPlaybackActions />);
+  fireEvent.click(await screen.findByRole("button", { name: "Play playlist" }));
+  await waitFor(() => expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-playing", "true"));
+  const audio = FakeAudio.instances[0]!;
+  audio.currentTime = 47;
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Resume queue" }));
+    audio.dispatchEvent(new Event("pause"));
+  });
+  audio.play.mockRejectedValueOnce(new Error("expired media URL"));
+  fireEvent.click(screen.getByRole("button", { name: "Resume queue" }));
+  await waitFor(() => expect(runtime.toast).toHaveBeenCalledWith(expect.objectContaining({
+    description: expect.stringContaining("повтор"),
+  })));
+  expect(runtime.streamQuery).toHaveBeenCalledTimes(1);
+  expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-ids", "track-1,track-2");
+
+  fireEvent.click(screen.getByRole("button", { name: "Resume queue" }));
+  await waitFor(() => expect(runtime.streamQuery).toHaveBeenCalledTimes(2));
+  expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-position", "47");
+  await act(async () => { resolveRetry({ streamUrl: "https://example.test/new" }); });
+  expect(runtime.streamRequest).toHaveBeenLastCalledWith("track-1", expect.objectContaining({ refresh: 1 }));
+  expect(audio.src).toBe("https://example.test/new");
+  expect(audio.currentTime).toBe(47);
+  expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-ids", "track-1,track-2");
+  expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-current", "track-1");
+});
+
+it("ignores a late failed-stream retry after a different track is selected", async () => {
+  runtime.fetchSession.mockResolvedValueOnce(session);
+  let resolveRetry!: (value: { streamUrl: string }) => void;
+  runtime.streamQuery
+    .mockResolvedValueOnce({ streamUrl: "https://example.test/old" })
+    .mockImplementationOnce(() => new Promise((resolve) => { resolveRetry = resolve; }))
+    .mockResolvedValueOnce({ streamUrl: "https://example.test/third" });
+  renderProtectedRuntime(<NextTrackRecoveryActions />);
+  fireEvent.click(await screen.findByRole("button", { name: "Play recovery queue" }));
+  await waitFor(() => expect(screen.getByTestId("recovery-queue")).toHaveAttribute("data-current", "track-1"));
+  const audio = FakeAudio.instances[0]!;
+  audio.currentTime = 47;
+  await act(async () => { audio.dispatchEvent(new Event("error")); });
+  expect(runtime.streamQuery).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "Resume queue" }));
+  await waitFor(() => expect(runtime.streamQuery).toHaveBeenCalledTimes(2));
+  fireEvent.click(screen.getByRole("button", { name: "Select third track" }));
+  await waitFor(() => expect(screen.getByTestId("recovery-queue")).toHaveAttribute("data-current", "track-3"));
+  await act(async () => { resolveRetry({ streamUrl: "https://example.test/stale" }); });
+  expect(audio.src).toBe("https://example.test/third");
+  expect(screen.getByTestId("recovery-queue")).toHaveAttribute("data-current", "track-3");
+  expect(screen.getByTestId("recovery-queue")).toHaveAttribute("data-ids", "track-1,track-2,track-3");
+});
+
+it("ignores an old resume rejection after a newer manual selection", async () => {
+  runtime.fetchSession.mockResolvedValueOnce(session);
+  runtime.streamQuery
+    .mockResolvedValueOnce({ streamUrl: "https://example.test/first" })
+    .mockResolvedValueOnce({ streamUrl: "https://example.test/third" });
+  renderProtectedRuntime(<NextTrackRecoveryActions />);
+  fireEvent.click(await screen.findByRole("button", { name: "Play recovery queue" }));
+  await waitFor(() => expect(screen.getByTestId("recovery-queue")).toHaveAttribute("data-current", "track-1"));
+  const audio = FakeAudio.instances[0]!;
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Resume queue" }));
+    audio.dispatchEvent(new Event("pause"));
+  });
+  let rejectOldResume!: (error: unknown) => void;
+  audio.play.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOldResume = reject; }));
+  fireEvent.click(screen.getByRole("button", { name: "Resume queue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Select third track" }));
+  await waitFor(() => expect(screen.getByTestId("recovery-queue")).toHaveAttribute("data-current", "track-3"));
+  await act(async () => { rejectOldResume(new Error("expired first stream")); });
+  expect(runtime.toast).not.toHaveBeenCalled();
+  expect(screen.getByTestId("recovery-queue")).toHaveAttribute("data-current", "track-3");
 });
 
 it.each([

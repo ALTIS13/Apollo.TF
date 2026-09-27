@@ -5,6 +5,7 @@
  * Music Player API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { GetTrackStreamRefresh } from "./getTrackStreamRefresh";
 
 export type GetTrackStreamParams = {
   /**
@@ -23,4 +24,8 @@ export type GetTrackStreamParams = {
    * @maximum 86400
    */
   expectedDurationSeconds?: number;
+  /**
+   * Bypass the cached stream URL and resolve a new one for non-Deezer tracks. The value must be 1; source-duration admission still applies.
+   */
+  refresh?: GetTrackStreamRefresh;
 };

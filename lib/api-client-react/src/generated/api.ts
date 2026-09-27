@@ -44,6 +44,7 @@ import type {
   LikedTrackMutationResponse,
   LikedTrackPage,
   ListLikedTracksParams,
+  MediaLinkErrorResponse,
   MediaLinkMetadataRequest,
   MediaLinkMetadataResponse,
   MoveLikedTrackRequest,
@@ -362,7 +363,7 @@ export const resolveTrackLinkMetadata = async (
 };
 
 export const getResolveTrackLinkMetadataMutationOptions = <
-  TError = ErrorType<void>,
+  TError = ErrorType<void | MediaLinkErrorResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -404,13 +405,14 @@ export type ResolveTrackLinkMetadataMutationResult = NonNullable<
 >;
 export type ResolveTrackLinkMetadataMutationBody =
   BodyType<MediaLinkMetadataRequest>;
-export type ResolveTrackLinkMetadataMutationError = ErrorType<void>;
+export type ResolveTrackLinkMetadataMutationError =
+  ErrorType<void | MediaLinkErrorResponse>;
 
 /**
  * @summary Read metadata from a supported public track link
  */
 export const useResolveTrackLinkMetadata = <
-  TError = ErrorType<void>,
+  TError = ErrorType<void | MediaLinkErrorResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<

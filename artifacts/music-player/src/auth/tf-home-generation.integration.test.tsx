@@ -206,6 +206,20 @@ it("keeps an unsupported pasted link out of free search without revoking the ses
   expect(auth.status).toBe("authenticated");
 });
 
+it("shows link resolution throttling without searching or revoking the session", async () => {
+  linkResponse = json({ error: "media_link_rate_limited" }, 429);
+  renderHome();
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  fireEvent.change(screen.getByPlaceholderText("Трек, исполнитель или ссылка"), {
+    target: { value: "https://soundcloud.com/artist/track" },
+  });
+  fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Слишком много запросов");
+  expect(searchStarted).toBe(false);
+  expect(auth.status).toBe("authenticated");
+});
+
 it("does not leave old results under a rejected pasted link", async () => {
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));

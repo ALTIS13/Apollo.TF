@@ -9,6 +9,7 @@ import pino from "pino";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TfSearchGateway } from "../lib/tf-search-client.js";
+import { createMediaLinkAdmission, MediaLinkAdmissionError } from "../lib/media-link-admission.js";
 import { MediaLinkResolutionError } from "../lib/media-link.js";
 import {
   TfDownloadWorkerError,
@@ -179,6 +180,7 @@ function downloadWorkerGateway(): TfDownloadWorkerGateway & {
 function routeDependencies(overrides: Partial<TrackRouteDependencies> = {}) {
   const dependencies = {
     searchGateway: searchGateway(),
+    admitMediaLink: createMediaLinkAdmission(),
     resolveMediaLink: vi.fn().mockResolvedValue({
       schemaVersion: 1,
       source: "youtube",
@@ -312,6 +314,61 @@ describe("TF search module routing", () => {
       expect(response.status).toBe(status);
       await expect(response.json()).resolves.toEqual({ error: code });
     }
+  });
+
+  it.each([
+    ["media_link_rate_limited", 429, 17],
+    ["media_link_overloaded", 503, 1],
+  ] as const)("maps %s admission to a stable response", async (code, status, retryAfterSeconds) => {
+    const admitMediaLink = vi.fn().mockRejectedValue(
+      new MediaLinkAdmissionError(code, retryAfterSeconds),
+    );
+    const dependencies = routeDependencies({ admitMediaLink });
+    const baseUrl = await startTracksServer(dependencies);
+    const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+
+    const response = await fetch(`${baseUrl}/tracks/link-metadata`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+
+    expect(response.status).toBe(status);
+    expect(response.headers.get("retry-after")).toBe(String(retryAfterSeconds));
+    await expect(response.json()).resolves.toEqual({ error: code });
+    expect(admitMediaLink).toHaveBeenCalledWith(ACCOUNT_ID, url, expect.any(Function));
+    expect(dependencies.resolveMediaLink).not.toHaveBeenCalled();
+  });
+
+  it("shares an in-flight link lookup for one account without spending another request", async () => {
+    let release!: (value: Awaited<ReturnType<TrackRouteDependencies["resolveMediaLink"]>>) => void;
+    const pending = new Promise<Awaited<ReturnType<TrackRouteDependencies["resolveMediaLink"]>>>(
+      (resolve) => { release = resolve; },
+    );
+    const dependencies = routeDependencies({
+      admitMediaLink: createMediaLinkAdmission({ maxRequestsPerAccount: 1, now: () => 0 }),
+    });
+    dependencies.resolveMediaLink.mockReturnValueOnce(pending);
+    const baseUrl = await startTracksServer(dependencies);
+    const request = (url: string) => fetch(`${baseUrl}/tracks/link-metadata`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+
+    const first = request(url);
+    await vi.waitFor(() => expect(dependencies.resolveMediaLink).toHaveBeenCalledTimes(1));
+    const joined = request(url);
+    const limited = await request("https://www.youtube.com/watch?v=another-ID");
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("60");
+    release({ schemaVersion: 1, source: "youtube", title: "Track" });
+
+    const [firstResponse, joinedResponse] = await Promise.all([first, joined]);
+    expect(firstResponse.status).toBe(200);
+    expect(joinedResponse.status).toBe(200);
+    expect(dependencies.resolveMediaLink).toHaveBeenCalledTimes(1);
   });
 
   it("passes free text with account scope and strips internal result URLs", async () => {
@@ -974,6 +1031,74 @@ describe("stream preview boundary", () => {
     await expect(unknown.json()).resolves.toEqual({ error: "duration_unverified" });
     expect(streamCacheMocks.getCachedStreamUrl).toHaveBeenCalledTimes(1);
   });
+
+  it("refreshes a verified non-Deezer stream without reading the cached URL", async () => {
+    const sourceUrl = "https://www.youtube.com/watch?v=refreshable";
+    const id = trackIdFor("yt", sourceUrl);
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({
+      url: "https://media.example.test/stale",
+      mimeType: "audio/webm",
+    });
+    durationProbeMock.mockResolvedValue(205);
+    ytdlpMocks.getStreamUrl.mockResolvedValue({
+      url: "https://media.example.test/fresh",
+      mimeType: "audio/mpeg",
+    });
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const response = await fetch(
+      `${baseUrl}/tracks/${id}/stream?refresh=1&expectedDurationSeconds=210`,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      id,
+      streamUrl: "https://media.example.test/fresh",
+      mimeType: "audio/mpeg",
+    });
+    expect(durationProbeMock).toHaveBeenCalledWith(expect.objectContaining({ sourceUrl }));
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+    expect(ytdlpMocks.getStreamUrl).toHaveBeenCalledExactlyOnceWith(sourceUrl);
+    expect(streamCacheMocks.setCachedStreamUrl).toHaveBeenCalledExactlyOnceWith(
+      id,
+      "https://media.example.test/fresh",
+      "audio/mpeg",
+    );
+  });
+
+  it("rejects a known preview before refreshing a non-Deezer stream", async () => {
+    const sourceUrl = "https://www.youtube.com/watch?v=short-refresh";
+    const id = trackIdFor("yt", sourceUrl);
+    durationProbeMock.mockResolvedValue(30);
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const response = await fetch(
+      `${baseUrl}/tracks/${id}/stream?refresh=1&expectedDurationSeconds=210`,
+    );
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ error: "preview_rejected" });
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+    expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+    expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+  });
+
+  it.each(["0", "01", "true", "", "1&refresh=1"])(
+    "rejects invalid refresh=%s before probing or reading the cache",
+    async (refresh) => {
+      const id = trackIdFor("yt", "https://www.youtube.com/watch?v=bad-refresh");
+      const baseUrl = await startTracksServer(routeDependencies());
+
+      const response = await fetch(`${baseUrl}/tracks/${id}/stream?refresh=${refresh}`);
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "bad_request" });
+      expect(durationProbeMock).not.toHaveBeenCalled();
+      expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+      expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+      expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["ID only", ""],

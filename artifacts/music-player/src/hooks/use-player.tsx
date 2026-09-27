@@ -112,6 +112,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const loadGeneration = useRef(0);
   const appliedLoadGeneration = useRef<number | null>(null);
+  const failedStreamRef = useRef(false);
   const mountedRef = useRef(false);
   const suspendedPosition = useRef<number | null>(null);
   const queryClient = useQueryClient();
@@ -133,6 +134,25 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const playTrackRef = useRef<(track: TrackResult, originLive?: () => boolean) => Promise<void>>(async () => {});
   const playNextRef = useRef<(reason: "ended" | "next") => Promise<void>>(async () => {});
+  const markStreamFailureRef = useRef<() => void>(() => {});
+
+  const markStreamFailure = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio || !currentTrackRef.current || appliedLoadGeneration.current === null ||
+      failedStreamRef.current || !canUseTfProtectedActivity()) return;
+    failedStreamRef.current = true;
+    suspendedPosition.current = audio.currentTime;
+    setProgress(audio.currentTime);
+    audio.pause();
+    setTfPlaybackActive(false);
+    setIsPlaying(false);
+    toast({
+      title: "Поток прерван",
+      description: "Нажмите воспроизведение повторно, чтобы подключиться заново.",
+      variant: "destructive",
+    });
+  }, [toast]);
+  markStreamFailureRef.current = markStreamFailure;
 
   useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
@@ -168,8 +188,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setTfPlaybackActive(true); setIsPlaying(true);
     };
     const handlePause = () => { setTfPlaybackActive(false); setIsPlaying(false); };
+    const handleError = () => markStreamFailureRef.current();
     const unsubscribe = subscribeTfActivitySuspension(() => {
       loadGeneration.current += 1;
+      appliedLoadGeneration.current = null;
+      failedStreamRef.current = false;
       if (suspendedPosition.current === null) suspendedPosition.current = audio.currentTime;
       setProgress(suspendedPosition.current);
       audio.pause(); audio.src = ""; audio.load(); setIsLoading(false);
@@ -180,6 +203,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     audio.addEventListener("ended", handleEnded);
     audio.addEventListener("play", handlePlay);
     audio.addEventListener("pause", handlePause);
+    audio.addEventListener("error", handleError);
 
     return () => {
       mountedRef.current = false; loadGeneration.current += 1; unsubscribe(); setTfPlaybackActive(false);
@@ -188,6 +212,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.removeEventListener("ended", handleEnded);
       audio.removeEventListener("play", handlePlay);
       audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("error", handleError);
       audio.pause();
       audio.src = "";
     };
@@ -237,10 +262,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // ── Internal load helper (no toggle check, no queue reset) ────────────────
 
-  const _loadTrack = useCallback(async (track: TrackResult, originLive?: () => boolean) => {
+  const _loadTrack = useCallback(async (track: TrackResult, originLive?: () => boolean, refresh = false) => {
     if (!audioRef.current || !canUseTfProtectedActivity() || originLive?.() === false) return;
     const load = ++loadGeneration.current, security = captureTfSecurityGeneration();
     appliedLoadGeneration.current = null;
+    failedStreamRef.current = false;
     const live = () => mountedRef.current && load === loadGeneration.current && isCurrentTfSecurityGeneration(security) && canUseTfProtectedActivity() && originLive?.() !== false;
     const resumePosition = currentTrackRef.current?.id === track.id ? suspendedPosition.current : null;
     suspendedPosition.current = null;
@@ -248,7 +274,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setIsLoading(true);
       setCurrentTrack(track);
       setIsPlaying(false);
-      setProgress(0);
+      setProgress(refresh ? resumePosition ?? 0 : 0);
       setDuration(track.duration || 0);
       audioRef.current.pause();
       audioRef.current.src = "";
@@ -258,6 +284,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         ...(expectedDuration !== undefined
           ? { expectedDurationSeconds: expectedDuration }
           : {}),
+        ...(refresh ? { refresh: 1 as const } : {}),
       };
       const res = await queryClient.fetchQuery(getGetTrackStreamQueryOptions(track.id, params, {
         request: tfRequestInit({ method: "GET" }),
@@ -279,7 +306,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       if (!live()) return;
       reportTfAuthError(err);
-      setCurrentTrack(null);
+      if (refresh) {
+        failedStreamRef.current = true;
+        suspendedPosition.current = resumePosition;
+        setProgress(resumePosition ?? 0);
+      } else {
+        setCurrentTrack(null);
+      }
       setIsPlaying(false);
       const recoverableSource = isUnavailableTrackSource(err);
       toast({
@@ -495,16 +528,24 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const togglePlayPause = useCallback(() => {
     if (!audioRef.current || !currentTrackRef.current || !canUseTfProtectedActivity()) return;
+    if (failedStreamRef.current) {
+      void _loadTrackRef.current(currentTrackRef.current, undefined, true);
+      return;
+    }
     if (suspendedPosition.current !== null) { void _loadTrackRef.current(currentTrackRef.current); return; }
     if (isPlayingRef.current) {
       audioRef.current.pause();
     } else {
-      audioRef.current.play().catch(() => {
-        toast({ title: "Ошибка", description: "Стрим истёк. Запустите трек снова.", variant: "destructive" });
-        setIsPlaying(false);
+      const attemptLoad = loadGeneration.current;
+      const attemptTrack = currentTrackRef.current;
+      const audio = audioRef.current;
+      audio.play().catch(() => {
+        if (attemptLoad !== loadGeneration.current ||
+          currentTrackRef.current !== attemptTrack || audioRef.current !== audio) return;
+        markStreamFailureRef.current();
       });
     }
-  }, [toast]);
+  }, []);
 
   const seekTo = useCallback((percentage: number) => {
     if (!audioRef.current || !duration) return;
