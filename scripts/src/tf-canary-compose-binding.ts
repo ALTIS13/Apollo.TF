@@ -30,12 +30,30 @@ const serviceImages: Readonly<Record<string, TfOnlyArtifactImageName>> = {
 };
 
 const servicePorts: Readonly<
-  Record<string, { environmentName: string; target: number }>
+  Record<string, { environmentName: string; published: string; target: number }>
 > = {
-  "tf-api": { environmentName: "TF_CANARY_API_PORT", target: 8080 },
-  "tf-web": { environmentName: "TF_CANARY_WEB_PORT", target: 80 },
-  "tf-admin": { environmentName: "TF_CANARY_ADMIN_PORT", target: 80 },
+  "tf-api": {
+    environmentName: "TF_CANARY_API_PORT",
+    published: "19201",
+    target: 8080,
+  },
+  "tf-web": {
+    environmentName: "TF_CANARY_WEB_PORT",
+    published: "19202",
+    target: 80,
+  },
+  "tf-admin": {
+    environmentName: "TF_CANARY_ADMIN_PORT",
+    published: "19203",
+    target: 80,
+  },
 };
+
+const selectedCanaryOrigins = {
+  platform: "https://api.canary.apollot.ru",
+  web: "https://tf.canary.apollot.ru",
+  api: "https://api.tf.canary.apollot.ru",
+} as const;
 
 const repositoryRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -131,9 +149,12 @@ export function validateTfCanaryComposeBinding(
 ): { apiOrigin: string; imageCount: number; serviceCount: number } {
   const apiOrigin = artifact.tfWebApiOrigin;
   if (
-    apiOrigin === undefined ||
+    apiOrigin !== selectedCanaryOrigins.api ||
     environment.TF_WEB_API_ORIGIN !== apiOrigin ||
     environment.TF_CANARY_API_PUBLIC_ORIGIN !== apiOrigin ||
+    environment.TF_CANARY_PUBLIC_ORIGIN !== selectedCanaryOrigins.web ||
+    environment.PLATFORM_CANARY_PUBLIC_ORIGIN !==
+      selectedCanaryOrigins.platform ||
     environment.RELEASE_SOURCE_COMMIT !== artifact.sourceCommit ||
     environment.TF_SUCCESSOR_WS_ENABLED !== "false"
   ) {
@@ -170,19 +191,11 @@ export function validateTfCanaryComposeBinding(
   assertResourceNames(compose.volumes, volumeNames);
   assertCanarySecretFiles(environment, compose);
 
-  const publishedPorts = Object.values(servicePorts).map(
-    ({ environmentName }) => environment[environmentName],
-  );
   if (
-    publishedPorts.some(
-      (port) =>
-        port === undefined ||
-        !/^[0-9]+$/.test(port) ||
-        Number(port) < 1024 ||
-        Number(port) > 65535 ||
-        ["18201", "18202", "18203"].includes(port),
-    ) ||
-    new Set(publishedPorts).size !== publishedPorts.length
+    Object.values(servicePorts).some(
+      ({ environmentName, published }) =>
+        environment[environmentName] !== published,
+    )
   ) {
     throw new Error("canary_port_mismatch");
   }
@@ -230,7 +243,7 @@ export function validateTfCanaryComposeBinding(
       if (
         service.ports?.length !== 1 ||
         port?.host_ip !== "127.0.0.1" ||
-        String(port.published) !== environment[expectedPort.environmentName] ||
+        String(port.published) !== expectedPort.published ||
         port.target !== expectedPort.target ||
         (port.protocol !== undefined && port.protocol !== "tcp")
       ) {
@@ -245,8 +258,6 @@ export function validateTfCanaryComposeBinding(
   const webOrigin = environment.TF_CANARY_PUBLIC_ORIGIN;
   const platformOrigin = environment.PLATFORM_CANARY_PUBLIC_ORIGIN;
   if (
-    !isCanaryHttpsOrigin(webOrigin) ||
-    !isCanaryHttpsOrigin(platformOrigin) ||
     apiEnvironment?.SERVER_URL !== apiOrigin ||
     apiEnvironment.APOLLO_TF_CALLBACK_URL !==
       `${apiOrigin}/api/auth/callback` ||
@@ -267,21 +278,6 @@ export function validateTfCanaryComposeBinding(
     imageCount: references.size,
     serviceCount: Object.keys(serviceImages).length,
   };
-}
-
-function isCanaryHttpsOrigin(origin: string | undefined): origin is string {
-  if (origin === undefined) return false;
-  try {
-    const parsed = new URL(origin);
-    return (
-      parsed.protocol === "https:" &&
-      parsed.origin === origin &&
-      parsed.hostname.endsWith(".apollot.ru") &&
-      parsed.hostname.split(".").includes("canary")
-    );
-  } catch {
-    return false;
-  }
 }
 
 export function validateTfCanaryComposeFromFiles(

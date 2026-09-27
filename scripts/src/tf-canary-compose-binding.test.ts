@@ -1,9 +1,15 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  return { ...original, spawnSync: vi.fn(original.spawnSync) };
+});
 
 import type { ComposeDocument, ComposeService } from "./coolify-release.js";
 import {
@@ -17,9 +23,9 @@ import {
   validateTfCanaryComposeFromFiles,
 } from "./tf-canary-compose-binding.js";
 
-const apiOrigin = "https://api.canary.tf.apollot.ru";
-const webOrigin = "https://canary.tf.apollot.ru";
-const platformOrigin = "https://api.canary.platform.apollot.ru";
+const apiOrigin = "https://api.tf.canary.apollot.ru";
+const webOrigin = "https://tf.canary.apollot.ru";
+const platformOrigin = "https://api.canary.apollot.ru";
 const sourceCommit = "a".repeat(40);
 const internalNetworks = new Set([
   "data",
@@ -91,6 +97,23 @@ function environment(release: TfOnlyReleaseArtifact): Record<string, string> {
     TF_CANARY_ADMIN_CREDENTIAL_DIRECTORY:
       "/var/lib/apollo-tf-canary/admin-credentials",
     PLATFORM_CANARY_PUBLIC_ORIGIN: platformOrigin,
+    PLATFORM_PUBLIC_ORIGIN: platformOrigin,
+    TF_PUBLIC_ORIGIN: webOrigin,
+    TF_API_PUBLIC_ORIGIN: apiOrigin,
+    TF_API_PORT: "19201",
+    TF_WEB_PORT: "19202",
+    TF_ADMIN_PORT: "19203",
+    TF_SECRET_DIRECTORY: "/var/lib/apollo-tf-canary/secrets",
+    TF_ADMIN_CREDENTIAL_DIRECTORY:
+      "/var/lib/apollo-tf-canary/admin-credentials",
+    TF_API_VERSION: "0.0.0-canary",
+    TF_DEPLOYED_AT: "2026-09-27T00:00:00Z",
+    TF_SEARCH_VERSION: "0.0.0-canary",
+    TF_SEARCH_DEPLOYED_AT: "2026-09-27T00:00:00Z",
+    TF_INTEGRATIONS_VERSION: "0.0.0-canary",
+    TF_INTEGRATIONS_DEPLOYED_AT: "2026-09-27T00:00:00Z",
+    TF_DOWNLOAD_VERSION: "0.0.0-canary",
+    TF_DOWNLOAD_DEPLOYED_AT: "2026-09-27T00:00:00Z",
     TF_POSTGRES_IMAGE: image["tf-postgres"]!,
     TF_REDIS_IMAGE: image.redis!,
     TF_API_IMAGE: image["tf-api"]!,
@@ -233,6 +256,83 @@ async function releaseFiles(release: TfOnlyReleaseArtifact): Promise<{
 }
 
 describe("TF-only canary Compose binding", () => {
+  it("validates the actual Git-backed and source Compose renders through the CLI", async () => {
+    const paths = await releaseFiles(artifact());
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    try {
+      const status = runTfCanaryComposeBindingCli(
+        [
+          "--env-file",
+          paths.environmentPath,
+          "--release-manifest",
+          paths.manifestPath,
+        ],
+        undefined,
+        {
+          stdout: (value) => stdout.push(value),
+          stderr: (value) => stderr.push(value),
+        },
+      );
+      expect({ status, stderr }).toEqual({ status: 0, stderr: [] });
+      expect(JSON.parse(stdout[0]!)).toEqual({
+        ok: true,
+        apiOrigin,
+        imageCount: 10,
+        serviceCount: 12,
+      });
+    } finally {
+      await rm(paths.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports canary_compose_snapshot_drift when the source render diverges", async () => {
+    const real =
+      await vi.importActual<typeof import("node:child_process")>(
+        "node:child_process",
+      );
+    const paths = await releaseFiles(artifact());
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const docker = vi.mocked(spawnSync);
+    docker.mockImplementation((command, args, options) => {
+      const result = real.spawnSync(command, args, options);
+      if (args?.some((arg) => arg.endsWith("apollo-tf.canary.compose.yml"))) {
+        const changed = JSON.parse(result.stdout as string) as Record<
+          string,
+          unknown
+        >;
+        changed.name = "apollo-tf-canary-drift";
+        return { ...result, stdout: JSON.stringify(changed) };
+      }
+      return result;
+    });
+    try {
+      const status = runTfCanaryComposeBindingCli(
+        [
+          "--env-file",
+          paths.environmentPath,
+          "--release-manifest",
+          paths.manifestPath,
+        ],
+        undefined,
+        {
+          stdout: (value) => stdout.push(value),
+          stderr: (value) => stderr.push(value),
+        },
+      );
+      expect(status).toBe(1);
+      expect(stdout).toEqual([]);
+      expect(JSON.parse(stderr[0]!)).toEqual({
+        ok: false,
+        error: "canary_compose_snapshot_drift",
+      });
+    } finally {
+      docker.mockReset();
+      await rm(paths.root, { recursive: true, force: true });
+    }
+  });
+
   it("exposes a read-only CLI result for verified evidence", async () => {
     const release = artifact();
     const paths = await releaseFiles(release);
@@ -321,6 +421,63 @@ describe("TF-only canary Compose binding", () => {
       ),
     ).toEqual({ apiOrigin, imageCount: 10, serviceCount: 12 });
   });
+
+  it.each([
+    ["Platform", "https://api.other.canary.apollot.ru"],
+    ["TF web", "https://tf.other.canary.apollot.ru"],
+    ["TF API", "https://api.tf.other.canary.apollot.ru"],
+  ] as const)(
+    "rejects a coherent but unapproved %s origin",
+    (target, alternate) => {
+      const release = artifact();
+      const env = environment(release);
+      const rendered = compose(release);
+      if (target === "Platform") {
+        env.PLATFORM_CANARY_PUBLIC_ORIGIN = alternate;
+        rendered.services["tf-api"]!.environment!.APOLLO_PLATFORM_API_ORIGIN =
+          alternate;
+        rendered.services["tf-api"]!.environment!.APOLLO_PLATFORM_ISSUER =
+          alternate;
+      } else if (target === "TF web") {
+        env.TF_CANARY_PUBLIC_ORIGIN = alternate;
+        rendered.services["tf-api"]!.environment!.APOLLO_TF_WEB_ORIGIN =
+          alternate;
+        rendered.services["tf-api"]!.environment!.WEB_URL = alternate;
+      } else {
+        release.tfWebApiOrigin = alternate;
+        env.TF_WEB_API_ORIGIN = alternate;
+        env.TF_CANARY_API_PUBLIC_ORIGIN = alternate;
+        rendered.services["tf-api"]!.environment!.SERVER_URL = alternate;
+        rendered.services["tf-api"]!.environment!.APOLLO_TF_CALLBACK_URL =
+          `${alternate}/api/auth/callback`;
+        rendered.services[
+          "tf-integrations"
+        ]!.environment!.TF_INTEGRATIONS_SPOTIFY_CALLBACK_URI =
+          `${alternate}/api/spotify/callback`;
+      }
+      expect(() =>
+        validateTfCanaryComposeBinding(release, env, rendered),
+      ).toThrow("canary_origin_mismatch");
+    },
+  );
+
+  it.each([
+    ["TF API", "TF_CANARY_API_PORT", "tf-api", "19301"],
+    ["TF web", "TF_CANARY_WEB_PORT", "tf-web", "19302"],
+    ["TF admin", "TF_CANARY_ADMIN_PORT", "tf-admin", "19303"],
+  ] as const)(
+    "rejects a coherent but unapproved %s port",
+    (_target, environmentName, serviceName, alternate) => {
+      const release = artifact();
+      const env = environment(release);
+      const rendered = compose(release);
+      env[environmentName] = alternate;
+      rendered.services[serviceName]!.ports![0]!.published = alternate;
+      expect(() =>
+        validateTfCanaryComposeBinding(release, env, rendered),
+      ).toThrow("canary_port_mismatch");
+    },
+  );
 
   it.each(["TF_WEB_API_ORIGIN", "TF_CANARY_API_PUBLIC_ORIGIN"])(
     "rejects a %s value that differs from the manifest",
