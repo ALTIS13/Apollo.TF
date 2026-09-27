@@ -39,6 +39,7 @@ import {
   type ReleaseImageCatalogEntry,
   type TfOnlyReleaseArtifact,
 } from "./release-images.js";
+import { tfCanaryPublisherCandidate } from "./tf-canary-publisher-preflight.js";
 
 export {
   approvedImageRepositories,
@@ -224,6 +225,7 @@ const publicOperatorErrorCodes = new Set([
   "invalid_release_receipt",
   "invalid_source_commit",
   "publication_cancelled",
+  "publisher_preflight_required",
   "release_error",
   "release_claim_exists",
   "release_output_exists",
@@ -623,6 +625,9 @@ export async function prepareOperatorRelease(
   options: OperatorReleaseOptions,
   dependencies: OperatorReleaseDependencies = defaultOperatorReleaseDependencies,
 ): Promise<OperatorReleasePreparationOutput> {
+  if (options.releaseId === tfCanaryPublisherCandidate.releaseId) {
+    throw operatorError("publisher_preflight_required");
+  }
   if ("captureSourceFailure" in options || options.tfWebApiOrigin !== undefined)
     throw operatorError("invalid_arguments");
   return prepareOperatorReleaseForProfile(
@@ -644,6 +649,9 @@ export async function prepareTfOnlyOperatorRelease(
     throw operatorError("invalid_arguments");
   }
   assertTfOnlyWebOriginSelection(options);
+  if (options.releaseId === tfCanaryPublisherCandidate.releaseId) {
+    throw operatorError("publisher_preflight_required");
+  }
   return prepareOperatorReleaseForProfile(
     tfOnlyReleaseProfile,
     { ...options, tfSuccessorWsEnabled: false },
@@ -1977,6 +1985,9 @@ export async function publishOperatorRelease(
   options: OperatorReleasePublicationOptions,
   dependencies: OperatorReleaseDependencies = defaultOperatorReleaseDependencies,
 ): Promise<OperatorReleaseOutput> {
+  if (options.releaseId === tfCanaryPublisherCandidate.releaseId) {
+    throw operatorError("publisher_preflight_required");
+  }
   if (options.tfWebApiOrigin !== undefined) {
     throw operatorError("invalid_arguments");
   }
@@ -1995,6 +2006,9 @@ export async function publishTfOnlyOperatorRelease(
     throw operatorError("invalid_arguments");
   }
   assertTfOnlyWebOriginSelection(options);
+  if (options.releaseId === tfCanaryPublisherCandidate.releaseId) {
+    throw operatorError("publisher_preflight_required");
+  }
   return (await publishOperatorReleaseForProfile(
     tfOnlyReleaseProfile,
     { ...options, tfSuccessorWsEnabled: false },
