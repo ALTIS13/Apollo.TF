@@ -180,25 +180,10 @@ const tfOnlyPublicationArgumentFlags = new Set(
 );
 const sourceRepository = "https://github.com/ALTIS13/Apollo.TF";
 const tfWebApiOrigin = "https://api.tf.apollot.ru";
+const tfCanaryWebApiOrigin = "https://api.tf.canary.apollot.ru";
 
 function isCanaryTfWebApiOrigin(origin: unknown): origin is string {
-  if (typeof origin !== "string") return false;
-  let parsed: URL;
-  try {
-    parsed = new URL(origin);
-  } catch {
-    return false;
-  }
-  return !(
-    origin.length > 200 ||
-    parsed.protocol !== "https:" ||
-    parsed.hostname === "apollot.ru" ||
-    !parsed.hostname.startsWith("api.") ||
-    !parsed.hostname.split(".").includes("canary") ||
-    !parsed.hostname.endsWith(".apollot.ru") ||
-    parsed.origin !== origin ||
-    origin === tfWebApiOrigin
-  );
+  return origin === tfCanaryWebApiOrigin;
 }
 
 function assertCanaryTfWebApiOrigin(origin: string, releaseId: string): void {

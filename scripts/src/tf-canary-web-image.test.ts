@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { TfOnlyReleaseArtifact } from "./release-images.js";
 import * as imageVerifier from "./tf-canary-web-image.js";
 
-const canaryOrigin = "https://api.canary.tf.apollot.ru";
+const canaryOrigin = "https://api.tf.canary.apollot.ru";
 const imageDigest = `sha256:${"a".repeat(64)}`;
 const imageReference = `ghcr.io/altis13/apollo-tf-web@${imageDigest}`;
 const containerId = "b".repeat(64);

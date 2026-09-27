@@ -215,8 +215,8 @@ TF Web build and emitted environment both fix that selection to `false`.
 The complete `release:validate` command intentionally rejects TF-only evidence,
 which is not a complete Platform/TF Coolify release environment.
 
-For an isolated TF canary, pass the same explicit `--tf-web-api-origin`
-(`https://api.canary.<scope>.apollot.ru`) to **both** TF-only preparation and
+For the selected isolated TF canary, pass the exact `--tf-web-api-origin`
+(`https://api.tf.canary.apollot.ru`) to **both** TF-only preparation and
 publication. The non-production HTTPS origin is bound in the preparation
 claim and receipt, used as the immutable `tf-web` `VITE_API_URL` build argument and
 recorded in the TF-only manifest and environment fragment. Omission or a
@@ -229,7 +229,7 @@ segment; choose a fresh canary-labeled prerelease ID and inspect the
 verified manifest before allowing Coolify to pull its digests.
 
 ```powershell
-$canaryApiOrigin = 'https://api.canary.tf.apollot.ru'
+$canaryApiOrigin = 'https://api.tf.canary.apollot.ru'
 $canaryReleaseId = '<NEW_UNIQUE_CANARY_RELEASE_ID>'
 $preparation = pnpm --silent release:prepare:tf-only --mode production --release-id $canaryReleaseId --source-commit $approvedSourceCommit --tf-web-api-origin $canaryApiOrigin | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'TF canary preparation failed' }
