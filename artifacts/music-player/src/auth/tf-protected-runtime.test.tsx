@@ -150,12 +150,15 @@ function PlayerActions({
 }
 
 function PlaylistPlaybackActions() {
-  const { playCollection, togglePlayPause, queue, currentTrack, isPlaying, progress } = usePlayer();
+  const { playCollection, togglePlayPause, playPrev, seekTo, seekBy, queue, currentTrack, isPlaying, progress } = usePlayer();
   const second = { ...track, id: "track-2", title: "Second Track" };
   return <div>
     <output data-testid="playlist-queue" data-ids={queue.map((item) => item.id).join(",")} data-current={currentTrack?.id ?? ""} data-playing={isPlaying} data-position={progress} />
     <button type="button" onClick={() => void playCollection([track, second])}>Play playlist</button>
     <button type="button" onClick={togglePlayPause}>Resume queue</button>
+    <button type="button" onClick={() => seekTo(50)}>Seek to midpoint</button>
+    <button type="button" onClick={() => void playPrev()}>Restart track</button>
+    <button type="button" onClick={() => seekBy(10)}>Seek forward</button>
   </div>;
 }
 
@@ -521,6 +524,38 @@ it("re-resolves an expired paused stream only after explicit retry and keeps que
   expect(audio.currentTime).toBe(47);
   expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-ids", "track-1,track-2");
   expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-current", "track-1");
+});
+
+it("retries a broken stream from the position chosen after its failure", async () => {
+  runtime.fetchSession.mockResolvedValueOnce(session);
+  runtime.streamQuery.mockResolvedValue({ streamUrl: "https://example.test/audio" });
+  renderProtectedRuntime(<PlaylistPlaybackActions />);
+  fireEvent.click(await screen.findByRole("button", { name: "Play playlist" }));
+  await waitFor(() => expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-playing", "true"));
+  const audio = FakeAudio.instances[0]!;
+
+  for (const [index, [action, expected]] of ([
+    ["Seek to midpoint", 90],
+    ["Restart track", 0],
+    ["Seek forward", 57],
+  ] as const).entries()) {
+    await act(async () => {
+      audio.currentTime = 47;
+      audio.dispatchEvent(new Event("error"));
+      audio.duration = Number.NaN;
+      audio.dispatchEvent(new Event("durationchange"));
+    });
+    expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-position", "47");
+    fireEvent.click(screen.getByRole("button", { name: action }));
+    await act(async () => { audio.dispatchEvent(new Event("timeupdate")); });
+    expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-position", String(expected));
+    fireEvent.click(screen.getByRole("button", { name: "Resume queue" }));
+    await waitFor(() => expect(runtime.streamQuery).toHaveBeenCalledTimes(index + 2));
+    await waitFor(() => expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-playing", "true"));
+    expect(audio.currentTime).toBe(expected);
+    expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-ids", "track-1,track-2");
+    expect(screen.getByTestId("playlist-queue")).toHaveAttribute("data-current", "track-1");
+  }
 });
 
 it("ignores a late failed-stream retry after a different track is selected", async () => {

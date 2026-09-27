@@ -175,9 +175,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         try { tfRequestInit(); } catch { /* publishes the local deadline, without a request */ }
         audio.pause(); return;
       }
+      if (suspendedPosition.current !== null) return;
       setProgress(audio.currentTime);
     };
-    const handleDurationChange = () => setDuration(audio.duration);
+    const handleDurationChange = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) setDuration(audio.duration);
+    };
     const handleEnded = () => {
       setIsPlaying(false);
       setProgress(0);
@@ -432,7 +435,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const idx = queueIndexRef.current;
     // Restart if >3s into track
     if (progressRef.current > 3 && audioRef.current) {
-      audioRef.current.currentTime = 0;
+      if (suspendedPosition.current !== null) suspendedPosition.current = 0;
+      else audioRef.current.currentTime = 0;
       setProgress(0);
       return;
     }
@@ -550,16 +554,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const seekTo = useCallback((percentage: number) => {
     if (!audioRef.current || !duration) return;
     const time = (percentage / 100) * duration;
-    audioRef.current.currentTime = time;
+    if (suspendedPosition.current !== null) suspendedPosition.current = time;
+    else audioRef.current.currentTime = time;
     setProgress(time);
   }, [duration]);
 
   const seekBy = useCallback((seconds: number) => {
     if (!audioRef.current) return;
-    const newTime = Math.max(0, Math.min(audioRef.current.currentTime + seconds, audioRef.current.duration || 0));
-    audioRef.current.currentTime = newTime;
+    const base = suspendedPosition.current ?? audioRef.current.currentTime;
+    const limit = Number.isFinite(audioRef.current.duration) && audioRef.current.duration > 0
+      ? audioRef.current.duration : duration;
+    const newTime = Math.max(0, Math.min(base + seconds, limit));
+    if (suspendedPosition.current !== null) suspendedPosition.current = newTime;
+    else audioRef.current.currentTime = newTime;
     setProgress(newTime);
-  }, []);
+  }, [duration]);
 
   const setVolume = useCallback((v: number) => {
     const clamped = Math.max(0, Math.min(1, v));
