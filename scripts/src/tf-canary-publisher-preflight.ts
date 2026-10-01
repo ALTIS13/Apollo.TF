@@ -23,7 +23,7 @@ const oldPublisherRoot =
 
 export const tfCanaryPublisherCandidate = {
   archiveSha256:
-    "5a61e99e6cac2d8ddb97e01d715dca499fe4043e5bc3a8c514e69e6765135418",
+    "467f204efb5c6cd212618af25f5dc5ca43949ab22d8a26cb43ef050de408620f",
   imageRepositories: [
     "ghcr.io/altis13/apollo-tf-api",
     "ghcr.io/altis13/apollo-tf-postgres",
@@ -35,8 +35,8 @@ export const tfCanaryPublisherCandidate = {
     "ghcr.io/altis13/apollo-tf-download-worker",
     "ghcr.io/altis13/apollo-tf-download-redis",
   ],
-  releaseId: "v0.1.0-canary.20260927.91bfd69",
-  sourceCommit: "91bfd69d1c1938179cc8a478c93da0d6f45c42b3",
+  releaseId: "v0.1.0-canary.20261002.f3828eb",
+  sourceCommit: "f3828eb016e9dc034030e2da7ca2c2a39f4327c1",
   tfWebApiOrigin: "https://api.tf.canary.apollot.ru",
 } as const;
 
@@ -236,7 +236,8 @@ if (
       archivePath: join(
         repositoryRoot,
         ".ops-private",
-        "tf-source-91bfd69-preflight.tar",
+        "coolify-native-20261001",
+        "source-f3828eb.tar",
       ),
       repositoryRoot,
     })
