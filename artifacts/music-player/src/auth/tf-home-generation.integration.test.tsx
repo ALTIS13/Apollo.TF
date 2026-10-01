@@ -136,14 +136,14 @@ async function startSearch() {
   renderHome();
   await waitFor(() => expect(auth.status).toBe("authenticated"));
   fireEvent.click(screen.getByRole("button", { name: "Точный" }));
-  fireEvent.change(screen.getByPlaceholderText("Artist name..."), {
+  fireEvent.change(screen.getByRole("textbox", { name: "Исполнитель" }), {
     target: { value: "Artist" },
   });
-  fireEvent.change(screen.getByPlaceholderText("Track title..."), {
+  fireEvent.change(screen.getByRole("combobox", { name: "Название трека" }), {
     target: { value: "Title" },
   });
   fireEvent.submit(
-    screen.getByPlaceholderText("Artist name...").closest("form")!,
+    screen.getByRole("form", { name: "Поиск музыки" }),
   );
   await waitFor(() => expect(searchStarted).toBe(true));
 }
@@ -176,6 +176,29 @@ it("searches an undelimited quick query without guessing artist and title", asyn
   expect(searchPath).toBe("/api/tracks/free-search");
   expect(searchBody).not.toHaveProperty("artist");
   await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
+});
+it("retries the failed search snapshot instead of edited fields and sources", async () => {
+  renderHome();
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  fireEvent.click(screen.getByLabelText("SoundCloud"));
+  const queryInput = screen.getByRole("combobox", { name: "Поиск" });
+  fireEvent.change(queryInput, { target: { value: "Original query" } });
+  fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
+  await waitFor(() => expect(searchStarted).toBe(true));
+  const originalBody = searchBody;
+  await settleSearch(json({ error: "search_unavailable" }, 503));
+
+  fireEvent.change(queryInput, { target: { value: "Different query" } });
+  fireEvent.click(screen.getByLabelText("YouTube"));
+  searchStarted = false;
+  fireEvent.click(screen.getByRole("button", { name: "Повторить запрос" }));
+  await waitFor(() => expect(searchStarted).toBe(true));
+  expect(searchPath).toBe("/api/tracks/free-search");
+  expect(searchBody).toEqual(originalBody);
+  expect(queryInput).toHaveValue("Different query");
+  await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("heading", { name: "Треки не найдены" })).toBeInTheDocument();
 });
 it("resolves a pasted source link to metadata before ordinary candidate search", async () => {
   renderHome();
@@ -345,4 +368,5 @@ it("rendered Home still invalidates the current generation on a genuine current4
   await startSearch();
   await settleSearch(json({ error: "unauthorized" }, 401));
   expect(auth.status).toBe("unauthenticated");
+  expect(screen.queryByRole("button", { name: "Повторить запрос" })).toBeNull();
 });

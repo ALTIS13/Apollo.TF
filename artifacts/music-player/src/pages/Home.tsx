@@ -10,7 +10,7 @@ import { useTfAuth } from "@/auth/tf-auth";
 import { clearRecentSearches, readRecentSearches, rememberRecentSearch, removeRecentSearch, type RecentSearch } from "@/lib/recent-searches";
 import { loadSourcePrefs, saveSourcePrefs, type SourceKey, type SourceMode } from "@/lib/source-preferences";
 import { apiUrl } from "@/lib/api-config";
-import { Search, Music2, Loader2, AlertCircle, Clock3, X } from "lucide-react";
+import { Search, Music2, Loader2, AlertCircle, Clock3, RotateCcw, X } from "lucide-react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 
 type FilterType = TrackType | "all";
@@ -441,13 +441,19 @@ export default function Home() {
     activeFilter === "all"
       ? results
       : results.filter((track) => track.type === activeFilter);
+  const failedRequest = searchMutation.isError ? searchMutation.variables : undefined;
+  const failedQuery = failedRequest
+    ? "query" in failedRequest
+      ? failedRequest.query
+      : `${failedRequest.artist} — ${failedRequest.title}`
+    : null;
 
   const filterOptions: { id: FilterType; label: string }[] = [
-    { id: "all", label: "All Types" },
-    { id: "original", label: "Originals" },
-    { id: "remix", label: "Remixes" },
-    { id: "live", label: "Live" },
-    { id: "cover", label: "Covers" },
+    { id: "all", label: "Все" },
+    { id: "original", label: "Оригиналы" },
+    { id: "remix", label: "Ремиксы" },
+    { id: "live", label: "Лайв" },
+    { id: "cover", label: "Каверы" },
   ];
 
   return (
@@ -468,7 +474,7 @@ export default function Home() {
                   setQuickError(false);
                   setSuggestionsOpen(false);
                 }}
-                className={`h-8 rounded px-3 text-xs font-medium ${searchMode === mode ? "bg-white/15 text-white" : "text-muted-foreground hover:text-white"}`}
+                className={`h-11 rounded px-4 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${searchMode === mode ? "bg-white/15 text-white" : "text-muted-foreground hover:text-white"}`}
               >
                 {mode === "quick" ? "Быстрый" : "Точный"}
               </button>
@@ -519,7 +525,7 @@ export default function Home() {
                     <Music2 className="h-4 w-4 shrink-0" />
                     <input
                       type="text"
-                      placeholder="Artist name..."
+                      placeholder="Имя исполнителя"
                       value={artist}
                       onChange={(e) => {
                         setSuggestionsSuppressed(false);
@@ -537,7 +543,7 @@ export default function Home() {
                       <Search className="h-4 w-4 shrink-0" />
                       <input
                         type="text"
-                        placeholder="Track title..."
+                        placeholder="Название трека"
                         value={title}
                         onChange={(e) => {
                           setSuggestionsSuppressed(false);
@@ -586,14 +592,14 @@ export default function Home() {
                 type="button"
                 onClick={setAutoMode}
                 aria-pressed={isAllEnabled}
-                className={`h-9 rounded-lg border px-3 text-xs font-medium focus-visible:outline-2 focus-visible:outline-white ${isAllEnabled ? "border-white/25 bg-white/10 text-white" : "border-white/10 text-muted-foreground"}`}
+                className={`h-11 rounded-lg border px-3 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${isAllEnabled ? "border-white/25 bg-white/10 text-white" : "border-white/10 text-muted-foreground hover:text-foreground"}`}
               >
                 Авто
               </button>
               {SOURCE_INFO.map((source) => (
                 <label
                   key={source.key}
-                  className="flex h-9 cursor-pointer items-center gap-2 rounded-lg border border-white/10 px-3 text-xs text-muted-foreground has-[:checked]:border-white/25 has-[:checked]:text-foreground"
+                  className="flex h-11 cursor-pointer items-center gap-2 rounded-lg border border-white/10 px-3 text-xs text-muted-foreground transition-colors has-[:checked]:border-white/25 has-[:checked]:text-foreground hover:bg-white/5"
                 >
                   <input
                     type="checkbox"
@@ -625,7 +631,7 @@ export default function Home() {
             )}
           </h2>
           {!hasSearched && recentSearches.length > 0 && (
-            <button type="button" onClick={clearRecent} className="text-xs text-muted-foreground hover:text-white focus-visible:outline-2 focus-visible:outline-white">
+            <button type="button" onClick={clearRecent} className="min-h-11 px-2 text-xs text-muted-foreground hover:text-white focus-visible:outline-2 focus-visible:outline-accent">
               Очистить
             </button>
           )}
@@ -640,7 +646,7 @@ export default function Home() {
                   key={opt.id}
                   onClick={() => setActiveFilter(opt.id)}
                   aria-pressed={activeFilter === opt.id}
-                  className={`rounded-lg px-3 py-2 text-xs font-medium focus-visible:outline-2 focus-visible:outline-white ${activeFilter === opt.id ? "bg-white/10 text-white" : "text-muted-foreground hover:bg-white/5"}`}
+                  className={`min-h-11 rounded-lg px-3 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent ${activeFilter === opt.id ? "bg-white/10 text-white" : "text-muted-foreground hover:bg-white/5"}`}
                 >
                   {opt.label}
                 </button>
@@ -668,7 +674,7 @@ export default function Home() {
                     aria-label={`Удалить из недавнего: ${label}`}
                     title="Удалить из недавнего"
                     onClick={() => removeRecent(entry)}
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-white/5 hover:text-white focus-visible:outline-2 focus-visible:outline-white"
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-white/5 hover:text-white focus-visible:outline-2 focus-visible:outline-accent"
                   >
                     <X className="h-4 w-4" />
                   </button>
@@ -705,11 +711,24 @@ export default function Home() {
             className="flex items-start gap-3 border-t border-white/10 py-6 text-sm"
           >
             <AlertCircle className="h-5 w-5 shrink-0 text-amber-400" />
-            <div>
-              <h3 className="tracking-normal text-foreground">Search Failed</h3>
+            <div className="min-w-0">
+              <h3 className="font-medium tracking-normal text-foreground">Поиск сейчас недоступен</h3>
               <p className="mt-1 text-muted-foreground">
                 Не удалось выполнить поиск. Повторите попытку позже.
               </p>
+              {failedRequest && (
+                <>
+                  <p className="mt-2 break-words text-muted-foreground">{failedQuery}</p>
+                  <button
+                    type="button"
+                    onClick={() => searchMutation.mutate(failedRequest)}
+                    className="mt-3 flex min-h-11 items-center justify-center gap-2 rounded-lg border border-white/15 bg-secondary/50 px-4 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    Повторить запрос
+                  </button>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -724,13 +743,13 @@ export default function Home() {
                 className="border-t border-white/10 py-8 text-sm text-muted-foreground"
               >
                 <h3 className="mb-2 text-base tracking-normal text-foreground">
-                  No tracks found
+                  Треки не найдены
                 </h3>
                 <p>Совпадений нет.</p>
                 {activeFilter !== "all" && (
                   <button
                     onClick={() => setActiveFilter("all")}
-                    className="mt-3 text-primary underline focus-visible:outline-2 focus-visible:outline-white"
+                    className="mt-3 min-h-11 text-primary underline focus-visible:outline-2 focus-visible:outline-accent"
                   >
                     Все результаты
                   </button>

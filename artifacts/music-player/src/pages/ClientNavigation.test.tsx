@@ -283,7 +283,7 @@ it("keeps source selections and keyboard search submission in the compact Home f
   await user.click(screen.getByRole("checkbox", { name: "Deezer" }));
   await user.click(screen.getByRole("combobox", { name: "Название трека" }));
   await user.keyboard("{Enter}");
-  await screen.findByText("No tracks found");
+  await screen.findByRole("heading", { name: "Треки не найдены" });
   const search = calls.find(({ path }) => path.endsWith("/tracks/search"));
   expect(JSON.parse(String(search?.init?.body))).toEqual({
     artist: "Fixture Artist",

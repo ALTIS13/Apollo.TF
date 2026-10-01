@@ -197,7 +197,7 @@ describe("TF API migration", () => {
     await user.type(screen.getByRole("combobox", { name: "Название трека" }), "Track");
     await user.click(screen.getByRole("button", { name: "Найти" }));
 
-    expect(await screen.findByText("Search Failed")).toBeInTheDocument();
+    expect(await screen.findByText("Поиск сейчас недоступен")).toBeInTheDocument();
     expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/tracks/search"))).toHaveLength(0);
 
     vi.mocked(fetch).mockImplementation(async (url) =>
@@ -241,7 +241,7 @@ describe("TF API migration", () => {
     await user.type(screen.getByRole("combobox", { name: "Название трека" }), "Track");
     await user.click(screen.getByRole("button", { name: "Найти" }));
 
-    expect(await screen.findByText("Search Failed")).toBeInTheDocument();
+    expect(await screen.findByText("Поиск сейчас недоступен")).toBeInTheDocument();
     expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/tracks/search"))).toHaveLength(1);
     await waitFor(() => expect(events).toHaveLength(1));
     expect(events[0]).toMatchObject({

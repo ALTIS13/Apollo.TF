@@ -6,6 +6,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { TrackResult } from "@workspace/api-client-react";
 import {
   cancelDownloadJob,
@@ -16,7 +17,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TrackCard } from "./TrackCard";
 
 const toast = vi.hoisted(() => vi.fn());
-const playerActions = vi.hoisted(() => ({ addNextToQueue: vi.fn(), playTrack: vi.fn() }));
+const playerActions = vi.hoisted(() => ({
+  addNextToQueue: vi.fn(), addToQueue: vi.fn(), playTrack: vi.fn(),
+}));
 
 vi.mock("@workspace/api-client-react", async (importOriginal) => {
   const actual =
@@ -36,7 +39,7 @@ vi.mock("@/hooks/use-player", () => ({
     isLoading: false,
     playTrack: playerActions.playTrack,
     togglePlayPause: vi.fn(),
-    addToQueue: vi.fn(),
+    addToQueue: playerActions.addToQueue,
     addNextToQueue: playerActions.addNextToQueue,
   }),
 }));
@@ -81,15 +84,42 @@ beforeEach(() => {
   });
   toast.mockReset();
   playerActions.addNextToQueue.mockReset();
+  playerActions.addToQueue.mockReset();
   playerActions.playTrack.mockReset();
   vi.stubGlobal("location", { assign: vi.fn() });
 });
 
-it("queues a search result as next without starting playback or a download", () => {
-  render(<TrackCard track={track} index={0} />);
-  fireEvent.click(screen.getByRole("button", { name: "Играть следующим: Test Track" }));
-  expect(playerActions.addNextToQueue).toHaveBeenCalledWith(track);
+it("offers named queue icons for native keyboard activation without starting playback or a download", async () => {
+  const user = userEvent.setup();
+  render(<TrackCard track={track} index={0} compact />);
+  const next = screen.getByRole("button", { name: "Играть следующим: Test Track" });
+  next.focus();
+  await user.keyboard("{Enter}");
+  expect(playerActions.addNextToQueue).toHaveBeenCalledExactlyOnceWith(track);
+
+  const queue = screen.getByRole("button", { name: "Добавить в очередь: Test Track" });
+  expect(queue.textContent).toBe("");
+  queue.focus();
+  await user.keyboard(" ");
+  expect(playerActions.addToQueue).toHaveBeenCalledExactlyOnceWith(track);
+  expect(queue).toHaveAccessibleName("Добавить в очередь: Test Track");
   expect(playerActions.playTrack).not.toHaveBeenCalled();
+  expect(queueTrackDownloads).not.toHaveBeenCalled();
+});
+
+it.each([true, false])("keeps play keyboard reachable with collection actions when compact=%s", async (compact) => {
+  const user = userEvent.setup();
+  render(<TrackCard track={track} index={0} compact={compact}
+    collectionAction={<button type="button" aria-label="Save this recording">Save</button>}
+  />);
+  await user.tab();
+  expect(screen.getByRole("button", { name: "Воспроизвести: Test Track" })).toHaveFocus();
+  await user.keyboard("{Enter}");
+  await user.keyboard(" ");
+  expect(playerActions.playTrack.mock.calls).toEqual([[track], [track]]);
+  expect(screen.getByRole("button", { name: "Save this recording" })).toBeInTheDocument();
+  expect(playerActions.addNextToQueue).not.toHaveBeenCalled();
+  expect(playerActions.addToQueue).not.toHaveBeenCalled();
   expect(queueTrackDownloads).not.toHaveBeenCalled();
 });
 
@@ -130,9 +160,9 @@ function expectReservedTerminalRow(label: string) {
   const status = within(action).getByRole("status");
   const control = within(action).getByRole("button", { name: "Скачать" });
 
-  expect(action).toHaveClass("h-12");
-  expect(control).toHaveClass("h-8");
-  expect(status).toHaveClass("h-4");
+  expect(action).toHaveClass("h-[64px]", "w-[72px]");
+  expect(control).toHaveClass("h-[44px]");
+  expect(status).toHaveClass("h-[20px]");
   expect(status).toHaveTextContent(label);
   expect(status.previousElementSibling).toBe(control);
   expect(action.querySelector('[class~="absolute"]')).toBeNull();
@@ -143,13 +173,19 @@ describe("TrackCard download action", () => {
     vi.mocked(queueTrackDownloads).mockResolvedValue({
       results: [{ trackId: track.id, jobId: "job-1", position: 1 }],
     });
+    vi.mocked(getDownloadJobStatus).mockResolvedValue({ status: "active", progress: 42 });
     render(<TrackCard track={track} index={0} />);
 
     const action = screen.getByTestId("track-download-action");
+    expect(action).toHaveClass("h-[64px]", "w-[72px]");
+    expect(within(action).getByRole("button", { name: "Скачать" })).toHaveClass("h-[44px]");
     fireEvent.click(screen.getByRole("button", { name: "Скачать" }));
 
     await waitFor(() => expect(queueTrackDownloads).toHaveBeenCalledTimes(1));
-    expect(action).toHaveClass("h-12");
+    const status = await screen.findByRole("status", { name: "Загрузка 42%" });
+    expect(status).toHaveTextContent("42%");
+    expect(action).toHaveClass("h-[64px]", "w-[72px]");
+    expect(within(action).getByRole("button", { name: "Отменить загрузку" })).toHaveClass("h-[44px]", "w-[44px]");
     expect(screen.getByTitle("Отменить загрузку")).toHaveAttribute(
       "aria-label",
       "Отменить загрузку",
@@ -228,7 +264,7 @@ describe("TrackCard download action", () => {
       screen.getByRole("button", { name: "Отменить загрузку" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Загрузка отменена")).not.toBeInTheDocument();
-    expect(screen.getByTestId("track-download-action")).toHaveClass("h-12");
+    expect(screen.getByTestId("track-download-action")).toHaveClass("h-[64px]", "w-[72px]");
   });
 
   it("renders completed feedback in the reserved non-overlapping row", async () => {

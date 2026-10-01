@@ -7,6 +7,7 @@ import {
   Loader2,
   ListPlus,
   ListStart,
+  Check,
   X,
 } from "lucide-react";
 import { formatDuration } from "@/lib/utils";
@@ -16,6 +17,8 @@ import type { TrackResult } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { motion, useReducedMotion } from "framer-motion";
 import { useTrackDownload } from "@/hooks/use-track-download";
+
+const actionClassName = "flex h-[44px] shrink-0 items-center justify-center rounded-md border border-white/10 bg-[#09090b] transition-colors hover:bg-white/5 hover:text-[#8ddbd4] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8ddbd4] motion-reduce:transition-none";
 
 interface TrackCardProps {
   track: TrackResult;
@@ -144,25 +147,25 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
     <motion.div
       initial={reduceMotion ? false : { opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: reduceMotion ? 0 : 0.3, delay: reduceMotion ? 0 : index * 0.05 }}
+      transition={{ duration: reduceMotion ? 0 : 0.3, delay: reduceMotion ? 0 : Math.min(index * 0.05, 0.2) }}
       className={`
-        group border border-white/5 bg-card/60 hover:bg-card/90 hover:border-white/10
-        ${compact ? "grid grid-cols-[56px_minmax(0,1fr)] items-center gap-3 rounded-lg p-3 lg:grid-cols-[64px_minmax(0,1fr)_auto]" : "glass-card rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6 hover:-translate-y-1"}
-        ${isCurrentTrack ? "ring-2 ring-primary/50 bg-card/90" : ""}
+        group border border-white/10 bg-[#111217] text-[#f5f3ff] transition-colors hover:border-white/20 motion-reduce:transition-none
+        ${compact ? "grid grid-cols-[48px_minmax(0,1fr)] items-center gap-x-[8px] gap-y-2 rounded-lg p-[8px] lg:grid-cols-[48px_minmax(0,1fr)_auto]" : "rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6 shadow-xl motion-safe:hover:-translate-y-1"}
+        ${isCurrentTrack ? "ring-2 ring-[#8ddbd4]/50" : ""}
       `}
     >
       {/* Thumbnail + Play Overlay */}
       <button
         type="button"
         aria-label={`${isThisPlaying ? "Пауза" : "Воспроизвести"}: ${track.title}`}
-        className={`relative overflow-hidden bg-secondary flex-shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${compact ? "h-14 w-14 rounded-md lg:h-16 lg:w-16" : "w-full sm:w-20 h-48 sm:h-20 rounded-xl shadow-lg group-hover:shadow-primary/10 transition-all"}`}
+        className={`relative overflow-hidden bg-[#09090b] flex-shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8ddbd4] ${compact ? "h-[48px] w-[48px] rounded-md" : "w-full sm:w-20 h-48 sm:h-20 rounded-xl shadow-lg"}`}
         onClick={handlePlayClick}
       >
         {track.thumbnailUrl ? (
           <img
             src={track.thumbnailUrl}
             alt={track.title}
-            className={`w-full h-full object-cover transition-transform duration-500 ${isThisPlaying ? "scale-110" : "group-hover:scale-105"}`}
+            className={`w-full h-full object-cover motion-safe:transition-transform motion-safe:duration-500 ${isThisPlaying ? "motion-safe:scale-105" : "motion-safe:group-hover:scale-105"}`}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-secondary/80">
@@ -170,13 +173,13 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
           </div>
         )}
         <div
-          className={`absolute inset-0 bg-black/40 flex items-center justify-center backdrop-blur-[2px] transition-opacity duration-300 ${isCurrentTrack || isThisLoading ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+          className="absolute inset-0 flex items-center justify-center bg-black/20"
         >
           <div
-            className={`w-12 h-12 sm:w-10 sm:h-10 rounded-full bg-primary text-primary-foreground flex items-center justify-center shadow-lg transform transition-transform duration-200 ${isCurrentTrack ? "scale-100" : "scale-90 group-hover:scale-100"}`}
+            className={`flex items-center justify-center rounded-full bg-[#8ddbd4] text-[#09090b] ${compact ? "h-[32px] w-[32px]" : "h-[44px] w-[44px]"}`}
           >
             {isThisLoading ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
+              <Loader2 className="w-5 h-5 motion-safe:animate-spin" />
             ) : isThisPlaying ? (
               <Pause className="w-5 h-5 fill-current" />
             ) : (
@@ -190,13 +193,13 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
       <div className="flex-grow min-w-0 w-full">
         <div className={`flex gap-2 ${compact ? "flex-col xl:flex-row xl:items-center xl:justify-between" : "items-start justify-between"}`}>
           <div className="min-w-0">
-            <h3 className={`${compact ? "text-sm font-semibold tracking-normal" : "text-lg font-bold"} text-foreground truncate group-hover:text-primary transition-colors`}>
+            <h3 className={`${compact ? "text-sm font-semibold tracking-normal" : "text-lg font-bold tracking-normal"} truncate`}>
               {track.title}
             </h3>
-            <p className={`${compact ? "text-xs" : ""} text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 mt-1`}>
+            <p className={`${compact ? "text-xs" : ""} text-[#aaa9ba] flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 mt-1`}>
               <span className="min-w-0 truncate">{track.artist}</span>
               <span className="w-1 h-1 rounded-full bg-muted-foreground/30 inline-block" />
-              <span className="shrink-0 font-mono text-xs tracking-normal">
+              <span className="max-w-full font-mono text-[10px] tracking-normal">
                 {track.duration > 0 ? formatDuration(track.duration) : "Длительность неизвестна"}
               </span>
             </p>
@@ -210,66 +213,54 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
             </Badge>
             <Badge
               variant={getSourceVariant(track.source)}
-              className="uppercase text-[10px] tracking-wider px-2"
+              className="uppercase text-[10px] tracking-normal px-2"
             >
               {track.source}
             </Badge>
           </div>
         </div>
-        <div className="mt-2 flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <div className="mt-1 flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-xs text-[#aaa9ba]">
           <span title="Поисковый рейтинг, не оценка качества записи">
             Рейтинг поиска: {track.score}
           </span>
-          <span className="min-w-0 break-words" title={qualityText}>{qualityText}</span>
+          <span className="min-w-0 max-w-full [overflow-wrap:anywhere]" title={qualityText}>{qualityText}</span>
         </div>
       </div>
 
       {/* Actions */}
-      <div className={compact ? "col-span-2 flex min-w-0 items-center justify-end gap-2 border-t border-white/10 pt-2 lg:col-span-1 lg:border-t-0 lg:pt-0" : "flex-shrink-0 w-full sm:w-auto flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2 border-t sm:border-t-0 sm:border-l border-white/10 pt-4 sm:pt-0 sm:pl-6"}>
+      <div className={compact ? "col-span-2 flex min-w-0 flex-wrap items-start justify-end gap-[2px] border-t border-white/10 pt-2 lg:col-span-1 lg:border-t-0 lg:pt-0" : "flex-shrink-0 w-full sm:w-auto flex flex-wrap sm:flex-col items-start sm:items-end justify-between sm:justify-center gap-2 border-t sm:border-t-0 sm:border-l border-white/10 pt-4 sm:pt-0 sm:pl-6"}>
         {collectionAction}
         <button
           type="button"
           onClick={handlePlayNext}
           aria-label={`Играть следующим: ${track.title}`}
           title="Играть следующим"
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/5 bg-secondary/50 text-foreground transition-colors hover:bg-secondary hover:text-primary focus-visible:outline-2 focus-visible:outline-white"
+          className={`${actionClassName} w-[44px] text-[#aaa9ba]`}
         >
           <ListStart className="h-4 w-4" />
         </button>
         <button
+          type="button"
           onClick={handleAddToQueue}
-          className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold transition-all border ${
-            queueAdded
-              ? "bg-primary/20 text-primary border-primary/30"
-              : "bg-secondary/50 text-foreground hover:bg-secondary border-white/5 hover:text-primary"
-          }`}
-          title="Добавить в очередь"
+          aria-label={`Добавить в очередь: ${track.title}`}
+          className={`${actionClassName} w-[44px] ${queueAdded ? "text-[#8ddbd4]" : "text-[#aaa9ba]"}`}
+          title={queueAdded ? "Добавлено в очередь" : "Добавить в очередь"}
         >
-          <ListPlus className="w-4 h-4" />
-          <span className="sm:hidden">
-            {queueAdded ? "✓ В очереди" : "В очередь"}
-          </span>
-          <span className="hidden sm:inline">{queueAdded ? "✓" : "+"}</span>
+          {queueAdded ? <Check className="h-4 w-4" /> : <ListPlus className="h-4 w-4" />}
         </button>
 
         <div
           data-testid="track-download-action"
-          className={`h-12 min-w-0 ${compact ? "w-28 shrink-0" : "w-full sm:w-28"}`}
+          className="grid h-[64px] w-[72px] shrink-0 grid-rows-[44px_20px]"
         >
           {isDownloadPending ? (
-            <div className="flex h-12 w-full items-center justify-between rounded-xl border border-white/5 bg-secondary/50 px-3 text-xs text-muted-foreground">
+            <div className="flex h-[44px] w-full items-center justify-between gap-[4px] text-[#aaa9ba]">
               <span aria-label="Загрузка" title="Загрузка">
-                <Loader2 className="h-5 w-5 flex-shrink-0 animate-spin" />
-              </span>
-              <span
-                className="min-w-0 flex-1 truncate px-2 text-center"
-                role="status"
-              >
-                {downloadStatus}
+                <Loader2 className="h-4 w-4 shrink-0 motion-safe:animate-spin" />
               </span>
               <button
                 aria-label="Отменить загрузку"
-                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-foreground transition-colors hover:bg-background/50 hover:text-primary"
+                className={`${actionClassName} w-[44px] text-[#aaa9ba]`}
                 onClick={() => void cancel()}
                 title="Отменить загрузку"
                 type="button"
@@ -278,27 +269,26 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
               </button>
             </div>
           ) : (
-            <div className="flex h-12 w-full flex-col">
-              <button
-                aria-label="Скачать"
-                className="group/dl flex h-8 w-full items-center justify-center gap-2 rounded-xl border border-white/5 bg-secondary/50 px-4 text-foreground transition-all hover:bg-secondary hover:text-primary hover:shadow-lg disabled:opacity-50"
-                disabled={downloadState === "completed"}
-                onClick={() => void start(track)}
-                title="Скачать"
-                type="button"
-              >
-                <Download className="h-5 w-5 flex-shrink-0 transition-transform group-hover/dl:-translate-y-0.5" />
-                <span className="font-medium sm:hidden">Скачать</span>
-              </button>
-              <span
-                aria-hidden={terminalDownloadStatus === null}
-                className={`h-4 w-full truncate text-center text-[10px] leading-4 ${downloadState === "failed" ? "text-destructive" : "text-muted-foreground"}`}
-                role={terminalDownloadStatus === null ? undefined : "status"}
-              >
-                {terminalDownloadStatus}
-              </span>
-            </div>
+            <button
+              aria-label="Скачать"
+              className={`${actionClassName} w-full text-[#aaa9ba] disabled:opacity-50`}
+              disabled={downloadState === "completed"}
+              onClick={() => void start(track)}
+              title="Скачать"
+              type="button"
+            >
+              <Download className="h-5 w-5 shrink-0" />
+            </button>
           )}
+          <span
+            aria-hidden={!isDownloadPending && terminalDownloadStatus === null}
+            aria-label={isDownloadPending ? downloadStatus : terminalDownloadStatus ?? undefined}
+            title={isDownloadPending ? downloadStatus : terminalDownloadStatus ?? undefined}
+            className={`h-[20px] w-full truncate text-center text-[10px] leading-[20px] ${downloadState === "failed" ? "text-destructive" : "text-[#aaa9ba]"}`}
+            role={isDownloadPending || terminalDownloadStatus !== null ? "status" : undefined}
+          >
+            {isDownloadPending ? downloadState === "active" ? `${progress}%` : "Подготовка" : terminalDownloadStatus}
+          </span>
         </div>
       </div>
     </motion.div>
