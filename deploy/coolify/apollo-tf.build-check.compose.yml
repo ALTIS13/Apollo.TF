@@ -15,7 +15,8 @@ x-build-check-job: &build-check-job
   platform: linux/amd64
   pull_policy: build
   entrypoint: ["/bin/true"]
-  command: []
+  # An empty string clears image CMD and survives Coolify's YAML round-trip.
+  command: ""
   restart: "no"
   healthcheck:
     disable: true
