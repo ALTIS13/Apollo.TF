@@ -272,7 +272,7 @@ export function LyricsPanel({
                     <button
                       type="submit"
                       disabled={feedback.status === "sending" || (hasLyrics && !feedback.reason)}
-                      className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
+                      className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40"
                     >
                       {feedback.status === "sending" ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" /> : <Send className="h-4 w-4" />}
                       Отправить

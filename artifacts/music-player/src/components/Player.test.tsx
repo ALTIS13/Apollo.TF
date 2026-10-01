@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { Route, Router } from "wouter";
+import { memoryLocation } from "wouter/memory-location";
 import { Player } from "./Player";
 
 const player = vi.hoisted(() => ({
@@ -42,6 +44,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   player.isLoading = false;
   player.progress = 30;
+  player.volume = 0.8;
   player.queue = [{ id: "yt_first" }, { id: "yt_second" }];
   player.queueIndex = 0;
   player.repeatMode = "off";
@@ -145,4 +148,47 @@ it("offers a native seek slider for touch and keyboard instead of a mouse-only b
   await user.keyboard("{ArrowRight}");
   expect(seek).toHaveFocus();
   expect(globalShortcut).not.toHaveBeenCalled();
+});
+
+it("labels native volume with its current percentage and changes only volume", () => {
+  const { rerender } = render(<Player />);
+  const volume = screen.getByLabelText("Громкость");
+  expect(volume).toHaveAttribute("type", "range");
+  expect(volume).toHaveAttribute("min", "0");
+  expect(volume).toHaveAttribute("max", "1");
+  expect(volume).toHaveAttribute("step", "0.01");
+  expect(volume).toHaveValue("0.8");
+  expect(volume).toHaveAttribute("aria-valuetext", "80%");
+
+  fireEvent.change(volume, { target: { value: "0.35" } });
+  expect(player.setVolume).toHaveBeenCalledExactlyOnceWith(0.35);
+  player.volume = 0.35;
+  rerender(<Player />);
+  expect(volume).toHaveValue("0.35");
+  expect(volume).toHaveAttribute("aria-valuetext", "35%");
+  expect(player.seekTo).not.toHaveBeenCalled();
+  expect(player.togglePlayPause).not.toHaveBeenCalled();
+});
+
+it("opens Queue with Enter under the router base without interrupting the player", async () => {
+  const user = userEvent.setup();
+  const { hook } = memoryLocation({ path: "/tf/discover" });
+  render(
+    <Router base="/tf" hook={hook}>
+      <Player />
+      <Route path="/queue"><h1>Очередь треков</h1></Route>
+    </Router>,
+  );
+  const queue = screen.getByRole("link", { name: "Очередь" });
+  expect(queue).toHaveAttribute("href", "/tf/queue");
+  expect(screen.queryByRole("heading", { name: "Очередь треков" })).toBeNull();
+
+  queue.focus();
+  await user.keyboard("{Enter}");
+  expect(screen.getByRole("heading", { name: "Очередь треков" })).toBeInTheDocument();
+  expect(screen.getByText("First track")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Пауза" })).toBeEnabled();
+  expect(player.togglePlayPause).not.toHaveBeenCalled();
+  expect(player.playNext).not.toHaveBeenCalled();
+  expect(player.playPrev).not.toHaveBeenCalled();
 });

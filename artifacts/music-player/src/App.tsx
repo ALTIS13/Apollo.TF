@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/sheet";
 import { PlayerProvider, usePlayer } from "@/hooks/use-player";
 import { Player } from "@/components/Player";
-import { Sidebar } from "@/components/Sidebar";
+import { MobileNavigation, Sidebar } from "@/components/Sidebar";
 import { TfAuthProvider } from "@/auth/tf-auth";
 import { TfSessionBoundary } from "@/auth/TfSessionBoundary";
 import { useState, useEffect } from "react";
@@ -99,12 +99,13 @@ function AppLayout() {
 
   return (
     <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-      <div className="h-screen flex flex-col overflow-hidden bg-background">
+      <div className="tf-app-shell flex flex-col overflow-hidden bg-background">
+        <a href="#tf-main-content" className="tf-skip-link">К музыке</a>
         <GlobalHotkeys />
 
         <div className="flex flex-1 overflow-hidden">
           {/* Desktop sidebar */}
-          <aside className="hidden md:flex flex-col w-[240px] flex-shrink-0 border-r border-white/5 bg-black/30 overflow-y-auto">
+          <aside className="hidden md:flex flex-col w-[224px] flex-shrink-0 border-r border-white/8 bg-[#0e0e12] overflow-y-auto">
             <Sidebar />
           </aside>
 
@@ -112,7 +113,7 @@ function AppLayout() {
           <SheetContent
             side="left"
             aria-describedby={undefined}
-            className="w-[min(280px,85vw)] overflow-y-auto bg-[#09090b] p-0 motion-reduce:transition-none motion-reduce:animate-none"
+            className="w-[min(280px,85vw)] overflow-y-auto bg-[#0e0e12] p-0 motion-reduce:transition-none motion-reduce:animate-none"
           >
             <SheetTitle className="sr-only">Навигация Apollo TF</SheetTitle>
             <Sidebar onClose={() => setSidebarOpen(false)} />
@@ -121,7 +122,7 @@ function AppLayout() {
           {/* Main content */}
           <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
             {/* Mobile top bar */}
-            <div className="md:hidden flex items-center gap-3 px-4 h-12 border-b border-white/5 bg-black/30 flex-shrink-0">
+            <div className="md:hidden flex items-center gap-3 px-4 h-12 border-b border-white/8 bg-[#0e0e12]/90 backdrop-blur-xl flex-shrink-0">
               <SheetTrigger asChild>
                 <button
                   aria-label="Открыть меню"
@@ -142,7 +143,7 @@ function AppLayout() {
             </div>
 
             {/* Scrollable content */}
-            <main className="flex-1 overflow-y-auto">
+            <main id="tf-main-content" tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto overscroll-contain focus:outline-none">
               <Router />
             </main>
           </div>
@@ -150,6 +151,7 @@ function AppLayout() {
 
         {/* Bottom player — always visible */}
         <Player />
+        <MobileNavigation />
       </div>
     </Sheet>
   );

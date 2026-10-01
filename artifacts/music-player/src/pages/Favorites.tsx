@@ -500,7 +500,7 @@ export default function Favorites() {
   }, [selectedTrack, reduceMotion]);
 
   const services = [
-    { id: "apollo" as ServiceTab, label: "Apollo", color: "#8b5cf6", connected: false },
+    { id: "apollo" as ServiceTab, label: "Apollo", color: "#a78bfa", connected: false },
     { id: "spotify" as ServiceTab, label: "Spotify", color: SPOTIFY_GREEN, connected: spotifyStatus?.connected },
     { id: "yandex" as ServiceTab, label: "Yandex Music", color: YANDEX_YELLOW, connected: yandexStatus?.connected },
   ];
@@ -515,29 +515,31 @@ export default function Favorites() {
 
   return (
     <div className="min-h-full bg-[#09090b] pb-12">
-      <div className="border-b border-white/5 bg-black/20">
-        <div className="max-w-5xl mx-auto px-4 pt-6 pb-5">
+      <div className="border-b border-white/8">
+        <div className="max-w-5xl mx-auto px-4 pt-6 pb-5 sm:px-6 sm:pt-8">
           <div className="flex items-center justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
               <div
-                className="w-9 h-9 rounded-full flex items-center justify-center shadow-lg transition-colors"
-                style={{ background: activeService.color }}
+                className="h-11 w-11 shrink-0 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center transition-colors motion-reduce:transition-none"
+                style={{ color: activeService.color }}
               >
-                <Music2 className="w-4 h-4 text-black" />
+                {service === "apollo" ? <Heart className="h-5 w-5" /> : <Music2 className="h-5 w-5" />}
               </div>
               <div>
-                <h1 className="text-xl font-bold tracking-normal text-white">Apollo TF <span className="font-normal text-white/30">|</span> Коллекция</h1>
-                {displayName && <p className="text-white/35 text-xs">{displayName}</p>}
+                <h1 className="text-2xl font-semibold tracking-normal text-white">Коллекция</h1>
+                {displayName && <p className="max-w-52 truncate text-white/50 text-xs">{displayName}</p>}
               </div>
             </div>
 
             <div className="flex max-w-full flex-wrap items-center gap-2">
-              <div className="flex gap-1 p-1 rounded-xl bg-white/5">
+              <div role="group" aria-label="Источник коллекции" className="flex gap-1 p-1 rounded-lg border border-white/8 bg-white/4">
                 {services.map((svc) => (
                   <button
                     key={svc.id}
+                    type="button"
+                    aria-pressed={service === svc.id}
                     onClick={() => { setService(svc.id); setSelectedTrack(null); }}
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all relative"
+                    className="flex min-h-9 items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-[#8ddbd4] motion-reduce:transition-none relative sm:text-sm"
                     style={service === svc.id ? { background: "rgba(255,255,255,0.12)", color: "#fff" } : { color: "rgba(255,255,255,0.4)" }}
                   >
                     {svc.connected && (
@@ -553,7 +555,7 @@ export default function Favorites() {
         </div>
       </div>
 
-      <div className="max-w-5xl mx-auto px-4 py-6">
+      <div className="max-w-5xl mx-auto px-4 py-5 sm:px-6 sm:py-6">
         {selectedTrack && service !== "apollo" && integrationsAllowed && (
           <div ref={candidateRef} className="mb-6 scroll-mt-16">
             <ProviderCandidatePanel
@@ -573,15 +575,15 @@ export default function Favorites() {
             transition={{ duration: reduceMotion ? 0 : 0.15 }}
           >
             {service === "apollo" ? <>
-              <div role="tablist" aria-label="Коллекция Apollo" className="mb-6 flex gap-1 border-b border-white/10">
-                <button type="button" role="tab" aria-selected={apolloTab === "liked"} onClick={() => setApolloTab("liked")} className={`border-b-2 px-4 py-2 text-sm ${apolloTab === "liked" ? "border-[#a78bfa] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Любимые</button>
-                <button type="button" role="tab" aria-selected={apolloTab === "playlists"} onClick={() => setApolloTab("playlists")} className={`border-b-2 px-4 py-2 text-sm ${apolloTab === "playlists" ? "border-[#a78bfa] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Плейлисты</button>
+              <div role="group" aria-label="Коллекция Apollo" className="mb-5 flex gap-4 border-b border-white/10">
+                <button type="button" aria-pressed={apolloTab === "liked"} onClick={() => setApolloTab("liked")} className={`min-h-11 border-b-2 px-1 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-[#8ddbd4] ${apolloTab === "liked" ? "border-[#8ddbd4] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Любимые</button>
+                <button type="button" aria-pressed={apolloTab === "playlists"} onClick={() => setApolloTab("playlists")} className={`min-h-11 border-b-2 px-1 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-[#8ddbd4] ${apolloTab === "playlists" ? "border-[#8ddbd4] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Плейлисты</button>
               </div>
               {apolloTab === "liked" ? <LikedCollection /> : <PlaylistsCollection />}
             </> : !integrationsAllowed ? (
               <div className="py-8 text-sm text-muted-foreground">Подключение музыкальных сервисов недоступно для этого аккаунта.</div>
             ) : activeLoading ? (
-              <LoadingState label="Checking connection..." color={activeService.color} />
+              <LoadingState label="Проверяем подключение..." color={activeService.color} />
             ) : activeQuery.isError ? (
               <div role="alert" className="py-8 text-sm text-amber-300">
                 Не удалось проверить подключение.

@@ -5,12 +5,13 @@ import {
   AlertCircle,
   Music2,
   Play,
-  Trash2,
   ChevronDown,
   LockKeyhole,
   ArrowUp,
   ArrowDown,
   GripVertical,
+  ArrowUpDown,
+  Check,
 } from "lucide-react";
 import { Reorder, useDragControls, useReducedMotion } from "framer-motion";
 import type {
@@ -139,6 +140,7 @@ function LikedTrackRow({
   const reduceMotion = useReducedMotion();
   const title = item.title ?? "трек";
   const cannotMoveDown = index === count - 1 || (hasNextPage && index >= count - 2);
+  const hasDuration = item.durationSeconds !== null && item.durationSeconds > 0;
 
   return (
     <Reorder.Item
@@ -146,9 +148,13 @@ function LikedTrackRow({
       dragListener={false}
       dragControls={controls}
       onDragEnd={() => onDrop(item.trackId)}
-      transition={{ duration: reduceMotion ? 0 : 0.18 }}
-      whileDrag={{ backgroundColor: "#1b252b", boxShadow: "0 12px 30px rgba(0,0,0,0.35)" }}
-      className="relative flex min-w-0 items-center gap-1 border-b border-white/5 bg-[#11151d] px-2 py-2.5 last:border-b-0 sm:gap-3 sm:px-3"
+      layout="position"
+      transition={{
+        duration: reduceMotion ? 0 : 0.18,
+        layout: { duration: reduceMotion ? 0 : 0.18 },
+      }}
+      whileDrag={reduceMotion ? undefined : { backgroundColor: "#232326", boxShadow: "0 12px 30px rgba(0,0,0,0.35)" }}
+      className="relative flex min-h-14 min-w-0 items-center gap-2 border-b border-white/5 bg-[#18181b] px-2 py-2 last:border-b-0 sm:gap-3 sm:px-3"
     >
       {canMove && (
         <button
@@ -168,8 +174,8 @@ function LikedTrackRow({
           }}
         ><GripVertical className="h-5 w-5" /></button>
       )}
-      <div className="min-w-0 flex-1 sm:contents">
-        <div className="flex min-w-0 items-center gap-2 sm:contents">
+      <div className={canMove ? "min-w-0 flex-1 sm:contents" : "flex min-w-0 flex-1 items-center gap-2 sm:gap-3"}>
+        <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
           {item.thumbnailUrl ? (
             <img src={item.thumbnailUrl} alt="" referrerPolicy="no-referrer"
               className="h-10 w-10 shrink-0 rounded-md object-cover" />
@@ -178,25 +184,27 @@ function LikedTrackRow({
               <Music2 className="h-4 w-4 text-white/40" />
             </span>
           )}
-          <div className="min-w-0 flex-1 pl-1 sm:pl-0">
-            <p className="overflow-hidden text-sm font-medium [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] sm:block sm:truncate">{item.title ?? "Без названия"}</p>
-            <p className="truncate text-xs text-white/50">{item.artist ?? "Неизвестный исполнитель"}</p>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium" title={item.title ?? "Без названия"}>{item.title ?? "Без названия"}</p>
+            <div className="flex min-w-0 items-center gap-2 text-xs text-white/50">
+              <p className="truncate" title={item.artist ?? "Неизвестный исполнитель"}>{item.artist ?? "Неизвестный исполнитель"}</p>
+              <span className="shrink-0 tabular-nums text-white/40"
+                aria-label={hasDuration ? `Длительность ${formatDuration(item.durationSeconds!)}` : "Длительность неизвестна"}
+              >{hasDuration ? formatDuration(item.durationSeconds!) : "—"}</span>
+            </div>
           </div>
         </div>
-        <div className="mt-1 flex items-center justify-end gap-1 [&>button]:size-10 sm:mt-0 sm:contents sm:[&>button]:size-9">
-          <span className="mr-auto text-xs tabular-nums text-white/40 sm:mr-0">
-            {item.durationSeconds === null ? "—" : formatDuration(item.durationSeconds)}
-          </span>
+        <div className={`flex shrink-0 items-center gap-0.5 [&>button]:size-9 ${canMove ? "mt-1 justify-end sm:mt-0" : ""}`}>
           {canMove && (
-            <div className="hidden w-8 shrink-0 flex-col items-center sm:flex" aria-label="Порядок трека">
+            <div className="mr-auto flex shrink-0 items-center gap-0.5 sm:mr-1 sm:w-8 sm:flex-col" aria-label="Порядок трека">
               <Button type="button" variant="ghost" size="icon"
-                className="h-6 w-8 rounded-sm text-white/60 hover:bg-white/10 hover:text-white"
+                className="h-9 w-9 rounded-md text-white/60 hover:bg-white/10 hover:text-white sm:h-6 sm:w-8 sm:rounded-sm"
                 title="Поднять трек" aria-label={`Поднять ${title}`}
                 disabled={index === 0 || movePending}
                 onClick={() => onMove(index, -1)}
               ><ArrowUp className="h-4 w-4" /></Button>
               <Button type="button" variant="ghost" size="icon"
-                className="h-6 w-8 rounded-sm text-white/60 hover:bg-white/10 hover:text-white"
+                className="h-9 w-9 rounded-md text-white/60 hover:bg-white/10 hover:text-white sm:h-6 sm:w-8 sm:rounded-sm"
                 title={hasNextPage && index >= count - 2 ? "Загрузите следующую страницу" : "Опустить трек"}
                 aria-label={`Опустить ${title}`}
                 disabled={cannotMoveDown || movePending}
@@ -205,19 +213,19 @@ function LikedTrackRow({
             </div>
           )}
           <Button type="button" variant="ghost" size="icon"
-            className="h-9 w-9 shrink-0 rounded-md text-[#a78bfa]"
+            className="h-9 w-9 shrink-0 rounded-md text-[#8ddbd4] hover:bg-[#8ddbd4]/10"
             title="Воспроизвести" aria-label={`Воспроизвести ${title}`}
             onClick={() => onPlay(item)}
-          ><Play className="h-4 w-4" /></Button>
+          ><Play className="h-4 w-4 fill-current" /></Button>
           <PlaylistAction track={playableTrack(item)} />
           <Button type="button" variant="ghost" size="icon"
-            className="h-9 w-9 shrink-0 rounded-md text-white/50"
+            className="h-9 w-9 shrink-0 rounded-md text-[#a78bfa]/70 hover:bg-white/5 hover:text-[#a78bfa]"
             title="Удалить из избранного" aria-label={`Удалить ${title}`}
             disabled={removePending} onClick={() => onRemove(item.trackId)}
           >
             {removePending && removingTrackId === item.trackId
               ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
-              : <Trash2 className="h-4 w-4" />}
+              : <Heart className="h-4 w-4 fill-current" />}
           </Button>
         </div>
       </div>
@@ -234,6 +242,10 @@ export function LikedCollection() {
   const serverOrderKey = serverIds.join("\u0000");
   const proposedRef = useRef<string[]>([]);
   const [displayedIds, setDisplayedIds] = useState<string[]>([]);
+  const [editingOrder, setEditingOrder] = useState(false);
+  useEffect(() => {
+    setEditingOrder(false);
+  }, [session?.accountId]);
   useEffect(() => {
     proposedRef.current = serverIds;
     setDisplayedIds(serverIds);
@@ -265,7 +277,7 @@ export function LikedCollection() {
     });
   };
   const moveItem = (index: number, direction: -1 | 1) => {
-    if (revision === undefined || move.isPending) return;
+    if (!editingOrder || revision === undefined || move.isPending) return;
     if (direction > 0 && query.hasNextPage && index >= items.length - 2) return;
     const track = items[index];
     const beforeTrackId = direction < 0
@@ -276,6 +288,7 @@ export function LikedCollection() {
     submitMove({ trackId: track.trackId, beforeTrackId, expectedRevision: revision });
   };
   const dropItem = (trackId: string) => {
+    if (!editingOrder || move.isPending) return;
     const plan = planLikedReorder(serverIds, proposedRef.current, trackId,
       Boolean(query.hasNextPage), revision);
     if (plan.type !== "move") {
@@ -296,23 +309,41 @@ export function LikedCollection() {
   return (
     <section aria-label="Коллекция Apollo" className="text-white">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-base font-semibold tracking-normal">
-          Моя коллекция
-        </h2>
-        <div className="flex items-center gap-2 text-xs text-white/50">
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold tracking-normal">
+            Моя коллекция
+          </h2>
           {query.data && (
-            <span className="tabular-nums">Загружено: {items.length}</span>
+            <span className="text-xs tabular-nums text-white/50">Загружено: {items.length}</span>
           )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5 text-xs text-white/50">
           <Button
             type="button"
             size="sm"
-            className="h-9 rounded-md bg-[#8ddbd4] px-3 text-[#071315] hover:bg-[#abe9e3]"
+            variant="ghost"
+            className="h-9 w-40 rounded-md border-white/10 px-2 text-white/75 hover:bg-white/5 motion-reduce:transition-none"
+            aria-pressed={editingOrder}
+            disabled={move.isPending || (!editingOrder && (revision === undefined || items.length < 2))}
+            onClick={() => {
+              if (move.isPending) return;
+              if (editingOrder) restoreServerOrder();
+              setEditingOrder(!editingOrder);
+            }}
+          >
+            {editingOrder ? <Check className="h-4 w-4" /> : <ArrowUpDown className="h-4 w-4" />}
+            {editingOrder ? "Готово" : "Изменить порядок"}
+          </Button>
+          <Button
+            type="button"
+            size="icon"
+            className="h-9 w-9 shrink-0 rounded-md bg-[#8ddbd4] text-[#071315] hover:bg-[#abe9e3]"
             aria-label="Воспроизвести загруженные треки"
+            title="Воспроизвести загруженные треки"
             disabled={items.length === 0}
             onClick={() => void playCollection(items.map(playableTrack))}
           >
-            <Play className="mr-1.5 h-4 w-4 fill-current" />
-            Воспроизвести
+            <Play className="h-4 w-4 fill-current" />
           </Button>
           <Button
             type="button"
@@ -368,7 +399,7 @@ export function LikedCollection() {
           axis="y"
           values={visibleIds}
           onReorder={(next) => {
-            if (move.isPending) return;
+            if (!editingOrder || move.isPending) return;
             proposedRef.current = next;
             setDisplayedIds(next);
           }}
@@ -381,7 +412,7 @@ export function LikedCollection() {
               item={item}
               index={index}
               count={visibleItems.length}
-              canMove={revision !== undefined && visibleItems.length > 1}
+              canMove={editingOrder && revision !== undefined && visibleItems.length > 1}
               hasNextPage={Boolean(query.hasNextPage)}
               movePending={move.isPending}
               removePending={remove.isPending}

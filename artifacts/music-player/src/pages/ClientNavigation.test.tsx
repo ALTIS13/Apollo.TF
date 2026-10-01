@@ -125,8 +125,19 @@ afterEach(() => {
 async function open(path: string) {
   window.history.replaceState({}, "", path);
   render(<App />);
-  await screen.findByRole("link", { name: "Поиск" });
+  await screen.findByRole("navigation", { name: "Основная навигация" });
 }
+
+it("opens the queue directly from mobile navigation without opening a drawer", async () => {
+  const user = userEvent.setup();
+  await open("/favorites");
+  const navigation = screen.getByRole("navigation", { name: "Мобильная навигация" });
+  await user.click(within(navigation).getByRole("link", { name: "Очередь" }));
+  expect(window.location.pathname).toBe("/queue");
+  expect(screen.getByRole("heading", { name: "Очередь" })).toBeInTheDocument();
+  expect(within(navigation).getByRole("link", { name: "Очередь" })).toHaveAttribute("aria-current", "page");
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
 
 it("navigates from Favorites to provider controls without putting disconnect controls in collection content", async () => {
   const user = userEvent.setup();
@@ -293,8 +304,9 @@ it("offers a completed exact search again after returning to Home", async () => 
   await user.click(screen.getByRole("button", { name: "Найти" }));
   await screen.findByText("Independent Recording");
 
-  await user.click(screen.getByRole("link", { name: "Коллекция" }));
-  await user.click(screen.getByRole("link", { name: "Поиск" }));
+  const navigation = within(screen.getByRole("navigation", { name: "Основная навигация" }));
+  await user.click(navigation.getByRole("link", { name: "Коллекция" }));
+  await user.click(navigation.getByRole("link", { name: "Поиск" }));
 
   const repeat = await screen.findByRole("button", {
     name: "Повторить поиск: Fixture Artist — Saved Fixture Track",

@@ -164,6 +164,7 @@ it("moves a liked track with the keyboard drag handle and refreshes the visible 
   const user = userEvent.setup();
   render(<LikedCollection />, { wrapper: f.wrapper });
   await screen.findByText("Second");
+  await user.click(screen.getByRole("button", { name: "Изменить порядок" }));
   const handle = screen.getByRole("button", { name: "Переместить Second" });
   handle.focus();
   await user.keyboard("{ArrowUp}");
