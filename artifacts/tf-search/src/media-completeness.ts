@@ -1,5 +1,6 @@
 import type { TfSearchResultSource } from "@workspace/tf-search-contract";
 import type { InternalTrack } from "./search-service.js";
+import { recordingReferenceKey, type RecordingDurationReference } from "./recording-reference.js";
 
 export type MediaRejectionReason =
   | "provider_preview_url"
@@ -53,20 +54,20 @@ function median(values: readonly number[]): number | undefined {
     : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
 
-function referenceOriginalDuration(
-  tracks: readonly InternalTrack[],
-): number | undefined {
-  // Deezer preview URLs carry catalog duration, but are still rejected as media below.
-  return median(
-    tracks
-      .filter(
-        (track) =>
-          track.type === "original" &&
-          track.duration >= 90 &&
-          !TITLE_MARKER_PATTERN.test(track.title),
-      )
-      .map((track) => track.duration),
-  );
+function isValidDuration(duration: number): boolean {
+  return Number.isInteger(duration) && duration > 0 && duration <= 86_400;
+}
+
+function addDuration(durations: Map<string, number[]>, key: string, duration: number): void {
+  const matching = durations.get(key);
+  if (matching) matching.push(duration);
+  else durations.set(key, [duration]);
+}
+
+function agreeingDuration(values: readonly number[]): number | undefined {
+  // Allow provider rounding, not a median between incompatible recording lengths.
+  if (values.length === 0 || Math.max(...values) - Math.min(...values) > 2) return undefined;
+  return median(values);
 }
 
 export function assessMediaCompleteness(
@@ -91,22 +92,52 @@ export function assessMediaCompleteness(
   return { complete: true };
 }
 
-export function filterCompleteMedia(tracks: readonly InternalTrack[]): {
+export function filterCompleteMedia(
+  tracks: readonly InternalTrack[],
+  catalogReferences: readonly RecordingDurationReference[] = [],
+): {
   readonly accepted: InternalTrack[];
   readonly rejected: RejectedMediaSummary[];
 } {
-  const referenceDuration = referenceOriginalDuration(tracks);
+  const catalogDurations = new Map<string, number[]>();
+  const previewCatalogDurations = new Map<string, number[]>();
+  const peerDurations = new Map<string, number[]>();
+  for (const reference of catalogReferences) {
+    const key = recordingReferenceKey(reference);
+    if (key !== undefined && isValidDuration(reference.duration)
+      && !TITLE_MARKER_PATTERN.test(reference.title)) {
+      addDuration(catalogDurations, key, reference.duration);
+    }
+  }
+  const keys = tracks.map((track) => recordingReferenceKey(track, track.source));
+  for (let index = 0; index < tracks.length; index += 1) {
+    const track = tracks[index]!;
+    const key = keys[index];
+    if (key === undefined || !isValidDuration(track.duration) || TITLE_MARKER_PATTERN.test(track.title)) continue;
+    if (isProviderPreviewMedia(track)) {
+      // Preserve legacy catalog-duration fallback, without treating preview URLs as full audio peers.
+      addDuration(previewCatalogDurations, key, track.duration);
+    } else if (track.duration >= 90) {
+      addDuration(peerDurations, key, track.duration);
+    }
+  }
   const accepted: InternalTrack[] = [];
   const counts = new Map<string, number>();
 
-  for (const track of tracks) {
+  for (let index = 0; index < tracks.length; index += 1) {
+    const track = tracks[index]!;
+    const key = keys[index];
+    const catalog = key === undefined ? undefined : catalogDurations.get(key) ?? previewCatalogDurations.get(key);
+    const peers = key === undefined ? [] : peerDurations.get(key) ?? [];
+    // Conflicting catalog metadata stays unknown; peers only fill an absent catalog group.
+    const referenceDuration = catalog === undefined ? agreeingDuration(peers) : agreeingDuration(catalog);
     const assessment = assessMediaCompleteness(track, referenceDuration);
     if (assessment.complete) {
       accepted.push(track);
       continue;
     }
-    const key = `${track.source}\u0000${assessment.reason}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+    const rejectionKey = `${track.source}\u0000${assessment.reason}`;
+    counts.set(rejectionKey, (counts.get(rejectionKey) ?? 0) + 1);
   }
 
   const rejected: RejectedMediaSummary[] = [];

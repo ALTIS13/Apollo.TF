@@ -12,6 +12,7 @@ import type {
 import { BoundedSearchCache, type SearchCacheIdentity } from "./cache.js";
 import { filterCompleteMedia } from "./media-completeness.js";
 import { rank, type RankQuery } from "./ranker.js";
+import type { RecordingDurationReference } from "./recording-reference.js";
 
 export type InternalTrack = TfSearchResult;
 
@@ -48,18 +49,28 @@ export interface ParserTelemetrySnapshot {
 }
 
 interface SearchLogger {
-  warn(event: { readonly source: TfSearchSource; readonly errorClass: "provider_failure" }): void;
+  warn(event: {
+    readonly source: TfSearchSource;
+    readonly errorClass: "provider_failure" | "catalog_reference_failure";
+  }): void;
 }
 
 interface SearchServiceOptions {
   readonly providers: readonly SearchProvider[];
+  readonly catalogLookup?: CatalogDurationLookup;
   readonly cache?: BoundedSearchCache;
   readonly now?: () => number;
   readonly logger?: SearchLogger;
 }
 
+export type CatalogDurationLookup = (
+  query: string,
+  limit: number,
+) => Promise<readonly RecordingDurationReference[]>;
+
 const ALL_SOURCES: readonly TfSearchSource[] = ["yt", "sc", "bc", "dz"];
 const ROLLING_WINDOW_SECONDS = 60;
+const MAX_CATALOG_SEARCH_CACHE_TTL_MS = 5 * 60 * 1_000;
 type ProviderStatus = "ok" | "failed" | "skipped";
 
 const RESULT_SOURCE_TO_PROVIDER: Readonly<
@@ -134,6 +145,7 @@ class SearchServiceImpl implements RuntimeSearchService {
   private readonly cache: BoundedSearchCache;
   private readonly now: () => number;
   private readonly logger?: SearchLogger;
+  private readonly catalogLookup?: CatalogDurationLookup;
   private readonly requestBuckets = new Int32Array(ROLLING_WINDOW_SECONDS);
   private readonly partialFailureBuckets = new Int32Array(ROLLING_WINDOW_SECONDS);
   private readonly totalFailureBuckets = new Int32Array(ROLLING_WINDOW_SECONDS);
@@ -147,6 +159,7 @@ class SearchServiceImpl implements RuntimeSearchService {
     this.cache = options.cache ?? new BoundedSearchCache();
     this.now = options.now ?? Date.now;
     this.logger = options.logger;
+    this.catalogLookup = options.catalogLookup;
   }
 
   async search(command: TfSearchCommand): Promise<TfSearchResponse> {
@@ -189,11 +202,13 @@ class SearchServiceImpl implements RuntimeSearchService {
 
     const providerStatus = initialProviderStatus();
     const selectedProviders = command.sources.map((source) => ({ source, provider: this.providers.get(source) }));
-    const settled = await Promise.allSettled(selectedProviders.map(async ({ source, provider }) => {
+    const catalogPending = this.lookupCatalog(query, providerLimit("dz", command.maxResults));
+    const providersPending = Promise.allSettled(selectedProviders.map(async ({ source, provider }) => {
       if (!provider) throw { source };
       const results = await provider.search(query, providerLimit(source, command.maxResults));
       return { source, results };
     }));
+    const [settled, catalog] = await Promise.all([providersPending, catalogPending]);
 
     const results: InternalTrack[] = [];
     let succeededProviders = 0;
@@ -214,9 +229,9 @@ class SearchServiceImpl implements RuntimeSearchService {
       }
     }
 
-    if (failedProviders > 0) this.recordFailure(succeededProviders === 0);
+    if (failedProviders > 0 || catalog.failed) this.recordFailure(succeededProviders === 0);
 
-    const completeMedia = filterCompleteMedia(results);
+    const completeMedia = filterCompleteMedia(results, catalog.references);
     for (const rejection of completeMedia.rejected) {
       this.recordParserRejections(
         RESULT_SOURCE_TO_PROVIDER[rejection.source],
@@ -232,8 +247,9 @@ class SearchServiceImpl implements RuntimeSearchService {
       this.cache.observe(command.accountId, command.artist, command.title);
     }
 
-    if (cacheable && failedProviders === 0) {
-      this.cache.set(cacheIdentity(command), ranked);
+    if (cacheable && failedProviders === 0 && !catalog.failed) {
+      this.cache.set(cacheIdentity(command), ranked,
+        this.catalogLookup ? MAX_CATALOG_SEARCH_CACHE_TTL_MS : undefined);
     }
 
     return {
@@ -257,7 +273,8 @@ class SearchServiceImpl implements RuntimeSearchService {
       source,
       provider: this.providers.get(source),
     }));
-    const settled = await Promise.allSettled(
+    const catalogPending = this.lookupCatalog(command.artist, command.limitPerSource);
+    const providersPending = Promise.allSettled(
       selectedProviders.map(async ({ source, provider }) => {
         if (!provider) throw { source };
         const results = await provider.search(
@@ -267,6 +284,7 @@ class SearchServiceImpl implements RuntimeSearchService {
         return { source, results };
       }),
     );
+    const [settled, catalog] = await Promise.all([providersPending, catalogPending]);
 
     const results: InternalTrack[] = [];
     let succeededProviders = 0;
@@ -287,9 +305,9 @@ class SearchServiceImpl implements RuntimeSearchService {
       }
     }
 
-    if (failedProviders > 0) this.recordFailure(succeededProviders === 0);
+    if (failedProviders > 0 || catalog.failed) this.recordFailure(succeededProviders === 0);
 
-    const completeMedia = filterCompleteMedia(results);
+    const completeMedia = filterCompleteMedia(results, catalog.references);
     for (const rejection of completeMedia.rejected) {
       this.recordParserRejections(
         RESULT_SOURCE_TO_PROVIDER[rejection.source],
@@ -315,6 +333,19 @@ class SearchServiceImpl implements RuntimeSearchService {
         ? [...this.cache.suggestions(command.accountId, command.query, command.limit)]
         : [],
     };
+  }
+
+  private async lookupCatalog(query: string, limit: number): Promise<{
+    readonly references?: readonly RecordingDurationReference[];
+    readonly failed: boolean;
+  }> {
+    if (!this.catalogLookup) return { failed: false };
+    try {
+      return { references: await this.catalogLookup(query, limit), failed: false };
+    } catch {
+      this.logger?.warn({ source: "dz", errorClass: "catalog_reference_failure" });
+      return { failed: true };
+    }
   }
 
   telemetry(): { readonly requestsPerMinute: number; readonly status: "healthy" | "warning" | "degraded" } {

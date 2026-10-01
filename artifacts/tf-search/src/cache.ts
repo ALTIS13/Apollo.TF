@@ -89,7 +89,7 @@ export class BoundedSearchCache {
     return [...entry.results];
   }
 
-  set(identity: SearchCacheIdentity, results: readonly TfSearchResult[]): void {
+  set(identity: SearchCacheIdentity, results: readonly TfSearchResult[], maxTtlMs?: number): void {
     const key = keyFor(identity);
     this.removeExpired();
     this.entries.delete(key);
@@ -101,7 +101,7 @@ export class BoundedSearchCache {
     }
 
     this.entries.set(key, {
-      expiresAt: this.now() + this.ttlMs,
+      expiresAt: this.now() + Math.min(this.ttlMs, maxTtlMs ?? this.ttlMs),
       results: results.slice(0, MAX_RESULTS_PER_ENTRY),
     });
   }
