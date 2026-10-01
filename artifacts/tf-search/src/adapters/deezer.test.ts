@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Adapter = typeof import("./deezer.js");
 let adapter: Adapter;
@@ -255,4 +255,106 @@ it("caps distinct in-flight operations at 16 while still sharing existing work a
   fetchFixture.mockResolvedValueOnce(json({ data: [track()] }));
   expect(await adapter.searchDeezerCatalog("overflow", 10)).toHaveLength(1);
   expect(fetchFixture).toHaveBeenCalledTimes(17);
+});
+
+describe("fresh catalog lookup", () => {
+  it("bypasses a warm response and publishes new versioned metadata to the normal cache", async () => {
+    fetchFixture.mockResolvedValueOnce(json({ data: [track()] }))
+      .mockResolvedValueOnce(json({ data: [track({ duration: 210, title_version: "(Live)" })] }));
+    expect(await adapter.searchDeezerCatalog("fresh recording", 10)).toEqual([
+      { artist: "Fixture Artist", title: "Fixture Song", type: "original", duration: 232 },
+    ]);
+
+    expect(await adapter.searchDeezerCatalog("fresh recording", 10, { fresh: true })).toEqual([
+      { artist: "Fixture Artist", title: "Fixture Song (Live)", type: "live", duration: 210 },
+    ]);
+    expect(await adapter.searchDeezer("fresh recording", 10)).toEqual([
+      expect.objectContaining({ title: "Fixture Song (Live)", type: "live", duration: 210 }),
+    ]);
+    expect(fetchFixture).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["HTTP failure", () => Promise.resolve(json({ error: "private_detail" }, 503))],
+    ["API error", () => Promise.resolve(json({ data: [], error: { message: "private_detail" } }))],
+    ["transport failure", () => Promise.reject(new Error("private_detail"))],
+  ] as const)("rejects fresh %s instead of returning a warm reference and allows a fresh retry", async (_label, fail) => {
+    fetchFixture.mockResolvedValueOnce(json({ data: [track()] }))
+      .mockImplementationOnce(fail)
+      .mockResolvedValueOnce(json({ data: [track({ duration: 211 })] }));
+    await adapter.searchDeezerCatalog("fresh retry", 10);
+
+    await expect(adapter.searchDeezerCatalog("fresh retry", 10, { fresh: true }))
+      .rejects.toThrow(/^deezer_search_(failed|invalid_response)$/);
+    expect(await adapter.searchDeezerCatalog("fresh retry", 10, { fresh: true })).toEqual([
+      { artist: "Fixture Artist", title: "Fixture Song", type: "original", duration: 211 },
+    ]);
+    expect(fetchFixture).toHaveBeenCalledTimes(3);
+  });
+
+  it("coalesces fresh callers on network work even when an older successful response exists", async () => {
+    const pending = pendingResponse();
+    fetchFixture.mockResolvedValueOnce(json({ data: [track()] })).mockReturnValueOnce(pending.promise);
+    await adapter.searchDeezerCatalog("fresh shared", 10);
+    const first = adapter.searchDeezerCatalog("fresh shared", 10, { fresh: true });
+    const second = adapter.searchDeezerCatalog("fresh shared", 10, { fresh: true });
+    pending.resolve(json({ data: [track({ duration: 212 })] }));
+
+    expect(await first).toEqual([{ artist: "Fixture Artist", title: "Fixture Song", type: "original", duration: 212 }]);
+    expect(await second).toEqual([{ artist: "Fixture Artist", title: "Fixture Song", type: "original", duration: 212 }]);
+    expect(fetchFixture).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors an already-aborted caller before either a cache hit or a new fetch", async () => {
+    fetchFixture.mockResolvedValueOnce(json({ data: [track()] }));
+    await adapter.searchDeezerCatalog("already cached", 10);
+    const controller = new AbortController();
+    controller.abort(new Error("private_abort_reason"));
+
+    for (const query of ["already cached", "not cached"]) {
+      await expect(adapter.searchDeezerCatalog(query, 10, { signal: controller.signal }))
+        .rejects.toThrow("deezer_search_aborted");
+    }
+    expect(fetchFixture).toHaveBeenCalledOnce();
+  });
+
+  it.each(["initiator", "joiner"] as const)(
+    "stops an aborted %s waiting without cancelling shared catalog/media work",
+    async (abortedCaller) => {
+      const pending = pendingResponse();
+      fetchFixture.mockReturnValueOnce(pending.promise);
+      const controller = new AbortController();
+      const first = adapter.searchDeezerCatalog("abort shared", 10, {
+        fresh: true, signal: abortedCaller === "initiator" ? controller.signal : undefined,
+      });
+      const second = adapter.searchDeezerCatalog("abort shared", 10, {
+        fresh: true, signal: abortedCaller === "joiner" ? controller.signal : undefined,
+      });
+      const outcomes = [first, second].map((request) => request.then(
+        (results) => ({ results }), (error: unknown) => ({ error }),
+      ));
+      const media = adapter.searchDeezer("abort shared", 10);
+      const abortedIndex = abortedCaller === "initiator" ? 0 : 1;
+      let abortedOutcome: unknown;
+      const stopped = outcomes[abortedIndex]!.then((outcome) => { abortedOutcome = outcome; });
+      try {
+        controller.abort(new Error("private_abort_reason"));
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
+        expect(abortedOutcome).toEqual({ error: expect.objectContaining({ message: "deezer_search_aborted" }) });
+        expect(fetchFixture.mock.calls[0]![1]?.signal?.aborted).toBe(false);
+        pending.resolve(json({ data: [track({ duration: 213 })] }));
+        expect(await outcomes[1 - abortedIndex]).toEqual({ results: [
+          { artist: "Fixture Artist", title: "Fixture Song", type: "original", duration: 213 },
+        ] });
+        expect(await media).toEqual([expect.objectContaining({ duration: 213 })]);
+        expect(await adapter.searchDeezerCatalog("abort shared", 10)).toEqual([
+          { artist: "Fixture Artist", title: "Fixture Song", type: "original", duration: 213 },
+        ]);
+        expect(fetchFixture).toHaveBeenCalledOnce();
+      } finally {
+        pending.resolve(json({ data: [] }));
+        await Promise.allSettled([...outcomes, media, stopped]);
+      }
+    },
+  );
 });

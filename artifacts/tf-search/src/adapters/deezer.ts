@@ -40,6 +40,28 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<readonly DeezerTrack[]>>();
 
+interface CatalogOptions {
+  readonly fresh?: boolean;
+  readonly signal?: AbortSignal;
+}
+
+function waitForCatalog(request: Promise<readonly DeezerTrack[]>, signal?: AbortSignal): Promise<readonly DeezerTrack[]> {
+  // Cancel only this caller's wait; shared HTTP work retains its own deadline.
+  if (!signal) return request;
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(new Error("deezer_search_aborted"));
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+    request.then((tracks) => {
+      signal.removeEventListener("abort", abort);
+      resolve(tracks);
+    }, (error: unknown) => {
+      signal.removeEventListener("abort", abort);
+      reject(error);
+    });
+  });
+}
+
 function encodeTrackId(url: string): string {
   return `dz_${Buffer.from(url).toString("base64url")}`;
 }
@@ -93,7 +115,8 @@ async function fetchCatalog(query: string, limit: number): Promise<readonly Deez
   return tracks;
 }
 
-async function catalogTracks(query: string, maxResults: number): Promise<readonly DeezerTrack[]> {
+async function catalogTracks(query: string, maxResults: number, options: CatalogOptions = {}): Promise<readonly DeezerTrack[]> {
+  if (options.signal?.aborted) throw new Error("deezer_search_aborted");
   const limit = Number.isFinite(maxResults) ? Math.min(MAX_RESULTS, Math.max(0, Math.floor(maxResults))) : 0;
   if (!query.trim() || limit === 0) return [];
   const key = JSON.stringify([query, limit]);
@@ -101,17 +124,20 @@ async function catalogTracks(query: string, maxResults: number): Promise<readonl
   for (const [cachedKey, entry] of cache) {
     if (entry.expiresAt <= now) cache.delete(cachedKey);
   }
-  const cached = cache.get(key);
+  const cached = options.fresh ? undefined : cache.get(key);
   if (cached) {
     cache.delete(key);
     cache.set(key, cached);
-    return cached.tracks;
+    return waitForCatalog(Promise.resolve(cached.tracks), options.signal);
   }
   const pending = inFlight.get(key);
-  if (pending) return pending;
+  if (pending) return waitForCatalog(pending, options.signal);
   if (inFlight.size >= MAX_IN_FLIGHT) throw new Error("deezer_search_busy");
 
-  const request = fetchCatalog(query, limit).then((tracks) => {
+  const request = fetchCatalog(query, limit).catch(() => {
+    throw new Error("deezer_search_failed");
+  }).then((tracks) => {
+    cache.delete(key);
     while (cache.size >= MAX_CACHE_ENTRIES) {
       const oldestKey = cache.keys().next().value;
       if (oldestKey === undefined) break;
@@ -121,11 +147,11 @@ async function catalogTracks(query: string, maxResults: number): Promise<readonl
     return tracks;
   }).finally(() => { inFlight.delete(key); });
   inFlight.set(key, request);
-  return request;
+  return waitForCatalog(request, options.signal);
 }
 
-export async function searchDeezerCatalog(query: string, maxResults = 10): Promise<readonly RecordingDurationReference[]> {
-  return (await catalogTracks(query, maxResults)).map((entry) => {
+export async function searchDeezerCatalog(query: string, maxResults = 10, options: CatalogOptions = {}): Promise<readonly RecordingDurationReference[]> {
+  return (await catalogTracks(query, maxResults, options)).map((entry) => {
     const title = versionedTitle(entry);
     return { artist: entry.artist.name, title, type: classify(title), duration: entry.duration };
   });

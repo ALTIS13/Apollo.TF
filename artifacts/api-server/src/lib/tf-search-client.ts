@@ -32,6 +32,7 @@ import {
 } from "@workspace/tf-search-contract";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_SOURCE_REFERENCE_TIMEOUT_MS = 20_000;
 const MAX_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const privateServiceNamePattern =
@@ -43,6 +44,7 @@ export interface TfSearchClientConfig {
   readonly origin: string;
   readonly internalAuthSecret: string;
   readonly timeoutMs: number;
+  readonly sourceReferenceTimeoutMs?: number;
 }
 
 export interface ClientDependencies {
@@ -208,12 +210,16 @@ export class HttpTfSearchClient implements TfSearchGateway {
   private readonly randomUuid: () => string;
   private readonly randomNonce: () => string;
   private readonly timeoutMs: number;
+  private readonly sourceReferenceTimeoutMs: number;
 
   constructor(
     private readonly config: TfSearchClientConfig,
     dependencies: ClientDependencies = {},
   ) {
     this.timeoutMs = boundedTimeout(config.timeoutMs);
+    this.sourceReferenceTimeoutMs = boundedTimeout(
+      config.sourceReferenceTimeoutMs === undefined ? DEFAULT_SOURCE_REFERENCE_TIMEOUT_MS : config.sourceReferenceTimeoutMs,
+    );
     this.fetchImplementation = dependencies.fetch ?? fetch;
     this.now = dependencies.now ?? Date.now;
     this.randomUuid = dependencies.randomUuid ?? randomUUID;
@@ -331,7 +337,10 @@ export class HttpTfSearchClient implements TfSearchGateway {
         secret: this.config.internalAuthSecret,
       });
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+      const timeout = setTimeout(
+        () => controller.abort(),
+        path === TF_SOURCE_REFERENCE_PATH ? this.sourceReferenceTimeoutMs : this.timeoutMs,
+      );
       try {
         const response = await this.fetchImplementation(
           new URL(path, this.config.origin),

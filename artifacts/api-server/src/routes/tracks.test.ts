@@ -1196,17 +1196,22 @@ describe("server source-reference admission", () => {
     expect(gateway.sourceReference).toHaveBeenCalledExactlyOnceWith({ accountId: OTHER_ACCOUNT_ID, sourceUrl });
   });
 
-  it("carries a real signed search reference into API admission and a frozen queue command", async () => {
+  it.each(["warm", "cold"] as const)("carries a real signed %s source reference into API admission and a frozen queue command", async (mode) => {
     // Exercise the service boundary without making API production compilation own search sources.
     const searchModuleRoot = new URL("../../../tf-search/src/", import.meta.url);
     const { createTfSearchApp } = await import(fileURLToPath(new URL("app.ts", searchModuleRoot)));
     const { createSearchService } = await import(fileURLToPath(new URL("search-service.ts", searchModuleRoot)));
     const { HmacInternalRequestAuthenticator } = await import(fileURLToPath(new URL("internal-auth.ts", searchModuleRoot)));
     const secret = "integration-fixture-secret".repeat(2);
+    let metadataUnavailable = false;
     const service = createSearchService({
       providers: [{ source: "yt", async search() {
         return [{ ...result(0, { id, sourceUrl }), duration: 120 }];
       } }],
+      ...(mode === "cold" ? { async sourceMetadataLookup(selectedUrl: string) {
+        if (metadataUnavailable) throw new Error("private provider failure");
+        return { ...result(0, { id, sourceUrl: selectedUrl }), duration: 30 };
+      } } : {}),
       async catalogLookup() {
         return [{ artist: "Artist", title: "Track 0", type: "original", duration: 210 }];
       },
@@ -1218,8 +1223,10 @@ describe("server source-reference admission", () => {
     await once(server, "listening");
     const { port } = server.address() as AddressInfo;
     const gateway = new HttpTfSearchClient({ origin: `http://127.0.0.1:${port}`, internalAuthSecret: secret, timeoutMs: 1000 });
-    const search = await gateway.search({ accountId: ACCOUNT_ID, artist: "Artist", title: "Track 0", sources: ["yt"], mode: "manual", maxResults: 1 });
-    expect(search.results.map(({ id: trackId }) => trackId)).toEqual([id]);
+    if (mode === "warm") {
+      const search = await gateway.search({ accountId: ACCOUNT_ID, artist: "Artist", title: "Track 0", sources: ["yt"], mode: "manual", maxResults: 1 });
+      expect(search.results.map(({ id: trackId }) => trackId)).toEqual([id]);
+    }
     const dependencies = routeDependencies({ searchGateway: gateway });
     const baseUrl = await startTracksServer(dependencies);
     durationProbeMock.mockResolvedValue(30);
@@ -1236,6 +1243,22 @@ describe("server source-reference admission", () => {
       accountId: ACCOUNT_ID, sourceUrl, expectedDurationSeconds: 210, artist: "Artist", title: "Track 0",
     });
     expect(downloadJobDataSchema.safeParse(job).success).toBe(true);
+    if (mode === "cold") {
+      metadataUnavailable = true;
+      const failedId = trackIdFor("yt", "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+      const probeCalls = durationProbeMock.mock.calls.length;
+      const unavailable = await fetch(`${baseUrl}/tracks/${failedId}/stream?expectedDurationSeconds=1`);
+      expect(unavailable.status).toBe(503);
+      await expect(unavailable.json()).resolves.toEqual({ error: "duration_unverified" });
+      expect(durationProbeMock.mock.calls.length).toBe(probeCalls);
+      const deniedQueue = await fetch(`${baseUrl}/tracks/download/queue`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tracks: [queueTrack({ trackId: failedId, expectedDurationSeconds: 1 })] }),
+      });
+      expect(deniedQueue.status).toBe(503);
+      await expect(deniedQueue.json()).resolves.toEqual({ error: "duration_unverified" });
+      expect(dependencies.enqueueDownload).toHaveBeenCalledTimes(1);
+    }
   });
 });
 

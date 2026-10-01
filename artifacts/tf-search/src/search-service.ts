@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type {
   TfSearchArtistDiscoveryCommand,
   TfSearchArtistDiscoveryResponse,
@@ -10,12 +11,12 @@ import type {
   TfSearchSuggestionsResponse,
 } from "@workspace/tf-search-contract";
 import {
-  tfSourceReferenceCommandSchema, type TfSourceReferenceCommand, type TfSourceReferenceResponse,
+  canonicalSourceKey, tfSourceReferenceCommandSchema, type TfSourceReferenceCommand, type TfSourceReferenceResponse,
 } from "@workspace/tf-search-contract/source-reference";
 import { BoundedSearchCache, type SearchCacheIdentity } from "./cache.js";
-import { filterCompleteMedia } from "./media-completeness.js";
+import { assessMediaCompleteness, filterCompleteMedia, type MediaComparisonAssessment } from "./media-completeness.js";
 import { rank, type RankQuery } from "./ranker.js";
-import type { RecordingDurationReference } from "./recording-reference.js";
+import { recordingReferenceKey, type RecordingDurationReference } from "./recording-reference.js";
 import { SourceReferenceRegistry } from "./source-reference-registry.js";
 
 export type InternalTrack = TfSearchResult;
@@ -64,6 +65,7 @@ interface SearchLogger {
 interface SearchServiceOptions {
   readonly providers: readonly SearchProvider[];
   readonly catalogLookup?: CatalogDurationLookup;
+  readonly sourceMetadataLookup?: SourceMetadataLookup;
   readonly cache?: BoundedSearchCache;
   readonly now?: () => number;
   readonly logger?: SearchLogger;
@@ -72,7 +74,31 @@ interface SearchServiceOptions {
 export type CatalogDurationLookup = (
   query: string,
   limit: number,
+  options?: { readonly fresh?: boolean; readonly signal?: AbortSignal },
 ) => Promise<readonly RecordingDurationReference[]>;
+
+export type SourceMetadataLookup = (
+  sourceUrl: string,
+  options?: { readonly signal?: AbortSignal },
+) => Promise<InternalTrack | undefined>;
+
+const sourceObservationSchema = z.object({
+  artist: z.string().trim().min(1).max(300),
+  title: z.string().trim().min(1).max(500),
+  type: z.enum(["original", "remix", "live", "cover"]),
+  duration: z.number().finite().int().min(0).max(86_400),
+  source: z.enum(["youtube", "soundcloud", "bandcamp", "deezer"]),
+  sourceUrl: z.string().max(4_096),
+});
+const MAX_SOURCE_REVALIDATIONS = 8;
+const MAX_SOURCE_COOLDOWNS = 256;
+const SOURCE_REVALIDATION_TIMEOUT_MS = 18_000;
+const SOURCE_UNKNOWN_COOLDOWN_MS = 15_000;
+const SOURCE_FAILURE_COOLDOWN_MS = 2_000;
+
+function sourceReferenceUnavailable(): Error {
+  return new Error("Source reference unavailable");
+}
 
 const ALL_SOURCES: readonly TfSearchSource[] = ["yt", "sc", "bc", "dz"];
 const ROLLING_WINDOW_SECONDS = 60;
@@ -152,7 +178,10 @@ class SearchServiceImpl implements RuntimeSearchService {
   private readonly now: () => number;
   private readonly logger?: SearchLogger;
   private readonly catalogLookup?: CatalogDurationLookup;
+  private readonly sourceMetadataLookup?: SourceMetadataLookup;
   private readonly sourceReferences: SourceReferenceRegistry;
+  private readonly sourceRevalidations = new Map<string, Promise<void>>();
+  private readonly sourceCooldowns = new Map<string, { readonly expiresAt: number; readonly failed: boolean }>();
   private readonly requestBuckets = new Int32Array(ROLLING_WINDOW_SECONDS);
   private readonly partialFailureBuckets = new Int32Array(ROLLING_WINDOW_SECONDS);
   private readonly totalFailureBuckets = new Int32Array(ROLLING_WINDOW_SECONDS);
@@ -167,14 +196,90 @@ class SearchServiceImpl implements RuntimeSearchService {
     this.now = options.now ?? Date.now;
     this.logger = options.logger;
     this.catalogLookup = options.catalogLookup;
+    this.sourceMetadataLookup = options.sourceMetadataLookup;
     this.sourceReferences = new SourceReferenceRegistry({ now: this.now });
   }
 
   async sourceReference(input: TfSourceReferenceCommand): Promise<TfSourceReferenceResponse> {
     const command = tfSourceReferenceCommandSchema.parse(input);
-    const reference = this.sourceReferences.lookup(command.sourceUrl);
+    let reference = this.sourceReferences.lookup(command.sourceUrl);
     if (reference === undefined) throw new Error("Invalid source reference lookup");
+    if (reference.status === "unknown" && this.sourceMetadataLookup) {
+      const key = reference.sourceKey;
+      let pending = this.sourceRevalidations.get(key);
+      if (!pending) {
+        for (const [cooldownKey, cooldown] of this.sourceCooldowns) {
+          if (cooldown.expiresAt <= this.now()) this.sourceCooldowns.delete(cooldownKey);
+        }
+        const cooldown = this.sourceCooldowns.get(key);
+        if (cooldown?.failed) throw sourceReferenceUnavailable();
+        if (!cooldown) {
+          if (this.sourceRevalidations.size >= MAX_SOURCE_REVALIDATIONS) throw sourceReferenceUnavailable();
+          pending = this.refreshSourceReference(command.sourceUrl, key);
+          this.sourceRevalidations.set(key, pending);
+        }
+      }
+      if (pending) await pending;
+      reference = this.sourceReferences.lookup(command.sourceUrl);
+      if (reference === undefined) throw sourceReferenceUnavailable();
+    }
     return { schemaVersion: 1, requestId: command.requestId, ...reference };
+  }
+
+  private async refreshSourceReference(sourceUrl: string, sourceKey: string): Promise<void> {
+    const controller = new AbortController();
+    let timer!: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(sourceReferenceUnavailable());
+      }, SOURCE_REVALIDATION_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([this.observeColdSource(sourceUrl, sourceKey, controller.signal), deadline]);
+      if (this.sourceReferences.lookup(sourceUrl)?.status === "unknown") {
+        this.rememberSourceCooldown(sourceKey, false);
+      }
+    } catch {
+      this.rememberSourceCooldown(sourceKey, true);
+      throw sourceReferenceUnavailable();
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      this.sourceRevalidations.delete(sourceKey);
+    }
+  }
+
+  private async observeColdSource(sourceUrl: string, sourceKey: string, signal: AbortSignal): Promise<void> {
+    const observed = await this.sourceMetadataLookup!(sourceUrl, { signal });
+    signal.throwIfAborted();
+    if (observed === undefined) return;
+    const parsed = sourceObservationSchema.safeParse(observed);
+    if (!parsed.success || canonicalSourceKey(parsed.data.sourceUrl) !== sourceKey
+      || !sourceKey.startsWith(`${parsed.data.source}:`)) throw sourceReferenceUnavailable();
+    const selected = { ...observed, ...parsed.data };
+    if (!assessMediaCompleteness(selected).complete) throw sourceReferenceUnavailable();
+    if (!this.catalogLookup) return;
+    const recordingKey = recordingReferenceKey(parsed.data, parsed.data.source);
+    if (recordingKey === undefined) return;
+    const [artist, title] = JSON.parse(recordingKey) as readonly [string, string, string];
+    const references = await this.catalogLookup(`${artist} ${title}`, 25, { fresh: true, signal });
+    signal.throwIfAborted();
+    let comparison: MediaComparisonAssessment | undefined;
+    filterCompleteMedia([selected], references, (_track, assessment) => { comparison = assessment; });
+    // A single source's own reported length is not an independent catalog reference.
+    if (comparison?.status === "known" && comparison.reference.provenance !== "catalog") return;
+    if (comparison) this.sourceReferences.observe(sourceUrl, comparison);
+  }
+
+  private rememberSourceCooldown(sourceKey: string, failed: boolean): void {
+    this.sourceCooldowns.delete(sourceKey);
+    while (this.sourceCooldowns.size >= MAX_SOURCE_COOLDOWNS) {
+      this.sourceCooldowns.delete(this.sourceCooldowns.keys().next().value!);
+    }
+    this.sourceCooldowns.set(sourceKey, {
+      failed, expiresAt: this.now() + (failed ? SOURCE_FAILURE_COOLDOWN_MS : SOURCE_UNKNOWN_COOLDOWN_MS),
+    });
   }
 
   async search(command: TfSearchCommand): Promise<TfSearchResponse> {

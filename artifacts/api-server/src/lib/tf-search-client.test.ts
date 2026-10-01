@@ -8,7 +8,7 @@ import {
   type TfSearchResponse,
   type TfSearchSuggestionsResponse,
 } from "../../../../lib/tf-search-contract/src/index.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   HttpTfSearchClient,
@@ -642,16 +642,84 @@ describe("HttpTfSearchClient.sourceReference", () => {
     expect(fetchImplementation).not.toHaveBeenCalled();
   });
 
-  it("retains the existing bounded request timeout for source lookup", async () => {
-    let signal: AbortSignal | null | undefined;
-    const fetchImplementation = vi.fn<typeof fetch>((_input, init) => new Promise((_resolve, reject) => {
-      signal = init?.signal;
-      signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
-    }));
-    await expect(client(fetchImplementation, { timeoutMs: 10 }).sourceReference({
-      accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
-    })).rejects.toBeInstanceOf(TfSearchUnavailableError);
-    expect(signal?.aborted).toBe(true);
-    expect(fetchImplementation).toHaveBeenCalledOnce();
+  describe("source-reference deadline", () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    function heldFetch() {
+      const requests: Array<{ readonly signal: AbortSignal | null | undefined; readonly resolve: (response: Response) => void }> = [];
+      const implementation = vi.fn<typeof fetch>((_input, init) => new Promise<Response>((resolve, reject) => {
+        const signal = init?.signal;
+        requests.push({ signal, resolve });
+        signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      }));
+      return { implementation, requests };
+    }
+
+    it("allows a source reference after twelve seconds despite the ordinary ten-second budget", async () => {
+      const fixture = heldFetch();
+      const result = client(fixture.implementation, { timeoutMs: 10_000 }).sourceReference({
+        accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+      }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(12_000);
+      fixture.requests[0]!.resolve(new Response(JSON.stringify(sourceReferenceResponse())));
+
+      expect(await result).toEqual(sourceReferenceResponse());
+      expect(fixture.requests[0]!.signal?.aborted).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("actually aborts its own twenty-second default deadline without retry", async () => {
+      const fixture = heldFetch();
+      const result = client(fixture.implementation, { timeoutMs: 10_000 }).sourceReference({
+        accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+      }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(19_999);
+      expect(fixture.requests[0]!.signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fixture.requests[0]!.signal?.aborted).toBe(true);
+      expect(await result).toBeInstanceOf(TfSearchUnavailableError);
+      expect(fixture.implementation).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each([1, 30_000])("honors a bounded explicit source-reference deadline of %s ms", async (sourceReferenceTimeoutMs) => {
+      const fixture = heldFetch();
+      const result = client(fixture.implementation, { timeoutMs: 10_000, sourceReferenceTimeoutMs }).sourceReference({
+        accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+      }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(sourceReferenceTimeoutMs - 1);
+      expect(fixture.requests[0]!.signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fixture.requests[0]!.signal?.aborted).toBe(true);
+      expect(await result).toBeInstanceOf(TfSearchUnavailableError);
+      expect(fixture.implementation).toHaveBeenCalledOnce();
+    });
+
+    it.each([0, -1, 30_001, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+      "rejects an invalid source-reference deadline %s before fetching",
+      (sourceReferenceTimeoutMs) => {
+        const fixture = heldFetch();
+        expect(() => client(fixture.implementation, { sourceReferenceTimeoutMs }))
+          .toThrow("invalid TF search client configuration");
+        expect(fixture.implementation).not.toHaveBeenCalled();
+      },
+    );
+
+    it("keeps ordinary search on its original deadline alongside a longer source lookup", async () => {
+      const fixture = heldFetch();
+      const gateway = client(fixture.implementation, { timeoutMs: 10_000, sourceReferenceTimeoutMs: 20_000 });
+      const lookup = gateway.sourceReference({ accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL })
+        .catch((error: unknown) => error);
+      const search = gateway.search({ artist: "Artist", title: "Track", mode: "manual", sources: ["yt"], maxResults: 1 })
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await search).toBeInstanceOf(TfSearchUnavailableError);
+      expect(fixture.requests[1]!.signal?.aborted).toBe(true);
+      expect(fixture.requests[0]!.signal?.aborted).toBe(false);
+      fixture.requests[0]!.resolve(new Response(JSON.stringify(sourceReferenceResponse())));
+      expect(await lookup).toEqual(sourceReferenceResponse());
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 });
