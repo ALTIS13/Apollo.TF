@@ -102,6 +102,40 @@ const expectedDurationQuerySchema = z.string()
   .optional();
 const refreshStreamQuerySchema = z.literal("1").optional();
 
+interface ResolvedSourceDuration {
+  readonly expectedDurationSeconds?: number;
+  readonly recording?: { readonly artist: string; readonly title: string };
+}
+
+async function resolveSourceDuration(
+  gateway: TfSearchGateway,
+  accountId: string,
+  sourceUrl: string,
+  clientHint: number | undefined,
+  response: Response,
+): Promise<ResolvedSourceDuration | null> {
+  try {
+    if (!gateway.sourceReference) throw new TfSearchUnavailableError();
+    const assessment = await gateway.sourceReference({ accountId, sourceUrl });
+    if (response.destroyed || response.writableEnded) return null;
+    if (assessment.status === "known" && assessment.reference) {
+      return {
+        expectedDurationSeconds: assessment.reference.expectedDurationSeconds,
+        recording: { artist: assessment.reference.artist, title: assessment.reference.title },
+      };
+    }
+    // A miss retains only the legacy quality guard; ambiguous metadata cannot be overridden.
+    if (assessment.status === "unknown") return { expectedDurationSeconds: clientHint };
+    if (assessment.status === "ambiguous") return {};
+    throw new TfSearchUnavailableError();
+  } catch {
+    if (!response.headersSent && !response.destroyed) {
+      response.status(503).json({ error: "duration_unverified" });
+    }
+    return null;
+  }
+}
+
 async function streamDurationError(
   sourceUrl: string,
   expectedDurationSeconds: number | undefined,
@@ -130,12 +164,18 @@ async function streamDurationError(
 
 async function admitSourceDuration(
   sourceUrl: string,
-  expectedDurationSeconds: number | undefined,
+  clientHint: number | undefined,
   response: Response,
+  gateway: TfSearchGateway,
+  accountId: string,
 ): Promise<boolean> {
+  const resolved = await resolveSourceDuration(
+    gateway, accountId, sourceUrl, clientHint, response,
+  );
+  if (resolved === null) return false;
   const error = await streamDurationError(
     sourceUrl,
-    expectedDurationSeconds,
+    resolved.expectedDurationSeconds,
     response,
   );
   if (error === null) return true;
@@ -617,13 +657,19 @@ export function createTracksRouter(
         if (sourceUrl === null) {
           throw new Error("Deezer full-source candidate is unavailable");
         }
-        if (!(await admitSourceDuration(sourceUrl, expected.data, res))) return;
+        if (!(await admitSourceDuration(
+          sourceUrl, expected.data, res,
+          routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+        ))) return;
         const { url, mimeType } = await getStreamUrl(sourceUrl);
         res.json({ id, streamUrl: url, mimeType: mimeType ?? "audio/mpeg" });
         return;
       }
 
-      if (!(await admitSourceDuration(decoded.url, expected.data, res))) return;
+      if (!(await admitSourceDuration(
+        decoded.url, expected.data, res,
+        routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+      ))) return;
       const cached = refresh.data === "1" ? null : await getCachedStreamUrl(id);
       if (cached) {
         res.json({
@@ -734,7 +780,10 @@ export function createTracksRouter(
               "soundcloud",
             ]);
             if (sourceUrl !== null) {
-              if (!(await admitSourceDuration(sourceUrl, expected.data, res))) {
+              if (!(await admitSourceDuration(
+                sourceUrl, expected.data, res,
+                routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+              ))) {
                 return;
               }
               const source = candidates.results.find(
@@ -760,7 +809,10 @@ export function createTracksRouter(
         return;
       }
 
-      if (!(await admitSourceDuration(decoded.url, expected.data, res))) return;
+      if (!(await admitSourceDuration(
+        decoded.url, expected.data, res,
+        routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+      ))) return;
       res.setHeader(
         "Content-Disposition",
         `attachment; filename="${filename}"`,
@@ -866,7 +918,10 @@ export function createTracksRouter(
               "soundcloud",
             ]);
             if (sourceUrl !== null) {
-              if (!(await admitSourceDuration(sourceUrl, expected.data, res))) {
+              if (!(await admitSourceDuration(
+                sourceUrl, expected.data, res,
+                routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+              ))) {
                 return;
               }
               req.log?.info(
@@ -888,7 +943,10 @@ export function createTracksRouter(
         return;
       }
 
-      if (!(await admitSourceDuration(decoded.url, expected.data, res))) return;
+      if (!(await admitSourceDuration(
+        decoded.url, expected.data, res,
+        routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+      ))) return;
       pipeProc(decoded.url);
     } catch (err) {
       req.log.error({ err, id }, "Failed to start audio stream");
@@ -1272,7 +1330,22 @@ export function createTracksRouter(
           return;
         }
       }
-      resolved.push({ ...track, sourceUrl });
+      const reference = await resolveSourceDuration(
+        routeDependencies.searchGateway,
+        req.tfPrincipal!.accountId,
+        sourceUrl,
+        track.expectedDurationSeconds,
+        res,
+      );
+      if (reference === null) return;
+      resolved.push({
+        trackId: track.trackId,
+        artist: reference.recording?.artist ?? track.artist,
+        title: reference.recording?.title ?? track.title,
+        quality: track.quality,
+        sourceUrl,
+        expectedDurationSeconds: reference.expectedDurationSeconds,
+      });
     }
 
     const outcomes = await Promise.allSettled(

@@ -1,4 +1,5 @@
 import type { TfSearchResultSource } from "@workspace/tf-search-contract";
+import type { TfSourceReference } from "@workspace/tf-search-contract/source-reference";
 import type { InternalTrack } from "./search-service.js";
 import { recordingReferenceKey, type RecordingDurationReference } from "./recording-reference.js";
 
@@ -19,6 +20,11 @@ export interface RejectedMediaSummary {
   readonly reason: MediaRejectionReason;
   readonly count: number;
 }
+
+export type MediaComparisonAssessment =
+  | { readonly status: "known"; readonly recordingKey: string;
+      readonly reference: Omit<TfSourceReference, "observedAt" | "expiresAt"> }
+  | { readonly status: "unknown" | "ambiguous"; readonly recordingKey?: string };
 
 const TITLE_MARKER_PATTERN =
   /(?<![\p{L}\p{N}])(?:(?:demo|preview|snippet|teaser|sample|демо|превью|отрывок|фрагмент|тизер)|(?:30|45|60)\s*(?:s|sec|secs|second|seconds|сек|секунда|секунды|секунд))(?![\p{L}\p{N}])/iu;
@@ -58,10 +64,10 @@ function isValidDuration(duration: number): boolean {
   return Number.isInteger(duration) && duration > 0 && duration <= 86_400;
 }
 
-function addDuration(durations: Map<string, number[]>, key: string, duration: number): void {
-  const matching = durations.get(key);
-  if (matching) matching.push(duration);
-  else durations.set(key, [duration]);
+function addReference(references: Map<string, RecordingDurationReference[]>, key: string, reference: RecordingDurationReference): void {
+  const matching = references.get(key);
+  if (matching) matching.push(reference);
+  else references.set(key, [reference]);
 }
 
 function agreeingDuration(values: readonly number[]): number | undefined {
@@ -95,18 +101,19 @@ export function assessMediaCompleteness(
 export function filterCompleteMedia(
   tracks: readonly InternalTrack[],
   catalogReferences: readonly RecordingDurationReference[] = [],
+  onComparison?: (track: InternalTrack, comparison: MediaComparisonAssessment) => void,
 ): {
   readonly accepted: InternalTrack[];
   readonly rejected: RejectedMediaSummary[];
 } {
-  const catalogDurations = new Map<string, number[]>();
-  const previewCatalogDurations = new Map<string, number[]>();
-  const peerDurations = new Map<string, number[]>();
+  const catalog = new Map<string, RecordingDurationReference[]>();
+  const previewCatalog = new Map<string, RecordingDurationReference[]>();
+  const peers = new Map<string, RecordingDurationReference[]>();
   for (const reference of catalogReferences) {
     const key = recordingReferenceKey(reference);
     if (key !== undefined && isValidDuration(reference.duration)
       && !TITLE_MARKER_PATTERN.test(reference.title)) {
-      addDuration(catalogDurations, key, reference.duration);
+      addReference(catalog, key, reference);
     }
   }
   const keys = tracks.map((track) => recordingReferenceKey(track, track.source));
@@ -116,9 +123,9 @@ export function filterCompleteMedia(
     if (key === undefined || !isValidDuration(track.duration) || TITLE_MARKER_PATTERN.test(track.title)) continue;
     if (isProviderPreviewMedia(track)) {
       // Preserve legacy catalog-duration fallback, without treating preview URLs as full audio peers.
-      addDuration(previewCatalogDurations, key, track.duration);
+      addReference(previewCatalog, key, track);
     } else if (track.duration >= 90) {
-      addDuration(peerDurations, key, track.duration);
+      addReference(peers, key, track);
     }
   }
   const accepted: InternalTrack[] = [];
@@ -127,10 +134,21 @@ export function filterCompleteMedia(
   for (let index = 0; index < tracks.length; index += 1) {
     const track = tracks[index]!;
     const key = keys[index];
-    const catalog = key === undefined ? undefined : catalogDurations.get(key) ?? previewCatalogDurations.get(key);
-    const peers = key === undefined ? [] : peerDurations.get(key) ?? [];
+    const catalogGroup = key === undefined ? undefined : catalog.get(key);
+    const previewGroup = key === undefined ? undefined : previewCatalog.get(key);
+    const peerGroup = key === undefined ? undefined : peers.get(key);
     // Conflicting catalog metadata stays unknown; peers only fill an absent catalog group.
-    const referenceDuration = catalog === undefined ? agreeingDuration(peers) : agreeingDuration(catalog);
+    const group = catalogGroup ?? previewGroup ?? peerGroup ?? [];
+    const referenceDuration = agreeingDuration(group.map((reference) => reference.duration));
+    const metadata = group[0];
+    const comparison: MediaComparisonAssessment = key !== undefined && metadata && referenceDuration !== undefined
+      ? { status: "known", recordingKey: key, reference: {
+        artist: metadata.artist, title: metadata.title, type: metadata.type,
+        expectedDurationSeconds: Math.round(referenceDuration),
+        provenance: catalogGroup ? "catalog" : previewGroup ? "preview_catalog" : "peer",
+      } }
+      : { status: group.length > 0 ? "ambiguous" : "unknown", ...(key === undefined ? {} : { recordingKey: key }) };
+    onComparison?.(track, comparison);
     const assessment = assessMediaCompleteness(track, referenceDuration);
     if (assessment.complete) {
       accepted.push(track);

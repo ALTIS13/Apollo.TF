@@ -13,6 +13,9 @@ import {
   tfSearchSuggestionsCommandSchema,
   tfSearchSuggestionsResponseSchema,
 } from "@workspace/tf-search-contract";
+import {
+  TF_SOURCE_REFERENCE_PATH, tfSourceReferenceCommandSchema, tfSourceReferenceResponseSchema,
+} from "@workspace/tf-search-contract/source-reference";
 import type { InternalRequestAuthenticator } from "./internal-auth.js";
 import type { SearchService } from "./search-service.js";
 
@@ -122,6 +125,36 @@ export function createTfSearchApp(options: CreateTfSearchAppOptions): Express {
     rejectUnsupportedTransport,
     express.raw({ type: () => true, limit: BODY_LIMIT, inflate: false }),
   ] as const;
+
+  app.post(TF_SOURCE_REFERENCE_PATH, ...signedRequest, async (req, res) => {
+    if (!authenticate(req, options.auth)) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+    if (!isReady(options.ready)) {
+      unavailable(res);
+      return;
+    }
+    const command = tfSourceReferenceCommandSchema.safeParse(parseJsonBody(rawBody(req)));
+    if (!command.success) {
+      res.status(400).json({ error: "invalid_request" });
+      return;
+    }
+    try {
+      if (!options.service.sourceReference) {
+        unavailable(res);
+        return;
+      }
+      const response = tfSourceReferenceResponseSchema.safeParse(await options.service.sourceReference(command.data));
+      if (!response.success) {
+        unavailable(res);
+        return;
+      }
+      res.status(200).json(response.data);
+    } catch {
+      unavailable(res);
+    }
+  });
 
   app.post(TF_SEARCH_COMMAND_PATH, ...signedRequest, async (req, res) => {
     if (!authenticate(req, options.auth)) {

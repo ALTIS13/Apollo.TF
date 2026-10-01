@@ -9,10 +9,14 @@ import type {
   TfSearchSuggestionsCommand,
   TfSearchSuggestionsResponse,
 } from "@workspace/tf-search-contract";
+import {
+  tfSourceReferenceCommandSchema, type TfSourceReferenceCommand, type TfSourceReferenceResponse,
+} from "@workspace/tf-search-contract/source-reference";
 import { BoundedSearchCache, type SearchCacheIdentity } from "./cache.js";
 import { filterCompleteMedia } from "./media-completeness.js";
 import { rank, type RankQuery } from "./ranker.js";
 import type { RecordingDurationReference } from "./recording-reference.js";
+import { SourceReferenceRegistry } from "./source-reference-registry.js";
 
 export type InternalTrack = TfSearchResult;
 
@@ -22,6 +26,7 @@ export interface SearchProvider {
 }
 
 export interface SearchService {
+  sourceReference?(command: TfSourceReferenceCommand): Promise<TfSourceReferenceResponse>;
   search(command: TfSearchCommand): Promise<TfSearchResponse>;
   freeSearch(command: TfSearchFreeCommand): Promise<TfSearchResponse>;
   discoverArtist(
@@ -36,6 +41,7 @@ export interface SearchService {
 }
 
 export interface RuntimeSearchService extends SearchService {
+  sourceReference(command: TfSourceReferenceCommand): Promise<TfSourceReferenceResponse>;
   parserTelemetry(): readonly ParserTelemetrySnapshot[];
 }
 
@@ -146,6 +152,7 @@ class SearchServiceImpl implements RuntimeSearchService {
   private readonly now: () => number;
   private readonly logger?: SearchLogger;
   private readonly catalogLookup?: CatalogDurationLookup;
+  private readonly sourceReferences: SourceReferenceRegistry;
   private readonly requestBuckets = new Int32Array(ROLLING_WINDOW_SECONDS);
   private readonly partialFailureBuckets = new Int32Array(ROLLING_WINDOW_SECONDS);
   private readonly totalFailureBuckets = new Int32Array(ROLLING_WINDOW_SECONDS);
@@ -160,6 +167,14 @@ class SearchServiceImpl implements RuntimeSearchService {
     this.now = options.now ?? Date.now;
     this.logger = options.logger;
     this.catalogLookup = options.catalogLookup;
+    this.sourceReferences = new SourceReferenceRegistry({ now: this.now });
+  }
+
+  async sourceReference(input: TfSourceReferenceCommand): Promise<TfSourceReferenceResponse> {
+    const command = tfSourceReferenceCommandSchema.parse(input);
+    const reference = this.sourceReferences.lookup(command.sourceUrl);
+    if (reference === undefined) throw new Error("Invalid source reference lookup");
+    return { schemaVersion: 1, requestId: command.requestId, ...reference };
   }
 
   async search(command: TfSearchCommand): Promise<TfSearchResponse> {
@@ -231,7 +246,8 @@ class SearchServiceImpl implements RuntimeSearchService {
 
     if (failedProviders > 0 || catalog.failed) this.recordFailure(succeededProviders === 0);
 
-    const completeMedia = filterCompleteMedia(results, catalog.references);
+    const completeMedia = filterCompleteMedia(results, catalog.references,
+      (track, comparison) => this.sourceReferences.observe(track.sourceUrl, comparison));
     for (const rejection of completeMedia.rejected) {
       this.recordParserRejections(
         RESULT_SOURCE_TO_PROVIDER[rejection.source],
@@ -307,7 +323,8 @@ class SearchServiceImpl implements RuntimeSearchService {
 
     if (failedProviders > 0 || catalog.failed) this.recordFailure(succeededProviders === 0);
 
-    const completeMedia = filterCompleteMedia(results, catalog.references);
+    const completeMedia = filterCompleteMedia(results, catalog.references,
+      (track, comparison) => this.sourceReferences.observe(track.sourceUrl, comparison));
     for (const rejection of completeMedia.rejected) {
       this.recordParserRejections(
         RESULT_SOURCE_TO_PROVIDER[rejection.source],

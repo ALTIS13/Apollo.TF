@@ -1,14 +1,17 @@
 import { once } from "node:events";
 import { EventEmitter } from "node:events";
-import type { Server } from "node:http";
+import { request as httpRequest, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 
-import express from "express";
+import express, { type Response as ExpressResponse } from "express";
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TfSearchGateway } from "../lib/tf-search-client.js";
+import { HttpTfSearchClient } from "../lib/tf-search-client.js";
+import { downloadJobDataSchema } from "@workspace/tf-download-contract";
 import { createMediaLinkAdmission, MediaLinkAdmissionError } from "../lib/media-link-admission.js";
 import { MediaLinkResolutionError } from "../lib/media-link.js";
 import {
@@ -166,7 +169,27 @@ function searchGateway() {
       requestId: "10000000-0000-4000-8000-000000000001",
       suggestions: [{ artist: "Artist", title: "Track" }],
     }),
+    sourceReference: vi.fn().mockResolvedValue(sourceReference("unknown")),
   } satisfies TfSearchGateway;
+}
+
+function sourceReference(status: "known" | "unknown" | "ambiguous", duration = 210) {
+  const now = Date.now();
+  return {
+    schemaVersion: 1 as const,
+    requestId: ACCOUNT_ID,
+    sourceKey: "yt:server-reference",
+    status,
+    ...(status === "known" ? { reference: {
+      artist: "Server Artist",
+      title: "Server Title (Live)",
+      type: "live" as const,
+      expectedDurationSeconds: duration,
+      provenance: "catalog" as const,
+      observedAt: now,
+      expiresAt: now + 300_000,
+    } } : {}),
+  };
 }
 
 function downloadWorkerGateway(): TfDownloadWorkerGateway & {
@@ -227,12 +250,14 @@ async function startTracksServer(
     readonly sessionExpiresAt: string;
     readonly policyFreshUntil: string;
   } = principal,
+  observeResponse?: (response: ExpressResponse) => void,
 ): Promise<string> {
   const app = express();
   app.use(express.json());
-  app.use((request, _response, next) => {
+  app.use((request, response, next) => {
     request.tfPrincipal = currentPrincipal;
     request.log = testLogger;
+    observeResponse?.(response);
     next();
   });
   app.use("/api", createTracksRouter(dependencies));
@@ -957,6 +982,261 @@ it("records a lyrics issue for the authenticated account without accepting clien
     expect(invalid.status).toBe(400);
   }
   expect(recordLyricsFeedback).toHaveBeenCalledTimes(2);
+});
+
+describe("server source-reference admission", () => {
+  const sourceUrl = "https://www.youtube.com/watch?v=Ap0ll0Tf001";
+  const id = trackIdFor("yt", sourceUrl);
+
+  it.each(["stream", "download", "audio-stream", "queue"])(
+    "stops %s admission when HTTP closes during a successful short-reference lookup",
+    async (route) => {
+      const gateway = searchGateway();
+      let releaseReference!: (value: ReturnType<typeof sourceReference>) => void;
+      const reference = new Promise<ReturnType<typeof sourceReference>>((resolve) => {
+        releaseReference = resolve;
+      });
+      let markLookupStarted!: () => void;
+      const lookupStarted = new Promise<void>((resolve) => { markLookupStarted = resolve; });
+      gateway.sourceReference.mockImplementation(() => {
+        markLookupStarted();
+        return reference;
+      });
+      const dependencies = routeDependencies({ searchGateway: gateway });
+      let markResponseClosed!: (response: ExpressResponse) => void;
+      const responseClosed = new Promise<ExpressResponse>((resolve) => { markResponseClosed = resolve; });
+      const baseUrl = await startTracksServer(dependencies, principal, (response) => {
+        response.once("close", () => markResponseClosed(response));
+      });
+      streamCacheMocks.getCachedStreamUrl.mockResolvedValue({ url: "https://media.example.test/short", mimeType: "audio/webm" });
+      ytdlpMocks.spawnAudioDownload.mockImplementation(() => {
+        const process = Object.assign(new EventEmitter(), {
+          stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+        });
+        queueMicrotask(() => {
+          process.stdout.end("audio");
+          process.stderr.end();
+          process.emit("close", 0);
+        });
+        return process;
+      });
+      const queued = route === "queue";
+      const request = httpRequest(
+        queued ? `${baseUrl}/tracks/download/queue` : `${baseUrl}/tracks/${id}/${route}`,
+        { method: queued ? "POST" : "GET", headers: { "content-type": "application/json" } },
+      );
+      const clientError = once(request, "error");
+      const clientClosed = new Promise<void>((resolve) => { request.once("close", resolve); });
+      request.end(queued ? JSON.stringify({ tracks: [queueTrack({ trackId: id })] }) : undefined);
+
+      try {
+        await lookupStarted;
+        request.destroy(new Error("fixture client abort"));
+        await clientError;
+        await clientClosed;
+        const response = await responseClosed;
+        expect(response.destroyed).toBe(true);
+        releaseReference(sourceReference("known", 25));
+        // Flush the released admission's promise chain before inspecting its side effects.
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
+
+        expect(gateway.sourceReference).toHaveBeenCalledExactlyOnceWith({ accountId: ACCOUNT_ID, sourceUrl });
+        expect(durationProbeMock).not.toHaveBeenCalled();
+        expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+        expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+        expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+        expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+        expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+      } finally {
+        releaseReference(sourceReference("known", 25));
+        request.destroy();
+        await clientClosed;
+      }
+    },
+  );
+
+  it.each(["stream", "download", "audio-stream"])(
+    "rejects a known preview on %s when the browser omits its duration",
+    async (route) => {
+      const gateway = searchGateway();
+      gateway.sourceReference.mockResolvedValue(sourceReference("known"));
+      durationProbeMock.mockResolvedValue(30);
+      streamCacheMocks.getCachedStreamUrl.mockResolvedValue({ url: "https://media.example.test/cached", mimeType: "audio/webm" });
+      const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+      const response = await fetch(`${baseUrl}/tracks/${id}/${route}`);
+      expect(response.status).toBe(422);
+      await expect(response.json()).resolves.toEqual({ error: "preview_rejected" });
+      expect(gateway.sourceReference).toHaveBeenCalledWith({ accountId: ACCOUNT_ID, sourceUrl });
+      expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+      expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+      expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("cannot weaken a known reference with a small client hint", async () => {
+    const gateway = searchGateway();
+    gateway.sourceReference.mockResolvedValue(sourceReference("known"));
+    durationProbeMock.mockResolvedValue(30);
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=1`);
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ error: "preview_rejected" });
+  });
+
+  it("preserves a genuinely short server recording despite a forged long hint", async () => {
+    const gateway = searchGateway();
+    gateway.sourceReference.mockResolvedValue(sourceReference("known", 25));
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({ url: "https://media.example.test/short", mimeType: "audio/webm" });
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=300`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ cached: true });
+    expect(durationProbeMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["stream", "download", "audio-stream"])(
+    "fails closed before %s side effects when the reference service fails",
+    async (route) => {
+      const gateway = searchGateway();
+      gateway.sourceReference.mockRejectedValue(new Error("private upstream detail"));
+      const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+      const response = await fetch(`${baseUrl}/tracks/${id}/${route}`);
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "duration_unverified" });
+      expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+      expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+      expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not treat a gateway without reference support as an unknown success", async () => {
+    const { sourceReference: _reference, ...gateway } = searchGateway();
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream`);
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "duration_unverified" });
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+  });
+
+  it("cannot turn ambiguous server evidence into a reference through a browser hint", async () => {
+    const gateway = searchGateway();
+    gateway.sourceReference.mockResolvedValue(sourceReference("ambiguous"));
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({ url: "https://media.example.test/unknown", mimeType: "audio/webm" });
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=300`);
+    expect(response.status).toBe(200);
+    expect(durationProbeMock).not.toHaveBeenCalled();
+  });
+
+  it("binds Deezer fallback to the selected media source, not the original id or browser metadata", async () => {
+    const gateway = searchGateway();
+    gateway.sourceReference.mockResolvedValue(sourceReference("known"));
+    gateway.search.mockResolvedValue(searchResponse({ results: [result(0, { sourceUrl })] }));
+    durationProbeMock.mockResolvedValue(30);
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+    const deezerId = trackIdFor("dz", "https://cdns-preview-e.dzcdn.net/stream/c-reference");
+    const response = await fetch(`${baseUrl}/tracks/${deezerId}/download?artist=Forged&title=Forged&expectedDurationSeconds=1`);
+    expect(response.status).toBe(422);
+    expect(gateway.sourceReference).toHaveBeenCalledExactlyOnceWith({ accountId: ACCOUNT_ID, sourceUrl });
+    expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 1, 86_400])(
+    "freezes server recording and duration instead of queue hint %s",
+    async (expectedDurationSeconds) => {
+      const gateway = searchGateway();
+      gateway.sourceReference.mockResolvedValue(sourceReference("known"));
+      const dependencies = routeDependencies({ searchGateway: gateway });
+      const baseUrl = await startTracksServer(dependencies);
+      const response = await fetch(`${baseUrl}/tracks/download/queue`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tracks: [queueTrack({ trackId: id, expectedDurationSeconds })] }),
+      });
+      expect(response.status).toBe(200);
+      const job = dependencies.enqueueDownload.mock.calls[0]![0];
+      expect(job).toMatchObject({ accountId: ACCOUNT_ID, sourceUrl, artist: "Server Artist", title: "Server Title (Live)", expectedDurationSeconds: 210 });
+      expect(job).not.toHaveProperty("reference");
+      expect(job).not.toHaveProperty("sourceKey");
+    },
+  );
+
+  it("does not partially enqueue a batch with an unavailable reference", async () => {
+    const gateway = searchGateway();
+    gateway.sourceReference.mockResolvedValueOnce(sourceReference("known")).mockRejectedValueOnce(new Error("private detail"));
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/download/queue`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tracks: [queueTrack({ trackId: id }), queueTrack()] }),
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "duration_unverified" });
+    expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+  });
+
+  it("clears an ambiguous queued hint instead of forwarding it as recording evidence", async () => {
+    const gateway = searchGateway();
+    gateway.sourceReference.mockResolvedValue(sourceReference("ambiguous"));
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/download/queue`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tracks: [queueTrack({ trackId: id, expectedDurationSeconds: 300 })] }),
+    });
+    expect(response.status).toBe(200);
+    expect(dependencies.enqueueDownload.mock.calls[0]![0].expectedDurationSeconds).toBeUndefined();
+  });
+
+  it("uses the authenticated account rather than a query-supplied account for lookup", async () => {
+    const gateway = searchGateway();
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({ url: "https://media.example.test/source", mimeType: "audio/webm" });
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }), { ...principal, accountId: OTHER_ACCOUNT_ID });
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream?accountId=${ACCOUNT_ID}`);
+    expect(response.status).toBe(200);
+    expect(gateway.sourceReference).toHaveBeenCalledExactlyOnceWith({ accountId: OTHER_ACCOUNT_ID, sourceUrl });
+  });
+
+  it("carries a real signed search reference into API admission and a frozen queue command", async () => {
+    // Exercise the service boundary without making API production compilation own search sources.
+    const searchModuleRoot = new URL("../../../tf-search/src/", import.meta.url);
+    const { createTfSearchApp } = await import(fileURLToPath(new URL("app.ts", searchModuleRoot)));
+    const { createSearchService } = await import(fileURLToPath(new URL("search-service.ts", searchModuleRoot)));
+    const { HmacInternalRequestAuthenticator } = await import(fileURLToPath(new URL("internal-auth.ts", searchModuleRoot)));
+    const secret = "integration-fixture-secret".repeat(2);
+    const service = createSearchService({
+      providers: [{ source: "yt", async search() {
+        return [{ ...result(0, { id, sourceUrl }), duration: 120 }];
+      } }],
+      async catalogLookup() {
+        return [{ artist: "Artist", title: "Track 0", type: "original", duration: 210 }];
+      },
+    });
+    const server = createTfSearchApp({
+      service, auth: new HmacInternalRequestAuthenticator({ secret }), ready: () => true,
+    }).listen(0, "127.0.0.1");
+    servers.push(server);
+    await once(server, "listening");
+    const { port } = server.address() as AddressInfo;
+    const gateway = new HttpTfSearchClient({ origin: `http://127.0.0.1:${port}`, internalAuthSecret: secret, timeoutMs: 1000 });
+    const search = await gateway.search({ accountId: ACCOUNT_ID, artist: "Artist", title: "Track 0", sources: ["yt"], mode: "manual", maxResults: 1 });
+    expect(search.results.map(({ id: trackId }) => trackId)).toEqual([id]);
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    const baseUrl = await startTracksServer(dependencies);
+    durationProbeMock.mockResolvedValue(30);
+    const playback = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=1`);
+    expect(playback.status).toBe(422);
+    await expect(playback.json()).resolves.toEqual({ error: "preview_rejected" });
+    const queued = await fetch(`${baseUrl}/tracks/download/queue`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tracks: [queueTrack({ trackId: id, expectedDurationSeconds: 1 })] }),
+    });
+    expect(queued.status).toBe(200);
+    const job = dependencies.enqueueDownload.mock.calls[0]![0];
+    expect(job).toMatchObject({
+      accountId: ACCOUNT_ID, sourceUrl, expectedDurationSeconds: 210, artist: "Artist", title: "Track 0",
+    });
+    expect(downloadJobDataSchema.safeParse(job).success).toBe(true);
+  });
 });
 
 describe("stream preview boundary", () => {

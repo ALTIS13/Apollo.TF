@@ -3,6 +3,15 @@ import { readFile } from "node:fs/promises";
 
 import { createSignedBodySignature } from "@workspace/module-runtime-contract";
 import {
+  TF_SOURCE_REFERENCE_PATH,
+  SOURCE_REFERENCE_TTL_MS,
+  canonicalSourceKey,
+  tfSourceReferenceCommandSchema,
+  tfSourceReferenceResponseSchema,
+  type TfSourceReferenceCommand,
+  type TfSourceReferenceResponse,
+} from "@workspace/tf-search-contract/source-reference";
+import {
   TF_SEARCH_ARTIST_DISCOVERY_PATH,
   TF_SEARCH_COMMAND_PATH,
   TF_SEARCH_FREE_COMMAND_PATH,
@@ -44,6 +53,9 @@ export interface ClientDependencies {
 }
 
 export interface TfSearchGateway {
+  sourceReference?(
+    input: Omit<TfSourceReferenceCommand, "schemaVersion" | "requestId">,
+  ): Promise<TfSourceReferenceResponse>;
   search(
     input: Omit<TfSearchCommand, "schemaVersion" | "requestId">,
   ): Promise<TfSearchResponse>;
@@ -208,6 +220,29 @@ export class HttpTfSearchClient implements TfSearchGateway {
     this.randomNonce =
       dependencies.randomNonce ??
       (() => randomBytes(32).toString("base64url"));
+  }
+
+  async sourceReference(
+    input: Omit<TfSourceReferenceCommand, "schemaVersion" | "requestId">,
+  ): Promise<TfSourceReferenceResponse> {
+    const expectedSourceKey = canonicalSourceKey(input.sourceUrl);
+    if (expectedSourceKey === undefined) throw new TfSearchUnavailableError();
+    const response = await this.dispatch(
+      TF_SOURCE_REFERENCE_PATH,
+      { ...input, schemaVersion: 1, requestId: this.randomUuid() },
+      tfSourceReferenceCommandSchema,
+      tfSourceReferenceResponseSchema,
+    );
+    if (response.sourceKey !== expectedSourceKey) throw new TfSearchUnavailableError();
+    if (response.status === "known") {
+      const { observedAt, expiresAt } = response.reference;
+      const now = this.now();
+      const lifetime = expiresAt - observedAt;
+      if (observedAt > now || expiresAt <= now || lifetime <= 0 || lifetime > SOURCE_REFERENCE_TTL_MS) {
+        throw new TfSearchUnavailableError();
+      }
+    }
+    return response;
   }
 
   search(

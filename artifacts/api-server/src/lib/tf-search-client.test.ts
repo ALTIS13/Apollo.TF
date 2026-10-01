@@ -22,6 +22,27 @@ const SECOND_REQUEST_ID = "20000000-0000-4000-8000-000000000002";
 const FIRST_NONCE = Buffer.alloc(32, 1).toString("base64url");
 const SECOND_NONCE = Buffer.alloc(32, 2).toString("base64url");
 const NOW_MS = 1_753_337_100_000;
+const SOURCE_REFERENCE_PATH = "/v1/source-reference";
+const SOURCE_URL = "https://www.youtube.com/watch?v=AbCdEf01234";
+const SOURCE_KEY = "youtube:AbCdEf01234";
+
+function sourceReferenceResponse(requestId = FIRST_REQUEST_ID) {
+  return {
+    schemaVersion: 1,
+    requestId,
+    sourceKey: SOURCE_KEY,
+    status: "known",
+    reference: {
+      artist: "Artist",
+      title: "Track",
+      type: "original",
+      expectedDurationSeconds: 232,
+      provenance: "catalog",
+      observedAt: NOW_MS - 60_000,
+      expiresAt: NOW_MS + 240_000,
+    },
+  };
+}
 
 function searchResponse(requestId: string): TfSearchResponse {
   return {
@@ -84,6 +105,7 @@ function artistDiscoveryResponse(
 function client(
   fetchImplementation: typeof fetch,
   overrides: Partial<ConstructorParameters<typeof HttpTfSearchClient>[0]> = {},
+  now: () => number = () => NOW_MS,
 ) {
   const requestIds = [FIRST_REQUEST_ID, SECOND_REQUEST_ID];
   const nonces = [FIRST_NONCE, SECOND_NONCE];
@@ -96,7 +118,7 @@ function client(
     },
     {
       fetch: fetchImplementation,
-      now: () => NOW_MS,
+      now,
       randomUuid: () => requestIds.shift()!,
       randomNonce: () => nonces.shift()!,
     },
@@ -484,5 +506,152 @@ describe("HttpTfSearchClient", () => {
       }),
     ).rejects.toMatchObject({ code: "search_unavailable" });
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("HttpTfSearchClient.sourceReference", () => {
+  it("dispatches an account-scoped signed lookup and returns the fresh source-bound reference", async () => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify(sourceReferenceResponse()), { status: 200 },
+    ));
+    const gateway = client(fetchImplementation);
+    const result = await gateway.sourceReference?.({ accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL });
+
+    expect(result).toEqual(sourceReferenceResponse());
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+    const [url, init] = fetchImplementation.mock.calls[0]!;
+    expect(String(url)).toBe(`https://search.apollot.ru${SOURCE_REFERENCE_PATH}`);
+    expect(init).toMatchObject({ method: "POST", redirect: "error" });
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    const rawBody = Buffer.from(String(init?.body));
+    expect(JSON.parse(rawBody.toString("utf8"))).toEqual({
+      schemaVersion: 1, requestId: FIRST_REQUEST_ID,
+      accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+    });
+    const headers = new Headers(init?.headers);
+    expect([...headers.keys()].sort()).toEqual([
+      "content-type", "x-apollo-internal-nonce", "x-apollo-internal-signature", "x-apollo-internal-timestamp",
+    ]);
+    expect(headers.get("x-apollo-internal-signature")).toBe(createSignedBodySignature({
+      method: "POST", path: SOURCE_REFERENCE_PATH,
+      timestamp: String(Math.floor(NOW_MS / 1_000)), nonce: FIRST_NONCE,
+      rawBody, secret: SECRET,
+    }));
+  });
+
+  it.each(["known", "unknown", "ambiguous"] as const)(
+    "correlates %s results to the canonical source despite YouTube URL aliases and tracking",
+    async (status) => {
+      const response = status === "known" ? sourceReferenceResponse() : {
+        schemaVersion: 1, requestId: FIRST_REQUEST_ID, sourceKey: SOURCE_KEY, status,
+      };
+      const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(response)));
+      const result = await client(fetchImplementation).sourceReference({
+        accountId: FIRST_REQUEST_ID, sourceUrl: "https://youtu.be/AbCdEf01234?utm_source=fixture",
+      });
+      expect(result).toEqual(response);
+      expect(fetchImplementation).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["known", "unknown", "ambiguous"] as const)(
+    "rejects %s lookup results bound to a different source",
+    async (status) => {
+      const response = status === "known" ? sourceReferenceResponse() : {
+        schemaVersion: 1, requestId: FIRST_REQUEST_ID, sourceKey: SOURCE_KEY, status,
+      };
+      const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(response)));
+      await expect(client(fetchImplementation).sourceReference({
+        accountId: FIRST_REQUEST_ID, sourceUrl: "https://www.youtube.com/watch?v=ZyXwVu98765",
+      })).rejects.toBeInstanceOf(TfSearchUnavailableError);
+      expect(fetchImplementation).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["future observation", { observedAt: NOW_MS + 1, expiresAt: NOW_MS + 60_000 }],
+    ["exact expiry", { observedAt: NOW_MS - 60_000, expiresAt: NOW_MS }],
+    ["expired", { observedAt: NOW_MS - 60_000, expiresAt: NOW_MS - 1 }],
+    ["zero lifetime", { observedAt: NOW_MS, expiresAt: NOW_MS }],
+    ["negative lifetime", { observedAt: NOW_MS, expiresAt: NOW_MS - 1 }],
+    ["excessive lifetime", { observedAt: NOW_MS - 1, expiresAt: NOW_MS + 300_000 }],
+    ["fractional observation", { observedAt: NOW_MS - 0.5, expiresAt: NOW_MS + 60_000 }],
+    ["fractional expiry", { observedAt: NOW_MS, expiresAt: NOW_MS + 60_000.5 }],
+  ] as const)("fails closed for known evidence with %s", async (_label, times) => {
+    const response = sourceReferenceResponse();
+    const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      ...response, reference: { ...response.reference, ...times },
+    })));
+    await expect(client(fetchImplementation).sourceReference({
+      accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+    })).rejects.toMatchObject({ code: "search_unavailable" });
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+
+  it("accepts observation at the current instant with the full five-minute lifetime", async () => {
+    const response = sourceReferenceResponse();
+    const reference = { ...response.reference, observedAt: NOW_MS, expiresAt: NOW_MS + 300_000 };
+    const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ ...response, reference })));
+    await expect(client(fetchImplementation).sourceReference({
+      accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+    })).resolves.toEqual({ ...response, reference });
+  });
+
+  it("checks freshness on response receipt rather than only when dispatching", async () => {
+    let now = NOW_MS;
+    const response = sourceReferenceResponse();
+    const fetchImplementation = vi.fn<typeof fetch>(async () => {
+      now += 100;
+      return new Response(JSON.stringify({
+        ...response, reference: { ...response.reference, observedAt: NOW_MS, expiresAt: NOW_MS + 100 },
+      }));
+    });
+    await expect(client(fetchImplementation, {}, () => now).sourceReference({
+      accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+    })).rejects.toBeInstanceOf(TfSearchUnavailableError);
+  });
+
+  it.each([
+    ["HTTP 503", () => new Response("{}", { status: 503 })],
+    ["malformed JSON", () => new Response("{")],
+    ["request ID mismatch", () => new Response(JSON.stringify(sourceReferenceResponse(SECOND_REQUEST_ID)))],
+    ["unknown fields", () => new Response(JSON.stringify({ ...sourceReferenceResponse(), extra: "untrusted" }))],
+    ["known without reference", () => new Response(JSON.stringify({
+      schemaVersion: 1, requestId: FIRST_REQUEST_ID, sourceKey: SOURCE_KEY, status: "known",
+    }))],
+    ["unknown with reference", () => new Response(JSON.stringify({ ...sourceReferenceResponse(), status: "unknown" }))],
+    ["oversized content length", () => new Response("{}", { headers: { "content-length": "1048577" } })],
+    ["oversized streamed body", () => new Response(" ".repeat(1024 * 1024 + 1))],
+  ] as const)("preserves dispatch rejection for %s without retry", async (_label, makeResponse) => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () => makeResponse());
+    await expect(client(fetchImplementation).sourceReference({
+      accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+    })).rejects.toBeInstanceOf(TfSearchUnavailableError);
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["invalid account", { accountId: "invalid", sourceUrl: SOURCE_URL }],
+    ["unsupported origin", { accountId: FIRST_REQUEST_ID, sourceUrl: "https://attacker.invalid/track" }],
+    ["HTTP source", { accountId: FIRST_REQUEST_ID, sourceUrl: "http://www.youtube.com/watch?v=AbCdEf01234" }],
+    ["ambiguous video", { accountId: FIRST_REQUEST_ID, sourceUrl: "https://www.youtube.com/watch?v=AbCdEf01234&v=ZyXwVu98765" }],
+    ["caller metadata", { accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL, artist: "Browser Hint" }],
+  ] as const)("rejects %s before sending any lookup", async (_label, input) => {
+    const fetchImplementation = vi.fn<typeof fetch>();
+    await expect(client(fetchImplementation).sourceReference(input)).rejects.toBeInstanceOf(TfSearchUnavailableError);
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it("retains the existing bounded request timeout for source lookup", async () => {
+    let signal: AbortSignal | null | undefined;
+    const fetchImplementation = vi.fn<typeof fetch>((_input, init) => new Promise((_resolve, reject) => {
+      signal = init?.signal;
+      signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }));
+    await expect(client(fetchImplementation, { timeoutMs: 10 }).sourceReference({
+      accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+    })).rejects.toBeInstanceOf(TfSearchUnavailableError);
+    expect(signal?.aborted).toBe(true);
+    expect(fetchImplementation).toHaveBeenCalledOnce();
   });
 });
