@@ -1,5 +1,9 @@
 # TF canary publisher preflight, 2026-09-27
 
+Historical candidate: superseded by the [2026-10-02 source-matched selection](2026-10-02-tf-canary-release-candidate.md).
+Keep the September tuple below as historical evidence. The publisher procedure
+and admission guards still apply, using the new note's tuple rather than these tags.
+
 Status: **STOP before claim**. This is a source-only release candidate, not a
 publication or deployment authorization. No PAT, release claim, receipt, build,
 push, Coolify change, or host change was used to prepare this note. GitHub Actions

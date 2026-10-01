@@ -31,12 +31,19 @@ registry writes, canary activation or changes to Platform/HomeNode services.
    test file, including its actual Git archive check and no-claim assertions.
    Seven existing tests pass; independent spec/quality source review has no
    findings. No test or guard implementation changed.
-2. Pending: run the real read-only CLI from a clean operator checkpoint;
+2. Complete: run the real read-only CLI from a clean operator checkpoint;
    capture its redacted report privately. Expected: no source blockers,
    `decision: blocked`, all six unresolved native gates, no claim/output.
-3. Pending: review the scoped change, record current integration dependencies
+   Actual result matches at `72ec58e338056da1ea673daf33e92a5ca623c0e0`;
+   exit 1 as designed, empty stderr and unchanged clean checkout.
+3. Complete: review the scoped change, record current integration dependencies
    and the separation between built source and operator commit, then update
    the single resume record and push only owned changes to the feature branch.
+
+See [current operational record](../operations/2026-10-02-tf-canary-release-candidate.md).
+Source preparation is complete; native publisher and Platform runtime gates
+remain separate. The following documentation checkpoint has no product-source
+delta and does not invalidate the recorded clean-checkout preflight.
 
 ## Workflow
 
