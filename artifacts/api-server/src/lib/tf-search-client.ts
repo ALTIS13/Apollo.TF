@@ -54,12 +54,18 @@ export interface ClientDependencies {
   readonly randomNonce?: () => string;
 }
 
+interface RequestOptions {
+  readonly signal?: AbortSignal;
+}
+
 export interface TfSearchGateway {
   sourceReference?(
     input: Omit<TfSourceReferenceCommand, "schemaVersion" | "requestId">,
+    options?: RequestOptions,
   ): Promise<TfSourceReferenceResponse>;
   search(
     input: Omit<TfSearchCommand, "schemaVersion" | "requestId">,
+    options?: RequestOptions,
   ): Promise<TfSearchResponse>;
   freeSearch(
     input: Omit<TfSearchFreeCommand, "schemaVersion" | "requestId">,
@@ -164,7 +170,27 @@ export async function parseTfSearchClientConfig(
   };
 }
 
-async function readBoundedJson(response: Response): Promise<unknown> {
+function waitForCancellation<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      signal.removeEventListener("abort", abort);
+      reject(new TfSearchUnavailableError());
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    // Observe late rejection even when an abort-ignoring dependency outlives this wait.
+    work.then((value) => {
+      signal.removeEventListener("abort", abort);
+      if (signal.aborted) reject(new TfSearchUnavailableError());
+      else resolve(value);
+    }, (error: unknown) => {
+      signal.removeEventListener("abort", abort);
+      reject(error);
+    });
+  });
+}
+
+async function readBoundedJson(response: Response, signal: AbortSignal): Promise<unknown> {
   const contentLength = response.headers.get("content-length");
   if (
     contentLength !== null &&
@@ -176,24 +202,34 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   if (response.body === null) throw new TfSearchUnavailableError();
 
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > MAX_RESPONSE_BYTES) {
-      await reader.cancel();
+  const cancel = () => { void reader.cancel().catch(() => {}); };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    if (signal.aborted) {
+      cancel();
       throw new TfSearchUnavailableError();
     }
-    chunks.push(value);
-  }
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (signal.aborted) throw new TfSearchUnavailableError();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_RESPONSE_BYTES) {
+        cancel();
+        throw new TfSearchUnavailableError();
+      }
+      chunks.push(value);
+    }
 
-  const raw = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), size);
-  try {
+    const raw = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), size);
     return JSON.parse(raw.toString("utf8"));
   } catch {
     throw new TfSearchUnavailableError();
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    reader.releaseLock();
   }
 }
 
@@ -230,6 +266,7 @@ export class HttpTfSearchClient implements TfSearchGateway {
 
   async sourceReference(
     input: Omit<TfSourceReferenceCommand, "schemaVersion" | "requestId">,
+    options: RequestOptions = {},
   ): Promise<TfSourceReferenceResponse> {
     const expectedSourceKey = canonicalSourceKey(input.sourceUrl);
     if (expectedSourceKey === undefined) throw new TfSearchUnavailableError();
@@ -238,6 +275,7 @@ export class HttpTfSearchClient implements TfSearchGateway {
       { ...input, schemaVersion: 1, requestId: this.randomUuid() },
       tfSourceReferenceCommandSchema,
       tfSourceReferenceResponseSchema,
+      options.signal,
     );
     if (response.sourceKey !== expectedSourceKey) throw new TfSearchUnavailableError();
     if (response.status === "known") {
@@ -248,11 +286,13 @@ export class HttpTfSearchClient implements TfSearchGateway {
         throw new TfSearchUnavailableError();
       }
     }
+    if (options.signal?.aborted) throw new TfSearchUnavailableError();
     return response;
   }
 
   search(
     input: Omit<TfSearchCommand, "schemaVersion" | "requestId">,
+    options: RequestOptions = {},
   ): Promise<TfSearchResponse> {
     return this.dispatch(
       TF_SEARCH_COMMAND_PATH,
@@ -263,6 +303,7 @@ export class HttpTfSearchClient implements TfSearchGateway {
       },
       tfSearchCommandSchema,
       tfSearchResponseSchema,
+      options.signal,
     );
   }
 
@@ -322,8 +363,10 @@ export class HttpTfSearchClient implements TfSearchGateway {
     candidate: unknown,
     commandSchema: { parse(value: unknown): TCommand },
     responseSchema: { safeParse(value: unknown): { success: boolean; data?: TResponse } },
+    signal?: AbortSignal,
   ): Promise<TResponse> {
     try {
+      if (signal?.aborted) throw new TfSearchUnavailableError();
       const command = commandSchema.parse(candidate);
       const rawBody = Buffer.from(JSON.stringify(command), "utf8");
       const timestamp = String(Math.floor(this.now() / 1_000));
@@ -337,40 +380,53 @@ export class HttpTfSearchClient implements TfSearchGateway {
         secret: this.config.internalAuthSecret,
       });
       const controller = new AbortController();
+      const abort = () => controller.abort();
+      signal?.addEventListener("abort", abort, { once: true });
       const timeout = setTimeout(
         () => controller.abort(),
         path === TF_SOURCE_REFERENCE_PATH ? this.sourceReferenceTimeoutMs : this.timeoutMs,
       );
       try {
-        const response = await this.fetchImplementation(
-          new URL(path, this.config.origin),
-          {
-            method: "POST",
-            redirect: "error",
-            signal: controller.signal,
-            headers: {
-              "content-type": "application/json",
-              "x-apollo-internal-timestamp": timestamp,
-              "x-apollo-internal-nonce": nonce,
-              "x-apollo-internal-signature": signature,
+        if (signal?.aborted) controller.abort();
+        const work = (async () => {
+          if (controller.signal.aborted) throw new TfSearchUnavailableError();
+          const response = await this.fetchImplementation(
+            new URL(path, this.config.origin),
+            {
+              method: "POST",
+              redirect: "error",
+              signal: controller.signal,
+              headers: {
+                "content-type": "application/json",
+                "x-apollo-internal-timestamp": timestamp,
+                "x-apollo-internal-nonce": nonce,
+                "x-apollo-internal-signature": signature,
+              },
+              body: rawBody.toString("utf8"),
             },
-            body: rawBody.toString("utf8"),
-          },
-        );
-        if (response.status !== 200) throw new TfSearchUnavailableError();
-        const parsed = responseSchema.safeParse(
-          await readBoundedJson(response),
-        );
-        if (
-          !parsed.success ||
-          parsed.data === undefined ||
-          parsed.data.requestId !== command.requestId
-        ) {
-          throw new TfSearchUnavailableError();
-        }
-        return parsed.data;
+          );
+          if (controller.signal.aborted) {
+            void response.body?.cancel().catch(() => {});
+            throw new TfSearchUnavailableError();
+          }
+          if (response.status !== 200) throw new TfSearchUnavailableError();
+          const parsed = responseSchema.safeParse(
+            await readBoundedJson(response, controller.signal),
+          );
+          if (
+            controller.signal.aborted ||
+            !parsed.success ||
+            parsed.data === undefined ||
+            parsed.data.requestId !== command.requestId
+          ) {
+            throw new TfSearchUnavailableError();
+          }
+          return parsed.data;
+        })();
+        return await waitForCancellation(work, controller.signal);
       } finally {
         clearTimeout(timeout);
+        signal?.removeEventListener("abort", abort);
       }
     } catch (error) {
       if (error instanceof TfSearchUnavailableError) throw error;

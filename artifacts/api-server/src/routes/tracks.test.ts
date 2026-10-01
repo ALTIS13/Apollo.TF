@@ -984,6 +984,176 @@ it("records a lyrics issue for the authenticated account without accepting clien
   expect(recordLyricsFeedback).toHaveBeenCalledTimes(2);
 });
 
+describe("bounded queue preflight", () => {
+  const tracks = Array.from({ length: 7 }, (_, index) => queueTrack({
+    trackId: trackIdFor("sc", `https://soundcloud.com/artist/preflight-${index}`),
+  }));
+  const post = (baseUrl: string, input = tracks) => fetch(`${baseUrl}/tracks/download/queue`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tracks: input }),
+  });
+
+  it("runs four checks at once but admits the whole batch only after the last proof in input order", async () => {
+    const gateway = searchGateway();
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let maximum = 0;
+    gateway.sourceReference.mockImplementation(({ sourceUrl }) => new Promise((resolve) => {
+      const index = Number(sourceUrl.split("-").at(-1));
+      active++;
+      maximum = Math.max(maximum, active);
+      releases[index] = () => { active--; resolve(sourceReference("known", 200 + index)); };
+    }));
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    const baseUrl = await startTracksServer(dependencies);
+    const pending = post(baseUrl);
+    try {
+      await vi.waitFor(() => expect(gateway.sourceReference).toHaveBeenCalledTimes(4));
+      expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+      for (const index of [3, 2, 1]) releases[index]!();
+      await vi.waitFor(() => expect(gateway.sourceReference).toHaveBeenCalledTimes(7));
+      for (const index of [6, 5, 4]) releases[index]!();
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+      releases[0]!();
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(maximum).toBe(4);
+      await expect(response.json()).resolves.toEqual({ results: tracks.map((track) => ({
+        trackId: track.trackId, jobId: "job-created", position: 1,
+      })) });
+      expect(dependencies.enqueueDownload.mock.calls.map(([job]) => job.expectedDurationSeconds))
+        .toEqual([200, 201, 202, 203, 204, 205, 206]);
+      expect(dependencies.enqueueDownload.mock.calls.every(([job]) => job.accountId === ACCOUNT_ID)).toBe(true);
+    } finally {
+      gateway.sourceReference.mockResolvedValue(sourceReference("unknown"));
+      for (const release of releases) release?.();
+      await pending;
+    }
+  });
+
+  it.each([
+    ["invalid id", queueTrack({ trackId: "opaque-invalid" }), principal, 400, "bad_request"],
+    ["missing fallback capability", queueTrack({ trackId: trackIdFor("dz", "https://api.deezer.com/track/1") }),
+      { ...principal, entitlements: ["tf.downloads"] }, 403, "module_access_denied"],
+  ] as const)("rejects a late %s before any provider I/O", async (_label, badTrack, currentPrincipal, status, error) => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies, currentPrincipal);
+    const response = await post(baseUrl, [tracks[0]!, badTrack]);
+    expect(response.status).toBe(status);
+    await expect(response.json()).resolves.toEqual({ error });
+    expect(dependencies.searchGateway.sourceReference).not.toHaveBeenCalled();
+    expect(dependencies.searchGateway.search).not.toHaveBeenCalled();
+    expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+  });
+
+  it("cancels sibling checks on failure without starting more tracks or admitting late successes", async () => {
+    const gateway = searchGateway();
+    const releases: Array<(fail?: boolean) => void> = [];
+    const signals: Array<AbortSignal | undefined> = [];
+    gateway.sourceReference.mockImplementation((_input, options) => new Promise((resolve, reject) => {
+      signals.push(options?.signal);
+      releases.push((fail) => fail ? reject(new Error("private detail")) : resolve(sourceReference("known")));
+    }));
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    const baseUrl = await startTracksServer(dependencies);
+    const pending = post(baseUrl);
+    try {
+      await vi.waitFor(() => expect(releases).toHaveLength(4));
+      releases[0]!(true);
+      const response = await pending;
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "duration_unverified" });
+      expect(signals.every((signal) => signal?.aborted)).toBe(true);
+      for (const release of releases.slice(1)) release();
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(gateway.sourceReference).toHaveBeenCalledTimes(4);
+      expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+    } finally {
+      gateway.sourceReference.mockResolvedValue(sourceReference("unknown"));
+      for (const release of releases) release();
+      await pending;
+    }
+  });
+
+  it("bounds the entire batch wait even if a reference ignores abort and resolves later", async () => {
+    const gateway = searchGateway();
+    const releases: Array<() => void> = [];
+    const signals: Array<AbortSignal | undefined> = [];
+    let started!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => { started = resolve; });
+    gateway.sourceReference.mockImplementation((_input, options) => new Promise((resolve) => {
+      signals.push(options?.signal);
+      releases.push(() => resolve(sourceReference("known")));
+      started();
+    }));
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    const baseUrl = await startTracksServer(dependencies);
+    // Leave HTTP real; only advance the application's deadline once I/O has started.
+    const realSetTimeout = globalThis.setTimeout;
+    let expire: (() => void) | undefined;
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) => {
+      if (delay === 30_000) expire = () => { Reflect.apply(callback, undefined, args); };
+      return realSetTimeout(callback, delay, ...args);
+    }) as typeof setTimeout);
+    const pending = post(baseUrl);
+    try {
+      await lookupStarted;
+      expect(expire).toBeTypeOf("function");
+      expire!();
+      const response = await pending;
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "duration_unverified" });
+      expect(signals.every((signal) => signal?.aborted)).toBe(true);
+      for (const release of releases) release();
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(gateway.sourceReference).toHaveBeenCalledTimes(4);
+      expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+    } finally {
+      timer.mockRestore();
+      gateway.sourceReference.mockResolvedValue(sourceReference("unknown"));
+      for (const release of releases) release();
+      await pending;
+    }
+  });
+
+  it("stops pending fallback work when the client closes without looking up or enqueuing its late result", async () => {
+    const gateway = searchGateway();
+    let release!: () => void;
+    let started!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => { started = resolve; });
+    let signal: AbortSignal | undefined;
+    gateway.search.mockImplementation((_input, options) => new Promise((resolve) => {
+      signal = options?.signal;
+      release = () => resolve(searchResponse());
+      started();
+    }));
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    let closed!: () => void;
+    const responseClosed = new Promise<void>((resolve) => { closed = resolve; });
+    const baseUrl = await startTracksServer(dependencies, principal, (response) => response.once("close", closed));
+    const request = httpRequest(`${baseUrl}/tracks/download/queue`, {
+      method: "POST", headers: { "content-type": "application/json" },
+    });
+    const clientError = once(request, "error");
+    request.end(JSON.stringify({ tracks: [queueTrack({ trackId: trackIdFor("dz", "https://api.deezer.com/track/1") })] }));
+    try {
+      await lookupStarted;
+      request.destroy(new Error("fixture client abort"));
+      await clientError;
+      await responseClosed;
+      release();
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(signal?.aborted).toBe(true);
+      expect(gateway.sourceReference).not.toHaveBeenCalled();
+      expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+    } finally {
+      release?.();
+      request.destroy();
+    }
+  });
+});
+
 describe("server source-reference admission", () => {
   const sourceUrl = "https://www.youtube.com/watch?v=Ap0ll0Tf001";
   const id = trackIdFor("yt", sourceUrl);
@@ -1040,7 +1210,10 @@ describe("server source-reference admission", () => {
         // Flush the released admission's promise chain before inspecting its side effects.
         await new Promise<void>((resolve) => { setImmediate(resolve); });
 
-        expect(gateway.sourceReference).toHaveBeenCalledExactlyOnceWith({ accountId: ACCOUNT_ID, sourceUrl });
+        expect(gateway.sourceReference).toHaveBeenCalledExactlyOnceWith(
+          { accountId: ACCOUNT_ID, sourceUrl },
+          ...(queued ? [{ signal: expect.any(AbortSignal) }] : []),
+        );
         expect(durationProbeMock).not.toHaveBeenCalled();
         expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
         expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
@@ -1906,7 +2079,7 @@ describe("track account ownership", () => {
       mode: "manual",
       sources: ["yt", "sc"],
       maxResults: 6,
-    });
+    }, { signal: expect.any(AbortSignal) });
     expect(dependencies.enqueueDownload).toHaveBeenCalledWith(
       expect.objectContaining({ sourceUrl: resolvedSourceUrl }),
     );

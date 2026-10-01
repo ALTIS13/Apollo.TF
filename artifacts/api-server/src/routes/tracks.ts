@@ -107,6 +107,30 @@ interface ResolvedSourceDuration {
   readonly recording?: { readonly artist: string; readonly title: string };
 }
 
+async function lookupSourceDuration(
+  gateway: TfSearchGateway,
+  accountId: string,
+  sourceUrl: string,
+  clientHint: number | undefined,
+  options?: { readonly signal?: AbortSignal },
+): Promise<ResolvedSourceDuration> {
+  if (!gateway.sourceReference) throw new TfSearchUnavailableError();
+  const input = { accountId, sourceUrl };
+  const assessment = await (options === undefined
+    ? gateway.sourceReference(input)
+    : gateway.sourceReference(input, options));
+  if (assessment.status === "known" && assessment.reference) {
+    return {
+      expectedDurationSeconds: assessment.reference.expectedDurationSeconds,
+      recording: { artist: assessment.reference.artist, title: assessment.reference.title },
+    };
+  }
+  // A miss retains only the legacy quality guard; ambiguous metadata cannot be overridden.
+  if (assessment.status === "unknown") return { expectedDurationSeconds: clientHint };
+  if (assessment.status === "ambiguous") return {};
+  throw new TfSearchUnavailableError();
+}
+
 async function resolveSourceDuration(
   gateway: TfSearchGateway,
   accountId: string,
@@ -115,19 +139,9 @@ async function resolveSourceDuration(
   response: Response,
 ): Promise<ResolvedSourceDuration | null> {
   try {
-    if (!gateway.sourceReference) throw new TfSearchUnavailableError();
-    const assessment = await gateway.sourceReference({ accountId, sourceUrl });
+    const resolved = await lookupSourceDuration(gateway, accountId, sourceUrl, clientHint);
     if (response.destroyed || response.writableEnded) return null;
-    if (assessment.status === "known" && assessment.reference) {
-      return {
-        expectedDurationSeconds: assessment.reference.expectedDurationSeconds,
-        recording: { artist: assessment.reference.artist, title: assessment.reference.title },
-      };
-    }
-    // A miss retains only the legacy quality guard; ambiguous metadata cannot be overridden.
-    if (assessment.status === "unknown") return { expectedDurationSeconds: clientHint };
-    if (assessment.status === "ambiguous") return {};
-    throw new TfSearchUnavailableError();
+    return resolved;
   } catch {
     if (!response.headersSent && !response.destroyed) {
       response.status(503).json({ error: "duration_unverified" });
@@ -203,6 +217,17 @@ const downloadQueueRequestSchema = z
       .max(50),
   })
   .strict();
+const QUEUE_PREFLIGHT_CONCURRENCY = 4;
+const QUEUE_PREFLIGHT_TIMEOUT_MS = 30_000;
+
+class DownloadPreflightError extends Error {
+  constructor(
+    readonly status: 400 | 503,
+    readonly code: "bad_request" | "download_queue_unavailable" | "duration_unverified",
+  ) {
+    super(code);
+  }
+}
 const CANONICAL_JOB_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const lyricsFeedbackBody = z.object({
@@ -1291,13 +1316,10 @@ export function createTracksRouter(
       return;
     }
 
-    const resolved = [] as Array<{
-      readonly trackId: string;
-      readonly artist: string;
-      readonly title: string;
-      readonly quality: AudioQuality;
-      readonly expectedDurationSeconds?: number;
-      readonly sourceUrl: string;
+    // Validate the entire batch before spending any provider/network work.
+    const prepared = [] as Array<{
+      readonly track: z.infer<typeof downloadQueueRequestSchema>["tracks"][number];
+      readonly decoded: NonNullable<ReturnType<typeof decodeTrackUrl>>;
     }>;
     for (const track of parsedBody.data.tracks) {
       const decoded = decodeTrackUrl(track.trackId);
@@ -1305,51 +1327,104 @@ export function createTracksRouter(
         res.status(400).json({ error: "bad_request" });
         return;
       }
-
-      let sourceUrl = decoded.url;
-      if (decoded.source === "dz") {
-        if (!hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
-          res.status(403).json({ error: "module_access_denied" });
-          return;
-        }
-        try {
-          const fallback = await routeDependencies.searchGateway.search({
-            artist: track.artist,
-            title: track.title,
-            mode: "manual",
-            sources: ["yt", "sc"],
-            maxResults: 6,
-          });
-          sourceUrl = trustedFallbackSourceUrl(fallback.results) ?? "";
-        } catch {
-          res.status(503).json({ error: "download_queue_unavailable" });
-          return;
-        }
-        if (sourceUrl === "") {
-          res.status(400).json({ error: "bad_request" });
-          return;
-        }
+      if (decoded.source === "dz" && !hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
+        res.status(403).json({ error: "module_access_denied" });
+        return;
       }
-      const reference = await resolveSourceDuration(
-        routeDependencies.searchGateway,
-        req.tfPrincipal!.accountId,
-        sourceUrl,
-        track.expectedDurationSeconds,
-        res,
-      );
-      if (reference === null) return;
-      resolved.push({
-        trackId: track.trackId,
-        artist: reference.recording?.artist ?? track.artist,
-        title: reference.recording?.title ?? track.title,
-        quality: track.quality,
-        sourceUrl,
-        expectedDurationSeconds: reference.expectedDurationSeconds,
-      });
+      prepared.push({ track, decoded });
+    }
+
+    const resolved = new Array<{
+      readonly trackId: string;
+      readonly artist: string;
+      readonly title: string;
+      readonly quality: AudioQuality;
+      readonly expectedDurationSeconds?: number;
+      readonly sourceUrl: string;
+    }>(prepared.length);
+    const controller = new AbortController();
+    const options = { signal: controller.signal };
+    const unavailable = () => new DownloadPreflightError(503, "duration_unverified");
+    const abort = () => controller.abort(unavailable());
+    const deadline = performance.now() + QUEUE_PREFLIGHT_TIMEOUT_MS;
+    const timeout = setTimeout(abort, QUEUE_PREFLIGHT_TIMEOUT_MS);
+    res.once("close", abort);
+    const assertActive = () => {
+      if (res.destroyed || res.writableEnded || performance.now() >= deadline) abort();
+      controller.signal.throwIfAborted();
+    };
+    let next = 0;
+    const worker = async () => {
+      try {
+        while (next < prepared.length) {
+          assertActive();
+          const index = next++;
+          const { track, decoded } = prepared[index]!;
+          let sourceUrl = decoded.url;
+          if (decoded.source === "dz") {
+            try {
+              const fallback = await routeDependencies.searchGateway.search({
+                artist: track.artist,
+                title: track.title,
+                mode: "manual",
+                sources: ["yt", "sc"],
+                maxResults: 6,
+              }, options);
+              assertActive();
+              sourceUrl = trustedFallbackSourceUrl(fallback.results) ?? "";
+            } catch (error) {
+              if (controller.signal.aborted) throw error;
+              throw new DownloadPreflightError(503, "download_queue_unavailable");
+            }
+            if (sourceUrl === "") throw new DownloadPreflightError(400, "bad_request");
+          }
+          const reference = await lookupSourceDuration(
+            routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+            sourceUrl, track.expectedDurationSeconds, options,
+          );
+          assertActive();
+          resolved[index] = {
+            trackId: track.trackId,
+            artist: reference.recording?.artist ?? track.artist,
+            title: reference.recording?.title ?? track.title,
+            quality: track.quality,
+            sourceUrl,
+            expectedDurationSeconds: reference.expectedDurationSeconds,
+          };
+        }
+      } catch (error) {
+        const failure = error instanceof DownloadPreflightError ? error : unavailable();
+        controller.abort(failure);
+        throw failure;
+      }
+    };
+    let rejectCanceled!: () => void;
+    const canceled = new Promise<never>((_resolve, reject) => {
+      rejectCanceled = () => reject(controller.signal.reason);
+      controller.signal.addEventListener("abort", rejectCanceled, { once: true });
+    });
+    try {
+      // Race also bounds legacy/test dependencies that ignore the abort signal.
+      await Promise.race([
+        Promise.all(Array.from({ length: Math.min(QUEUE_PREFLIGHT_CONCURRENCY, prepared.length) }, worker)),
+        canceled,
+      ]);
+      assertActive();
+    } catch (error) {
+      const failure = error instanceof DownloadPreflightError ? error : unavailable();
+      if (!res.destroyed && !res.writableEnded && !res.headersSent) {
+        res.status(failure.status).json({ error: failure.code });
+      }
+      return;
+    } finally {
+      clearTimeout(timeout);
+      res.off("close", abort);
+      controller.signal.removeEventListener("abort", rejectCanceled);
     }
 
     const outcomes = await Promise.allSettled(
       resolved.map(async (track) => {
+        if (res.destroyed || res.writableEnded) throw unavailable();
         const { jobId, position } = await routeDependencies.enqueueDownload({
           ...track,
           schemaVersion: 1,
@@ -1359,6 +1434,7 @@ export function createTracksRouter(
         return { trackId: track.trackId, jobId, position };
       }),
     );
+    if (res.destroyed || res.writableEnded) return;
     if (outcomes.every((outcome) => outcome.status === "rejected")) {
       res.status(503).json({ error: "download_queue_unavailable" });
       return;
