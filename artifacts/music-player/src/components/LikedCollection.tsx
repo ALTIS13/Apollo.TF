@@ -12,6 +12,7 @@ import {
   GripVertical,
   ArrowUpDown,
   Check,
+  ListChecks,
 } from "lucide-react";
 import { Reorder, useDragControls, useReducedMotion } from "framer-motion";
 import type {
@@ -20,6 +21,7 @@ import type {
   TrackSource,
 } from "@workspace/api-client-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useTfAuth } from "@/auth/tf-auth";
 import {
   useLikedCollection,
@@ -29,7 +31,7 @@ import {
 import { usePlayer } from "@/hooks/use-player";
 import { useToast } from "@/hooks/use-toast";
 import { formatDuration } from "@/lib/utils";
-import { PlaylistAction } from "@/components/PlaylistAction";
+import { PlaylistAction, type PlaylistBatchResult } from "@/components/PlaylistAction";
 import { planLikedReorder } from "@/lib/liked-order";
 import { useEffect, useRef, useState } from "react";
 
@@ -122,6 +124,7 @@ function playableTrack(item: LikedTrack): TrackResult {
 function LikedTrackRow({
   item, index, count, canMove, hasNextPage, movePending, removePending,
   removingTrackId, onMove, onDrop, onPlay, onRemove,
+  selecting, selected, selectionDisabled, batchPending, onSelect,
 }: {
   item: LikedTrack;
   index: number;
@@ -135,6 +138,11 @@ function LikedTrackRow({
   onDrop: (trackId: string) => void;
   onPlay: (item: LikedTrack) => void;
   onRemove: (trackId: string) => void;
+  selecting: boolean;
+  selected: boolean;
+  selectionDisabled: boolean;
+  batchPending: boolean;
+  onSelect: (trackId: string, selected: boolean) => void;
 }) {
   const controls = useDragControls();
   const reduceMotion = useReducedMotion();
@@ -156,6 +164,11 @@ function LikedTrackRow({
       whileDrag={reduceMotion ? undefined : { backgroundColor: "#232326", boxShadow: "0 12px 30px rgba(0,0,0,0.35)" }}
       className="relative flex min-h-14 min-w-0 items-center gap-2 border-b border-white/5 bg-[#18181b] px-2 py-2 last:border-b-0 sm:gap-3 sm:px-3"
     >
+      {selecting && <label className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md">
+        <Checkbox checked={selected} disabled={selectionDisabled} aria-label={`Выбрать ${title}`}
+          className="h-5 w-5 border-white/40 focus-visible:ring-[#a78bfa] data-[state=checked]:border-[#67dbea] data-[state=checked]:bg-[#67dbea] data-[state=checked]:text-[#071315]"
+          onCheckedChange={(checked) => onSelect(item.trackId, checked === true)} />
+      </label>}
       {canMove && (
         <button
           type="button"
@@ -174,7 +187,7 @@ function LikedTrackRow({
           }}
         ><GripVertical className="h-5 w-5" /></button>
       )}
-      <div className={canMove ? "min-w-0 flex-1 sm:contents" : "flex min-w-0 flex-1 items-center gap-2 sm:gap-3"}>
+      <div className={canMove || selecting ? "min-w-0 flex-1 sm:contents" : "flex min-w-0 flex-1 items-center gap-2 sm:gap-3"}>
         <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
           {item.thumbnailUrl ? (
             <img src={item.thumbnailUrl} alt="" referrerPolicy="no-referrer"
@@ -194,7 +207,7 @@ function LikedTrackRow({
             </div>
           </div>
         </div>
-        <div className={`flex shrink-0 items-center gap-0.5 [&>button]:size-9 ${canMove ? "mt-1 justify-end sm:mt-0" : ""}`}>
+        <div className={`flex shrink-0 items-center gap-0.5 ${selecting ? "[&>button]:size-11" : "[&>button]:size-9"} ${canMove || selecting ? "mt-1 justify-end sm:mt-0" : ""}`}>
           {canMove && (
             <div className="mr-auto flex shrink-0 items-center gap-0.5 sm:mr-1 sm:w-8 sm:flex-col" aria-label="Порядок трека">
               <Button type="button" variant="ghost" size="icon"
@@ -217,11 +230,11 @@ function LikedTrackRow({
             title="Воспроизвести" aria-label={`Воспроизвести ${title}`}
             onClick={() => onPlay(item)}
           ><Play className="h-4 w-4 fill-current" /></Button>
-          <PlaylistAction track={playableTrack(item)} />
+          {!selecting && <PlaylistAction track={playableTrack(item)} disabled={batchPending} />}
           <Button type="button" variant="ghost" size="icon"
             className="h-9 w-9 shrink-0 rounded-md text-[#a78bfa]/70 hover:bg-white/5 hover:text-[#a78bfa]"
             title="Удалить из избранного" aria-label={`Удалить ${title}`}
-            disabled={removePending} onClick={() => onRemove(item.trackId)}
+            disabled={removePending || batchPending} onClick={() => onRemove(item.trackId)}
           >
             {removePending && removingTrackId === item.trackId
               ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
@@ -243,6 +256,29 @@ export function LikedCollection() {
   const proposedRef = useRef<string[]>([]);
   const [displayedIds, setDisplayedIds] = useState<string[]>([]);
   const [editingOrder, setEditingOrder] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [batchPending, setBatchPending] = useState(false);
+  const batchPendingRef = useRef(false);
+  const [batchResult, setBatchResult] = useState<PlaylistBatchResult | null>(null);
+  const ownerKey = session
+    ? `${session.accountId}:${session.installationId}:${session.entitlements.includes("tf.collections")}` : "none";
+  const ownerRef = useRef(ownerKey);
+  ownerRef.current = ownerKey;
+  useEffect(() => {
+    setSelecting(false);
+    setSelectedIds([]);
+    setBatchResult(null);
+    setBatchPending(false);
+    batchPendingRef.current = false;
+  }, [ownerKey]);
+  useEffect(() => {
+    if (!allowed) return;
+    setSelectedIds((previous) => {
+      const next = previous.filter((id) => serverIds.includes(id));
+      return next.length === previous.length ? previous : next;
+    });
+  }, [serverOrderKey, allowed]);
   useEffect(() => {
     setEditingOrder(false);
   }, [session?.accountId]);
@@ -277,7 +313,7 @@ export function LikedCollection() {
     });
   };
   const moveItem = (index: number, direction: -1 | 1) => {
-    if (!editingOrder || revision === undefined || move.isPending) return;
+    if (!editingOrder || revision === undefined || move.isPending || batchPendingRef.current) return;
     if (direction > 0 && query.hasNextPage && index >= items.length - 2) return;
     const track = items[index];
     const beforeTrackId = direction < 0
@@ -288,7 +324,7 @@ export function LikedCollection() {
     submitMove({ trackId: track.trackId, beforeTrackId, expectedRevision: revision });
   };
   const dropItem = (trackId: string) => {
-    if (!editingOrder || move.isPending) return;
+    if (!editingOrder || move.isPending || batchPendingRef.current) return;
     const plan = planLikedReorder(serverIds, proposedRef.current, trackId,
       Boolean(query.hasNextPage), revision);
     if (plan.type !== "move") {
@@ -299,15 +335,16 @@ export function LikedCollection() {
     }
     submitMove(plan.request);
   };
-  if (!allowed)
-    return (
-      <div className="flex items-center gap-3 py-12 text-sm text-white/60">
-        <LockKeyhole className="h-5 w-5" />
-        Коллекция недоступна для этого аккаунта.
-      </div>
-    );
   return (
     <section aria-label="Коллекция Apollo" className="text-white">
+      {!allowed && (
+        <div className="flex items-center gap-3 py-12 text-sm text-white/60">
+          <LockKeyhole className="h-5 w-5" />
+          Коллекция недоступна для этого аккаунта.
+        </div>
+      )}
+      {/* Retain the retry snapshot while temporary fail-closed suspension hides the controls. */}
+      <div hidden={!allowed}>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold tracking-normal">
@@ -317,16 +354,26 @@ export function LikedCollection() {
             <span className="text-xs tabular-nums text-white/50">Загружено: {items.length}</span>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-1.5 text-xs text-white/50">
+        <div className="flex max-w-full flex-wrap items-center gap-1.5 text-xs text-white/50">
+          <Button type="button" size="sm" variant="ghost"
+            className="min-h-11 max-w-full whitespace-normal rounded-md px-2 text-white/75 motion-reduce:transition-none"
+            aria-pressed={selecting} disabled={editingOrder || move.isPending || remove.isPending || batchPending || items.length === 0}
+            onClick={() => {
+              if (batchPendingRef.current) return;
+              setSelecting(!selecting);
+              setSelectedIds([]);
+              setBatchResult(null);
+            }}
+          ><ListChecks className="h-4 w-4" />{selecting ? "Завершить выбор" : "Выбрать треки"}</Button>
           <Button
             type="button"
             size="sm"
             variant="ghost"
-            className="h-9 w-40 rounded-md border-white/10 px-2 text-white/75 hover:bg-white/5 motion-reduce:transition-none"
+            className="min-h-11 w-40 max-w-full whitespace-normal rounded-md border-white/10 px-2 text-white/75 hover:bg-white/5 motion-reduce:transition-none"
             aria-pressed={editingOrder}
-            disabled={move.isPending || (!editingOrder && (revision === undefined || items.length < 2))}
+            disabled={selecting || batchPending || move.isPending || (!editingOrder && (revision === undefined || items.length < 2))}
             onClick={() => {
-              if (move.isPending) return;
+              if (move.isPending || batchPendingRef.current || selecting) return;
               if (editingOrder) restoreServerOrder();
               setEditingOrder(!editingOrder);
             }}
@@ -352,7 +399,7 @@ export function LikedCollection() {
             className="h-8 w-8 rounded-lg"
             aria-label="Обновить коллекцию"
             title="Обновить коллекцию"
-            disabled={query.isFetching}
+            disabled={query.isFetching || batchPending}
             onClick={() => void query.refetch()}
           >
             <RefreshCw
@@ -361,6 +408,24 @@ export function LikedCollection() {
           </Button>
         </div>
       </div>
+      {selecting && <div className="mb-3 flex flex-wrap items-center gap-3 border-y border-white/10 py-2">
+        <span className="text-sm tabular-nums text-white/60">Выбрано: {selectedIds.length} / 20</span>
+        <PlaylistAction disabled={batchPending || move.isPending || remove.isPending} batch={{
+          tracks: visibleItems.filter((item) => selectedIds.includes(item.trackId)).map(playableTrack),
+          onConfirmed: (id) => {
+            if (ownerRef.current === ownerKey) setSelectedIds((previous) => previous.filter((value) => value !== id));
+          },
+          onPendingChange: (pending) => {
+            if (ownerRef.current !== ownerKey) return;
+            batchPendingRef.current = pending;
+            setBatchPending(pending);
+          },
+          onResult: (result) => { if (ownerRef.current === ownerKey) setBatchResult(result); },
+        }} />
+        {batchResult && <p role="status" className="w-full break-words text-sm tabular-nums text-white/60">
+          Добавлено: {batchResult.added} · Уже были: {batchResult.alreadyPresent} · Не подтверждено: {batchResult.unconfirmed}
+        </p>}
+      </div>}
       {query.isPending && (
         <div
           role="status"
@@ -399,7 +464,7 @@ export function LikedCollection() {
           axis="y"
           values={visibleIds}
           onReorder={(next) => {
-            if (!editingOrder || move.isPending) return;
+            if (!editingOrder || move.isPending || batchPendingRef.current) return;
             proposedRef.current = next;
             setDisplayedIds(next);
           }}
@@ -417,10 +482,20 @@ export function LikedCollection() {
               movePending={move.isPending}
               removePending={remove.isPending}
               removingTrackId={remove.variables}
+              selecting={selecting}
+              selected={selectedIds.includes(item.trackId)}
+              selectionDisabled={batchPending || (!selectedIds.includes(item.trackId) && selectedIds.length >= 20)}
+              batchPending={batchPending}
+              onSelect={(id, selected) => {
+                if (batchPendingRef.current) return;
+                setSelectedIds((previous) => selected
+                  ? previous.includes(id) || previous.length >= 20 ? previous : [...previous, id]
+                  : previous.filter((value) => value !== id));
+              }}
               onMove={moveItem}
               onDrop={dropItem}
               onPlay={(track) => void playTrack(playableTrack(track))}
-              onRemove={(id) => remove.mutate(id)}
+              onRemove={(id) => { if (!batchPendingRef.current) remove.mutate(id); }}
             />
           ))}
         </Reorder.Group>
@@ -431,7 +506,7 @@ export function LikedCollection() {
             type="button"
             variant="outline"
             className="rounded-lg"
-            disabled={query.isFetching}
+            disabled={query.isFetching || batchPending}
             onClick={() => void query.fetchNextPage()}
           >
             <ChevronDown className="mr-2 h-4 w-4" />
@@ -439,6 +514,7 @@ export function LikedCollection() {
           </Button>
         </div>
       )}
+      </div>
     </section>
   );
 }

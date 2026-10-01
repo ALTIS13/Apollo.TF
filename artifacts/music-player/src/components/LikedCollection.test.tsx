@@ -1,10 +1,11 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { LikedTrack } from "@workspace/api-client-react";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { TfAuthProvider, useTfAuth } from "@/auth/tf-auth";
+import { suspendTfProtectedActivity, TfApiError } from "@/lib/tf-session-client";
 import { LikedCollection } from "./LikedCollection";
 
 const player = vi.hoisted(() => ({ playTrack: vi.fn(), playCollection: vi.fn() }));
@@ -28,19 +29,31 @@ const json = (body: unknown) => new Response(JSON.stringify(body), {
   headers: { "Content-Type": "application/json" },
 });
 
-function fixture({ holdMove = false } = {}) {
+type TrackInput = { trackId: string; artist: string; title: string; thumbnailUrl: string | null; durationSeconds: number | null };
+
+function fixture({ holdMove = false, initialRows = tracks, admit }: {
+  holdMove?: boolean;
+  initialRows?: LikedTrack[];
+  admit?: (track: TrackInput, index: number) => Promise<Response>;
+} = {}) {
   let account = accountA;
-  let rows = [...tracks];
+  let installation = "20000000-0000-4000-8000-000000000001";
+  let entitlements = ["tf.collections"];
+  let token = "c".repeat(42) + "A";
+  let rows = [...initialRows];
+  let nextRows: LikedTrack[] = [];
+  let nextCursor: string | null = null;
+  const posted: TrackInput[] = [];
   let revision = 7;
   let finishMove: (() => void) | undefined;
   const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     const path = String(url);
     if (path.endsWith("/auth/me")) return json({
       accountId: account,
-      installationId: "20000000-0000-4000-8000-000000000001",
-      entitlements: ["tf.collections"],
+      installationId: installation,
+      entitlements,
       expiresAt: new Date(Date.now() + 300_000).toISOString(),
-      csrfToken: "c".repeat(42) + "A",
+      csrfToken: token,
     });
     if (path.endsWith("/collections/liked/order") && init?.method === "PATCH") {
       if (holdMove) await new Promise<void>((resolve) => { finishMove = resolve; });
@@ -59,9 +72,18 @@ function fixture({ holdMove = false } = {}) {
       return json({ revision: String(++revision) });
     }
     if (path.includes("/collections/liked?")) return json({
-      items: rows, nextCursor: null, revision: String(revision),
+      items: path.includes("cursor=") ? nextRows : rows, nextCursor: path.includes("cursor=") ? null : nextCursor, revision: String(revision),
     });
-    if (path.endsWith("/playlists")) return json({ playlists: [] });
+    if (path.endsWith("/collections/playlists/9/tracks") && init?.method === "POST") {
+      const input = JSON.parse(String(init.body)) as TrackInput;
+      posted.push(input);
+      return admit ? admit(input, posted.length - 1) : admission(input);
+    }
+    if (path.endsWith("/playlists")) return json({ playlists: [{
+      id: 9, name: "Focus", description: null, trackCount: posted.length,
+      createdAt: "2026-09-23T00:00:00Z", updatedAt: "2026-09-23T00:00:00Z",
+    }] });
+    if (path.endsWith("/auth/logout")) return new Response(null, { status: 204 });
     throw new Error(`Unexpected request: ${path}`);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -76,13 +98,51 @@ function fixture({ holdMove = false } = {}) {
   );
   return {
     wrapper,
+    client,
     fetchMock,
+    posted,
+    setRows: (next: LikedTrack[]) => { rows = next; },
+    setNextRows: (next: LikedTrack[]) => { nextRows = next; },
+    setNextCursor: (next: string | null) => { nextCursor = next; },
     finishMove: () => {
       if (!finishMove) throw new Error("No move is pending");
       finishMove();
     },
     switchAccount: () => { account = accountB; },
+    changeScope: (kind: string) => {
+      if (kind === "account") account = accountB;
+      if (kind === "installation") installation = "20000000-0000-4000-8000-000000000002";
+      if (kind === "entitlement") entitlements = [];
+      if (kind === "session") token = "d".repeat(42) + "A";
+    },
   };
+}
+
+function admission(track: TrackInput, added = true) {
+  return json({ track: { ...track, position: 0, addedAt: "2026-09-23T00:00:00Z" }, added });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function AuthControls() {
+  const auth = useTfAuth();
+  return <>
+    <button onClick={() => void auth.refresh()}>Refresh session</button>
+    <button onClick={() => void auth.logout()}>Logout</button>
+    <output aria-label="Auth state">{auth.status}:{auth.session?.accountId}:{auth.session?.installationId}:{auth.session?.csrfToken}:{auth.session?.entitlements.join(",")}</output>
+  </>;
+}
+
+async function selectTracks(user: ReturnType<typeof userEvent.setup>, titles: string[]) {
+  await screen.findByText(titles[0]);
+  await user.click(screen.getByRole("button", { name: "Выбрать треки" }));
+  for (const title of titles) await user.click(screen.getByRole("checkbox", { name: `Выбрать ${title}` }));
+  await user.click(screen.getByRole("button", { name: "Добавить выбранные в плейлист" }));
+  return screen.findByRole("button", { name: /Focus/ });
 }
 
 afterEach(() => {
@@ -188,3 +248,183 @@ it("resets editing on account change even when the next account has the same tra
   expect(screen.queryByRole("button", { name: "Переместить Second" })).not.toBeInTheDocument();
   expect(screen.getAllByRole("listitem")[0]).toHaveTextContent("First");
 });
+
+it("caps keyboard selection at 20 loaded IDs, prunes missing rows and clears on mode exit", async () => {
+  const rows = Array.from({ length: 21 }, (_, index) => ({ ...tracks[0], trackId: `yt_${index}`, title: `Track ${index}` }));
+  const f = fixture({ initialRows: rows });
+  f.setNextCursor("next-page");
+  f.setNextRows([{ ...tracks[0], trackId: "bc_next", title: "Next page" }]);
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  await screen.findByText("Track 20");
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Выбрать треки" }));
+  expect(screen.getByRole("button", { name: "Изменить порядок" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Добавить выбранные в плейлист" })).toBeDisabled();
+  screen.getByRole("checkbox", { name: "Выбрать Track 0" }).focus();
+  await user.keyboard(" ");
+  for (let index = 1; index < 20; index++) await user.click(screen.getByRole("checkbox", { name: `Выбрать Track ${index}` }));
+  expect(screen.getByRole("checkbox", { name: "Выбрать Track 20" })).toBeDisabled();
+  expect(screen.getByText("Выбрано: 20 / 20")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Ещё треки" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Ещё треки" })).not.toBeInTheDocument());
+  expect(screen.getByRole("checkbox", { name: "Выбрать Next page" })).not.toBeChecked();
+  f.setRows(rows.slice(1));
+  await user.click(screen.getByRole("button", { name: "Обновить коллекцию" }));
+  await waitFor(() => expect(screen.getByText("Выбрано: 19 / 20")).toBeVisible());
+  expect(screen.getByRole("checkbox", { name: "Выбрать Track 20" })).not.toBeChecked();
+  await user.click(screen.getByRole("button", { name: "Завершить выбор" }));
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Выбрать треки" }));
+  expect(screen.getByText("Выбрано: 0 / 20")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Завершить выбор" }));
+  await user.click(screen.getByRole("button", { name: "Изменить порядок" }));
+  expect(screen.getByRole("button", { name: "Выбрать треки" })).toBeDisabled();
+});
+
+it("uses the newly chosen loaded set instead of a cancelled retry snapshot after selection changes", async () => {
+  const held = deferred<Response>();
+  const f = fixture({ initialRows: [...tracks, { ...tracks[0], trackId: "bc_third", title: "Third" }],
+    admit: async (input, index) => index === 0 ? held.promise : admission(input) });
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  await user.click(await selectTracks(user, ["First", "Second"]));
+  await waitFor(() => expect(f.posted).toHaveLength(1));
+  await user.keyboard("{Escape}");
+  await act(async () => held.resolve(admission(f.posted[0])));
+  await waitFor(() => expect(screen.getByRole("checkbox", { name: "Выбрать First" })).toBeEnabled());
+  await user.click(screen.getByRole("checkbox", { name: "Выбрать First" }));
+  await user.click(screen.getByRole("checkbox", { name: "Выбрать Third" }));
+  await user.click(screen.getByRole("button", { name: "Добавить выбранные в плейлист" }));
+  const target = await screen.findByRole("button", { name: /Focus/ });
+  expect(target).toBeEnabled();
+  await user.click(target);
+  await waitFor(() => expect(screen.getByText("Выбрано: 0 / 20")).toBeVisible());
+  expect(f.posted.map((input) => input.trackId)).toEqual(["yt_first", "sc_second", "bc_third"]);
+});
+
+it("closing the picker leaves a sent admission uncertain and rechecks only the original selected IDs", async () => {
+  const first = deferred<Response>();
+  const rows = [tracks[0], { ...tracks[0], trackId: "yt_live", title: "First (Live)", durationSeconds: 232 }, tracks[1]];
+  const f = fixture({ initialRows: rows, admit: async (input, index) => index === 0 ? first.promise : admission(input, false) });
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  const target = await selectTracks(user, ["First (Live)", "First"]);
+  fireEvent.click(target);
+  fireEvent.click(target);
+  await waitFor(() => expect(f.posted).toHaveLength(1));
+  expect(f.posted[0]).toEqual({ trackId: "yt_first", artist: "Artist", title: "First", thumbnailUrl: null, durationSeconds: 180 });
+  const dialog = screen.getByRole("dialog");
+  expect(within(dialog).queryByRole("textbox", { name: "Название нового плейлиста" })).not.toBeInTheDocument();
+  await user.keyboard("{Escape}");
+  await act(async () => first.resolve(admission(f.posted[0])));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Завершить выбор" })).toBeEnabled());
+  expect(f.posted).toHaveLength(1);
+  await user.click(screen.getByRole("button", { name: "Добавить выбранные в плейлист" }));
+  await user.click(await screen.findByRole("button", { name: "Повторить неподтверждённые" }));
+  await waitFor(() => expect(screen.getByText(/Уже были: 2/)).toBeVisible());
+  expect(f.posted.map((input) => input.trackId)).toEqual(["yt_first", "yt_first", "yt_live"]);
+  expect(f.posted[2]).toEqual({ trackId: "yt_live", artist: "Artist", title: "First (Live)", thumbnailUrl: null, durationSeconds: 232 });
+  expect(screen.getByRole("checkbox", { name: "Выбрать First" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Выбрать First (Live)" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Выбрать Second" })).not.toBeChecked();
+  expect(f.fetchMock.mock.calls.filter(([, init]) => ["DELETE", "PATCH"].includes(init?.method ?? ""))).toHaveLength(0);
+});
+
+it.each([
+  { kind: "application error", status: 404, code: "playlist_not_found", global: false },
+  { kind: "policy unavailable", status: 503, code: "policy_unavailable", global: true },
+])("keeps partial confirmations and retries only the immutable remainder after $kind", async ({ status, code, global }) => {
+  const rows = [...tracks, { ...tracks[0], trackId: "bc_third", title: "Third" }];
+  const held = deferred<Response>();
+  const failed = deferred<Response>();
+  const f = fixture({ initialRows: rows, admit: async (input, index) => {
+    if (index === 0) return held.promise;
+    if (index === 1) return failed.promise;
+    return admission(input, index !== 2);
+  } });
+  const user = userEvent.setup();
+  render(<><AuthControls /><LikedCollection /></>, { wrapper: f.wrapper });
+  const target = await selectTracks(user, ["Third", "Second", "First"]);
+  fireEvent.click(target);
+  fireEvent.click(target);
+  await waitFor(() => expect(f.posted).toHaveLength(1));
+  expect(screen.getByRole("button", { name: "Завершить выбор", hidden: true })).toBeDisabled();
+  expect(screen.getByRole("checkbox", { name: "Выбрать Third", hidden: true })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Удалить Third", hidden: true })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Добавить Third в плейлист", hidden: true })).not.toBeInTheDocument();
+  const changedRows = rows.map((row) => ({ ...row, title: `${row.title} changed` }));
+  f.setRows(changedRows);
+  act(() => f.client.setQueryData(["tf", "liked", accountA], {
+    pages: [{ items: changedRows, nextCursor: null, revision: "7" }], pageParams: [null],
+  }));
+  await act(async () => held.resolve(admission(f.posted[0])));
+  await waitFor(() => expect(f.posted).toHaveLength(2));
+  expect(f.posted[1]).toEqual({ trackId: "sc_second", artist: "Artist", title: "Second", thumbnailUrl: null, durationSeconds: null });
+  expect(screen.getByRole("checkbox", { name: "Выбрать First changed", hidden: true })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Выбрать Second changed", hidden: true })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Завершить выбор", hidden: true })).toBeDisabled();
+  await act(async () => failed.resolve(new Response(JSON.stringify({ error: code }), {
+    status, headers: { "Content-Type": "application/json" },
+  })));
+  expect(f.posted.map((input) => input.trackId)).toEqual(["yt_first", "sc_second"]);
+  if (global) {
+    await waitFor(() => expect(screen.getByLabelText("Auth state")).toHaveTextContent("unavailable"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh session" }));
+    await waitFor(() => expect(screen.getByLabelText("Auth state")).toHaveTextContent("authenticated"));
+  } else {
+    expect(await screen.findByRole("alert")).toHaveTextContent("Не удалось сохранить трек");
+    await user.keyboard("{Escape}");
+  }
+  expect(screen.getByText(/Добавлено: 1/)).toBeVisible();
+  expect(screen.getByText(/Не подтверждено: 2/)).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Добавить выбранные в плейлист" }));
+  await user.click(await screen.findByRole("button", { name: "Повторить неподтверждённые" }));
+  await waitFor(() => expect(screen.getByText(/Не подтверждено: 0/)).toBeVisible());
+  expect(f.posted.map((input) => input.trackId)).toEqual(["yt_first", "sc_second", "sc_second", "bc_third"]);
+  expect(f.posted[3].title).toBe("Third");
+  expect(f.posted[2].title).toBe("Second");
+  expect(screen.getByText(/Уже были: 1/)).toBeVisible();
+  expect(screen.getByText("Выбрано: 0 / 20")).toBeVisible();
+});
+
+it.each(["account", "installation", "entitlement", "session", "generation", "logout", "unmount"])(
+  "stops a held batch on %s change without confirming an obsolete response or using replacement credentials",
+  async (kind) => {
+    const held = deferred<Response>();
+    const f = fixture({ admit: async (input, index) => index === 0 ? held.promise : admission(input) });
+    const user = userEvent.setup();
+    const view = render(<><AuthControls /><LikedCollection /></>, { wrapper: f.wrapper });
+    const target = await selectTracks(user, ["First", "Second"]);
+    await user.click(target);
+    await waitFor(() => expect(f.posted).toHaveLength(1));
+    if (kind === "unmount") view.unmount();
+    else if (kind === "generation") act(() => suspendTfProtectedActivity(new TfApiError(503, "policy_unavailable", "unavailable")));
+    else if (kind === "logout") {
+      fireEvent.click(screen.getByRole("button", { name: "Logout", hidden: true }));
+      await waitFor(() => expect(screen.getByLabelText("Auth state")).toHaveTextContent("unauthenticated"));
+    } else {
+      f.changeScope(kind);
+      fireEvent.click(screen.getByRole("button", { name: "Refresh session", hidden: true }));
+      await waitFor(() => {
+        const state = screen.getByLabelText("Auth state");
+        if (kind === "account") expect(state).toHaveTextContent(accountB);
+        if (kind === "installation") expect(state).toHaveTextContent("20000000-0000-4000-8000-000000000002");
+        if (kind === "session") expect(state).toHaveTextContent("d".repeat(42) + "A");
+        if (kind === "entitlement") expect(state).not.toHaveTextContent("tf.collections");
+      });
+    }
+    await act(async () => held.resolve(admission(f.posted[0])));
+    expect(f.posted.map((input) => input.trackId)).toEqual(["yt_first"]);
+    if (["account", "installation"].includes(kind)) {
+      await screen.findByText("Second");
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Добавлено: 1/)).not.toBeInTheDocument();
+    }
+    if (kind === "session") {
+      expect(screen.getByRole("checkbox", { name: "Выбрать First" })).toBeChecked();
+      expect(screen.queryByText(/Добавлено: 1/)).not.toBeInTheDocument();
+    }
+  },
+);
