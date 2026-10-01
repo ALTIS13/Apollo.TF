@@ -65,6 +65,17 @@ function shouldReportCancellationError(error: unknown): boolean {
   return status === 401 || status === 403 || status === 409;
 }
 
+function queueAdmissionFailureCode(error: unknown): DownloadJobStatus["failureCode"] {
+  if (typeof error !== "object" || error === null || Array.isArray(error)
+    || !("status" in error) || !("data" in error)) return undefined;
+  const data = error.data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)
+    || !("error" in data)) return undefined;
+  if (error.status === 503 && data.error === "duration_unverified") return "duration_unverified";
+  if (error.status === 422 && data.error === "preview_rejected") return "preview_rejected";
+  return undefined;
+}
+
 export function useTrackDownload(): TrackDownloadController {
   const [snapshot, setSnapshot] = useState<DownloadSnapshot>(INITIAL_SNAPSHOT);
   const mountedRef = useRef(true);
@@ -343,7 +354,12 @@ export function useTrackDownload(): TrackDownloadController {
           return;
         }
         reportTfAuthError(error);
-        commit(generation, { state: "failed", progress: 0 });
+        const failureCode = queueAdmissionFailureCode(error);
+        commit(generation, {
+          state: "failed",
+          progress: 0,
+          ...(failureCode !== undefined ? { failureCode } : {}),
+        });
       } finally {
         if (pendingQueuesRef.current.get(generation) === pendingQueue) {
           pendingQueuesRef.current.delete(generation);

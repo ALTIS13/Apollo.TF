@@ -8,6 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { Link, Route, Router } from "wouter";
 import Home from "@/pages/Home";
 import { PlayerProvider } from "@/hooks/use-player";
 import { clearTfSessionSecurityState } from "@/lib/tf-session-client";
@@ -22,6 +23,7 @@ let finishSearch: (response: Response) => void;
 let searchStarted: boolean;
 let searchBody: unknown;
 let searchPath: string;
+let searchCalls: unknown[];
 let linkBody: unknown;
 let linkResponse: Response;
 let holdLink: boolean;
@@ -54,12 +56,14 @@ class ControlledAudio extends EventTarget {
   load() {}
 }
 beforeEach(() => {
+  window.history.replaceState(null, "", "/");
   clearTfSessionSecurityState();
   localStorage.removeItem("tf_source_prefs");
   identity = A;
   searchStarted = false;
   searchBody = null;
   searchPath = "";
+  searchCalls = [];
   linkBody = null;
   linkResponse = json({ schemaVersion: 1, source: "soundcloud", artist: "Artist", title: "Track", durationSeconds: 180 });
   holdLink = false;
@@ -83,6 +87,7 @@ beforeEach(() => {
       searchStarted = true;
       searchPath = path;
       searchBody = JSON.parse(String(init?.body));
+      searchCalls.push(searchBody);
       return new Promise<Response>((resolve) => {
         finishSearch = resolve;
       });
@@ -109,7 +114,22 @@ afterEach(() => {
   clearTfSessionSecurityState();
   vi.unstubAllGlobals();
 });
-function renderHome() {
+function SourceRecoveryLinks() {
+  const first = new URLSearchParams({
+    artist: "  Artist & Friends  ", title: "  Track (Live at Wembley)  ", view: "compact",
+  });
+  const second = new URLSearchParams({
+    artist: "Second Artist", title: "Second Track - Live", view: "second",
+  });
+  return (
+    <>
+      <Link href={`/?${first}#source`}>Recover first source</Link>
+      <Link href={`/?${second}#source`}>Recover second source</Link>
+    </>
+  );
+}
+
+function renderHome(recoveryNavigation = false) {
   render(
     <QueryClientProvider
       client={
@@ -121,14 +141,17 @@ function renderHome() {
         })
       }
     >
-      <TfAuthProvider>
-        <Controls />
-        <TfSessionBoundary>
-          <PlayerProvider>
-            <Home />
-          </PlayerProvider>
-        </TfSessionBoundary>
-      </TfAuthProvider>
+      <Router>
+        <TfAuthProvider>
+          <Controls />
+          <TfSessionBoundary>
+            <PlayerProvider>
+              <Route path="/" component={Home} />
+              {recoveryNavigation && <SourceRecoveryLinks />}
+            </PlayerProvider>
+          </TfSessionBoundary>
+        </TfAuthProvider>
+      </Router>
     </QueryClientProvider>,
   );
 }
@@ -369,4 +392,142 @@ it("rendered Home still invalidates the current generation on a genuine current4
   await settleSearch(json({ error: "unauthorized" }, 401));
   expect(auth.status).toBe("unauthenticated");
   expect(screen.queryByRole("button", { name: "Повторить запрос" })).toBeNull();
+});
+
+it("source-recovery Link searches once on the same mounted Home with exact version and current sources", async () => {
+  linkResponse = json({ error: "unsupported_media_link" }, 422);
+  renderHome(true);
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  const input = screen.getByRole("combobox", { name: "Поиск" });
+  fireEvent.click(screen.getByLabelText("SoundCloud"));
+  fireEvent.change(input, { target: { value: "https://open.spotify.com/track/example" } });
+  fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
+  await screen.findByRole("alert");
+
+  fireEvent.click(screen.getByRole("link", { name: "Recover first source" }));
+  await waitFor(() => expect(searchCalls).toHaveLength(1));
+  expect(searchPath).toBe("/api/tracks/search");
+  expect(searchBody).toEqual({
+    artist: "Artist & Friends", title: "Track (Live at Wembley)", mode: "manual", sources: ["yt", "bc", "dz"],
+  });
+  expect(screen.getByRole("combobox", { name: "Поиск" })).toBe(input);
+  expect(input).toHaveValue("Artist & Friends — Track (Live at Wembley)");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(window.location.search).toBe("?view=compact");
+  expect(window.location.hash).toBe("#source");
+  await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Точный" }));
+  expect(screen.getByRole("textbox", { name: "Исполнитель" })).toHaveValue("Artist & Friends");
+  expect(screen.getByRole("combobox", { name: "Название трека" })).toHaveValue("Track (Live at Wembley)");
+  fireEvent.click(screen.getByLabelText("YouTube"));
+  expect(searchCalls).toHaveLength(1);
+});
+
+it("source-recovery initial query is consumed once while preserving unrelated URL and history state", async () => {
+  const query = new URLSearchParams({ artist: " Initial Artist ", title: "Initial Track (LIVE)", keep: "value" });
+  window.history.replaceState({ checkpoint: "keep" }, "", `/?${query}#source`);
+  renderHome();
+  await waitFor(() => expect(searchCalls).toHaveLength(1));
+  expect(searchBody).toEqual({ artist: "Initial Artist", title: "Initial Track (LIVE)", mode: "auto" });
+  expect(screen.getByRole("combobox", { name: "Поиск" })).toHaveValue("Initial Artist — Initial Track (LIVE)");
+  expect(window.location.search).toBe("?keep=value");
+  expect(window.location.hash).toBe("#source");
+  expect(window.history.state).toEqual({ checkpoint: "keep" });
+  await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
+  fireEvent.click(screen.getByLabelText("SoundCloud"));
+  await act(async () => { await auth.refresh(); });
+  expect(searchCalls).toHaveLength(1);
+});
+
+it.each([
+  ["missing artist", new URLSearchParams({ title: "Track" })],
+  ["blank artist", new URLSearchParams({ artist: "   ", title: "Track" })],
+  ["blank title", new URLSearchParams({ artist: "Artist", title: "   " })],
+  ["oversized artist", new URLSearchParams({ artist: "a".repeat(201), title: "Track" })],
+  ["oversized title", new URLSearchParams({ artist: "Artist", title: "t".repeat(301) })],
+  ["ambiguous artist", new URLSearchParams([["artist", "First"], ["artist", "Second"], ["title", "Track"]])],
+] as const)("source-recovery ignores an invalid initial pair with %s", async (_label, query) => {
+  window.history.replaceState(null, "", `/?${query}`);
+  renderHome();
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  expect(searchCalls).toHaveLength(0);
+  expect(screen.getByRole("combobox", { name: "Поиск" })).toHaveValue("");
+  expect(suggestionStarted).toBe(false);
+});
+
+it("source-recovery supports back and new repeated navigation without replaying consumed entries", async () => {
+  renderHome(true);
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  const input = screen.getByRole("combobox", { name: "Поиск" });
+  fireEvent.click(screen.getByRole("link", { name: "Recover first source" }));
+  await waitFor(() => expect(searchCalls).toHaveLength(1));
+  await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
+  fireEvent.click(screen.getByRole("link", { name: "Recover second source" }));
+  await waitFor(() => expect(searchCalls).toHaveLength(2));
+  await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
+  await act(async () => {
+    const popped = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+    window.history.back();
+    await popped;
+  });
+  expect(window.location.search).toBe("?view=compact");
+  expect(searchCalls).toHaveLength(2);
+  expect(screen.getByRole("combobox", { name: "Поиск" })).toBe(input);
+  fireEvent.click(screen.getByRole("link", { name: "Recover first source" }));
+  await waitFor(() => expect(searchCalls).toHaveLength(3));
+  expect(searchCalls[2]).toEqual({ artist: "Artist & Friends", title: "Track (Live at Wembley)", mode: "auto" });
+  await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
+});
+
+it("source-recovery supersedes pending link metadata and stale suggestions on mounted Home", async () => {
+  holdLink = true;
+  holdSuggestion = true;
+  renderHome(true);
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  const input = screen.getByRole("combobox", { name: "Поиск" });
+  fireEvent.change(input, { target: { value: "Tr" } });
+  await waitFor(() => expect(suggestionStarted).toBe(true));
+  fireEvent.change(input, { target: { value: "https://soundcloud.com/artist/track" } });
+  fireEvent.submit(screen.getByRole("form", { name: "Поиск музыки" }));
+  await waitFor(() => expect(linkBody).not.toBeNull());
+  fireEvent.click(screen.getByRole("link", { name: "Recover first source" }));
+  await waitFor(() => expect(searchCalls).toHaveLength(1));
+  await act(async () => {
+    finishSuggestion(json({ suggestions: [{ artist: "Old", title: "Suggestion" }] }));
+    finishLink(json({ schemaVersion: 1, source: "soundcloud", artist: "Old", title: "Link Title" }));
+  });
+  await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
+  expect(searchCalls).toHaveLength(1);
+  expect(input).toHaveValue("Artist & Friends — Track (Live at Wembley)");
+  expect(screen.queryByRole("option")).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("source-recovery cannot publish an old-account result after a fresh account navigation", async () => {
+  renderHome(true);
+  await waitFor(() => expect(auth.status).toBe("authenticated"));
+  fireEvent.click(screen.getByRole("link", { name: "Recover first source" }));
+  await waitFor(() => expect(searchCalls).toHaveLength(1));
+  const finishOldSearch = finishSearch;
+  identity = B;
+  await act(async () => { await auth.refresh(); });
+  expect(auth.session?.accountId).toBe(B);
+  expect(searchCalls).toHaveLength(1);
+  fireEvent.click(screen.getByRole("link", { name: "Recover second source" }));
+  await waitFor(() => expect(searchCalls).toHaveLength(2));
+  await act(async () => {
+    finishOldSearch(json({
+      results: [{
+        id: "old-account", artist: "Old", title: "Private Old Result", duration: 180, thumbnailUrl: null,
+        source: "youtube", type: "original", quality: [], score: 1,
+      }],
+      cached: false, sources: ["yt"],
+    }));
+  });
+  await settleSearch(json({ results: [], cached: false, sources: ["yt"] }));
+  expect(auth.status).toBe("authenticated");
+  expect(auth.session?.accountId).toBe(B);
+  expect(screen.queryByText("Private Old Result")).toBeNull();
+  expect(screen.getByRole("combobox", { name: "Поиск" })).toHaveValue("Second Artist — Second Track - Live");
 });

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useMutation } from "@tanstack/react-query";
+import { useLocation, useSearch } from "wouter";
 import { freeSearchTracks, getTrackSuggestions, searchTracks } from "@workspace/api-client-react";
 import type { FreeSearchRequest, MediaLinkMetadataResponse, SearchRequest, TrackSuggestionsResponse, TrackType } from "@workspace/api-client-react";
 import { TrackCard } from "@/components/TrackCard";
@@ -51,16 +52,14 @@ function isMediaLinkMetadata(value: unknown): value is MediaLinkMetadataResponse
 
 export default function Home() {
   const reduceMotion = useReducedMotion();
-  const { session } = useTfAuth();
-  const params = new URLSearchParams(window.location.search);
-  const [artist, setArtist] = useState(params.get("artist") ?? "");
-  const [title, setTitle] = useState(params.get("title") ?? "");
+  const { session, status } = useTfAuth();
+  const searchQuery = useSearch();
+  const [location, navigate] = useLocation();
+  const consumedSearchRef = useRef<string | null>(null);
+  const [artist, setArtist] = useState("");
+  const [title, setTitle] = useState("");
   const [searchMode, setSearchMode] = useState<SearchMode>("quick");
-  const [quickQuery, setQuickQuery] = useState(
-    params.get("artist") && params.get("title")
-      ? `${params.get("artist")} — ${params.get("title")}`
-      : "",
-  );
+  const [quickQuery, setQuickQuery] = useState("");
   const [quickError, setQuickError] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [linkPending, setLinkPending] = useState(false);
@@ -68,9 +67,7 @@ export default function Home() {
   const [suggestions, setSuggestions] = useState<TrackSuggestionsResponse["suggestions"]>([]);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
-  const [suggestionsSuppressed, setSuggestionsSuppressed] = useState(
-    Boolean(params.get("artist") && params.get("title")),
-  );
+  const [suggestionsSuppressed, setSuggestionsSuppressed] = useState(false);
   const suggestionRegionRef = useRef<HTMLDivElement>(null);
   const [activeFilter, setActiveFilter] = useState<FilterType>("all");
   const [hasSearched, setHasSearched] = useState(false);
@@ -265,15 +262,41 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const p = new URLSearchParams(window.location.search);
-    const a = p.get("artist");
-    const t = p.get("title");
-    if (a && t) {
-      setHasSearched(true);
-      searchMutation.mutate(buildSearchData(a, t));
-      window.history.replaceState({}, "", window.location.pathname);
+    const params = new URLSearchParams(searchQuery);
+    if (!params.has("artist") && !params.has("title")) {
+      consumedSearchRef.current = null;
+      return;
     }
-  }, []);
+    if (status !== "authenticated" || !session || consumedSearchRef.current === searchQuery) return;
+    if (params.getAll("artist").length !== 1 || params.getAll("title").length !== 1) return;
+    const a = params.get("artist")!.trim();
+    const t = params.get("title")!.trim();
+    if (!a || !t || a.length > 200 || t.length > 300) return;
+
+    // Claim before mutation/navigation so effect replay cannot repeat the search.
+    consumedSearchRef.current = searchQuery;
+    linkRequestRef.current += 1;
+    setLinkPending(false);
+    setLinkError(null);
+    setQuickError(false);
+    setSuggestionsSuppressed(true);
+    setSuggestions([]);
+    setSuggestionsOpen(false);
+    setActiveSuggestion(-1);
+    setArtist(a);
+    setTitle(t);
+    setQuickQuery(`${a} — ${t}`);
+    setHasSearched(true);
+    searchMutation.mutate(buildSearchData(a, t));
+
+    params.delete("artist");
+    params.delete("title");
+    const remaining = params.toString();
+    navigate(`${location}${remaining ? `?${remaining}` : ""}${window.location.hash}`, {
+      replace: true,
+      state: window.history.state,
+    });
+  }, [searchQuery, location, navigate, status, session, sourceMode, sourcesState, searchMutation.mutate]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();

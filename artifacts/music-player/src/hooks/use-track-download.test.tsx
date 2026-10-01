@@ -146,6 +146,48 @@ describe("useTrackDownload", () => {
     expect(window.location.assign).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [503, "duration_unverified"],
+    [422, "preview_rejected"],
+  ])("preserves safe queue-admission failure %s/%s", async (status, code) => {
+    const error = { status, data: { error: code } };
+    vi.mocked(queueTrackDownloads).mockRejectedValue(error);
+    const { result } = renderHook(() => useTrackDownload());
+
+    await act(async () => {
+      await result.current.start(track);
+    });
+
+    expect(result.current.state).toBe("failed");
+    expect(result.current.progress).toBe(0);
+    expect(result.current.failureCode).toBe(code);
+    expect(reportTfAuthError).toHaveBeenCalledWith(error);
+    expect(getDownloadJobStatus).not.toHaveBeenCalled();
+    expect(window.location.assign).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "unknown code", error: { status: 503, data: { error: "future_code" } } },
+    { label: "raw body", error: { status: 503, data: '{"error":"duration_unverified"}' } },
+    { label: "raw message", error: new Error("duration_unverified") },
+    { label: "other field", error: { status: 503, data: { reason: "duration_unverified" } } },
+    { label: "preview with 503", error: { status: 503, data: { error: "preview_rejected" } } },
+    { label: "duration with 422", error: { status: 422, data: { error: "duration_unverified" } } },
+    { label: "other status", error: { status: 500, data: { error: "duration_unverified" } } },
+    { label: "string status", error: { status: "503", data: { error: "duration_unverified" } } },
+  ])("keeps $label queue-admission failure generic", async ({ error }) => {
+    vi.mocked(queueTrackDownloads).mockRejectedValue(error);
+    const { result } = renderHook(() => useTrackDownload());
+
+    await act(async () => {
+      await result.current.start(track);
+    });
+
+    expect(result.current.state).toBe("failed");
+    expect(result.current.failureCode).toBeUndefined();
+    expect(reportTfAuthError).toHaveBeenCalledWith(error);
+  });
+
   it("keeps one poll in flight and uses bounded backoff only for waiting and active jobs", async () => {
     const firstPoll = deferred<DownloadJobStatus>();
     vi.mocked(queueTrackDownloads).mockResolvedValue({
@@ -805,7 +847,7 @@ describe("useTrackDownload", () => {
   it.each([401, 403, 409])(
     "forwards queue error %s through reportTfAuthError",
     async (status) => {
-      const error = { status, data: { error: "bounded_error" } };
+      const error = { status, data: { error: "duration_unverified" } };
       vi.mocked(queueTrackDownloads).mockRejectedValue(error);
       const { result } = renderHook(() => useTrackDownload());
 
@@ -815,6 +857,38 @@ describe("useTrackDownload", () => {
 
       expect(reportTfAuthError).toHaveBeenCalledWith(error);
       expect(result.current.state).toBe("failed");
+      expect(result.current.failureCode).toBeUndefined();
+    },
+  );
+
+  it.each(["canceled", "unmounted"] as const)(
+    "ignores late queue-admission failure after the request is %s",
+    async (termination) => {
+      const queued = deferred<Awaited<ReturnType<typeof queueTrackDownloads>>>();
+      vi.mocked(queueTrackDownloads).mockReturnValue(queued.promise);
+      const { result, unmount } = renderHook(() => useTrackDownload());
+      let startPromise!: Promise<void>;
+      await act(async () => {
+        startPromise = result.current.start(track);
+        await Promise.resolve();
+      });
+      if (termination === "canceled") {
+        await act(async () => { await result.current.cancel(); });
+      } else {
+        unmount();
+      }
+
+      await act(async () => {
+        queued.reject({ status: 503, data: { error: "duration_unverified" } });
+        await startPromise;
+      });
+
+      expect(result.current.state).toBe(termination === "canceled" ? "canceled" : "waiting");
+      expect(result.current.failureCode).toBeUndefined();
+      expect(reportTfAuthError).not.toHaveBeenCalled();
+      expect(getDownloadJobStatus).not.toHaveBeenCalled();
+      expect(cancelDownloadJob).not.toHaveBeenCalled();
+      expect(window.location.assign).not.toHaveBeenCalled();
     },
   );
 

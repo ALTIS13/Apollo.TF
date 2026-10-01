@@ -17,6 +17,7 @@ import type { TrackResult } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { motion, useReducedMotion } from "framer-motion";
 import { useTrackDownload } from "@/hooks/use-track-download";
+import { downloadFailureFeedback, TrackDetails } from "@/components/TrackDetails";
 
 const actionClassName = "flex h-[44px] shrink-0 items-center justify-center rounded-md border border-white/10 bg-[#09090b] transition-colors hover:bg-white/5 hover:text-[#8ddbd4] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8ddbd4] motion-reduce:transition-none";
 
@@ -42,6 +43,7 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
   const { toast } = useToast();
   const { state: downloadState, progress, failureCode, start, cancel } = useTrackDownload();
   const previousDownloadStateRef = useRef(downloadState);
+  const failureFeedback = downloadFailureFeedback(failureCode);
 
   const isCurrentTrack = currentTrack?.id === track.id;
   const isThisLoading = isCurrentTrack && isLoading;
@@ -80,17 +82,13 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
     } else if (downloadState === "failed") {
       toast({
         title: "Ошибка загрузки",
-        description: failureCode === "preview_rejected"
-          ? "Источник содержит только фрагмент трека. Выберите другую запись."
-          : failureCode === "duration_unverified"
-            ? "Не удалось проверить длительность записи. Попробуйте другой источник."
-            : "Не удалось начать загрузку.",
+        description: failureFeedback.description,
         variant: "destructive",
       });
     } else if (downloadState === "canceled") {
       toast({ title: "Загрузка отменена", description: track.title });
     }
-  }, [downloadState, failureCode, toast, track.title]);
+  }, [downloadState, failureFeedback.description, toast, track.title]);
 
   const isDownloadPending =
     downloadState === "waiting" || downloadState === "active";
@@ -100,11 +98,7 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
       : "Подготовка загрузки";
   const terminalDownloadStatus =
     downloadState === "failed"
-      ? failureCode === "preview_rejected"
-        ? "Только фрагмент трека."
-        : failureCode === "duration_unverified"
-          ? "Длительность не проверена."
-          : "Не удалось начать загрузку."
+      ? failureFeedback.statusLabel
       : downloadState === "canceled"
         ? "Загрузка отменена"
         : downloadState === "completed"
@@ -230,6 +224,7 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
       {/* Actions */}
       <div className={compact ? "col-span-2 flex min-w-0 flex-wrap items-start justify-end gap-[2px] border-t border-white/10 pt-2 lg:col-span-1 lg:border-t-0 lg:pt-0" : "flex-shrink-0 w-full sm:w-auto flex flex-wrap sm:flex-col items-start sm:items-end justify-between sm:justify-center gap-2 border-t sm:border-t-0 sm:border-l border-white/10 pt-4 sm:pt-0 sm:pl-6"}>
         {collectionAction}
+        <TrackDetails track={track} recordingTypeLabel={typeLabels[track.type] ?? track.type} downloadState={downloadState} failureCode={failureCode} onRetry={() => start(track)} />
         <button
           type="button"
           onClick={handlePlayNext}
@@ -287,7 +282,7 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
             className={`h-[20px] w-full truncate text-center text-[10px] leading-[20px] ${downloadState === "failed" ? "text-destructive" : "text-[#aaa9ba]"}`}
             role={isDownloadPending || terminalDownloadStatus !== null ? "status" : undefined}
           >
-            {isDownloadPending ? downloadState === "active" ? `${progress}%` : "Подготовка" : terminalDownloadStatus}
+            {isDownloadPending ? downloadState === "active" ? `${progress}%` : "Подготовка" : downloadState === "failed" ? failureFeedback.shortLabel : terminalDownloadStatus}
           </span>
         </div>
       </div>
