@@ -1,7 +1,10 @@
 # TF Coolify Build Check - 2026-10-01
 
-Status: **CONFIGURATION_SOURCE_APPROVED / TF_WRITE_CAPABILITY_PENDING**.
+Status: **INITIAL_SOURCE_PREPARATION_COMPLETE**.
 This stage does not publish a release or activate an authenticated TF runtime.
+The later user-approved credential provisioning, source push, native parser fix
+and actual build are tracked in the [native continuation](2026-10-01-tf-coolify-native-build.md).
+The access/publication blockers below describe the original checkpoint only.
 
 ## Purpose
 
@@ -57,10 +60,10 @@ nested-file resolution without that option is not the Coolify contract.
 
 ## Admission And Validation
 
-1. Obtain the existing TF-approved write/deploy capability through its private
-   credential-file path and exact team/project/server binding. Do not print a
-   token, reuse LETSCUBE's access, create an admin token or edit Coolify's database
-   to circumvent this missing capability.
+1. Obtain TF-approved write/deploy capability through private credential custody
+   and exact team/project/server binding. The later direct user request also
+   authorizes issuing a dedicated token through Coolify's native model. Do not
+   print a token, reuse LETSCUBE's access or bypass the native permissions model.
 2. After source publication is separately admitted, verify the exact SHA exists
    on origin. Recheck host/container/Caddy prestate and absence of collisions;
    create only the new named build-check Application with no automatic deploy.

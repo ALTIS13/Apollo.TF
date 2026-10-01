@@ -8,28 +8,33 @@ the user during this stage. Reuse the existing nine custom targets and
 external pinned Redis catalog. This is not a publication receipt or permission
 to activate a canary. Preserve the retired candidate and publisher gate.
 
-Platform remains identity/policy authority. No Platform image, registry write,
-release claim, deployment, production credentials, or HomeNode mutation belongs
-to this stage. Local evidence must not be described as authenticated acceptance.
+Platform remains identity/policy authority. The latest direct user request
+authorizes a dedicated Coolify token, TF project/build resource and source push.
+Only this isolated build-check may mutate HomeNode. No Platform image, registry
+write, release claim, authenticated runtime activation or shared service change
+belongs to this stage. Packaging evidence is not authenticated acceptance.
 
 ## Tasks
 
 1. **Complete:** audit Dockerfiles, source inclusion, Compose isolation and
    existing candidate machinery. One reused worker performs a bounded read-only
    audit; the controller owns local tools, builds and the final commit.
-2. **Configuration complete / native build pending:** prepare a separate Git-backed Coolify build-check Compose
+2. **Complete:** prepare a separate Git-backed Coolify build-check Compose
    entrypoint, not the immutable release/canary runtime definition. Build the
    nine custom targets without activating TF: no ports, domains, credentials,
    volumes or shared networks; each result exits successfully via `/bin/true`.
    Use source labels and the fixed canary web API build argument. Retain an
    exact-commit archive separately; local image IDs are not registry digests.
-   Creation/build needs an existing TF-approved Coolify write/deploy capability.
-3. **Source/parser checks complete / native runtime checks pending:** check affected Linux runtime boundaries and Compose rendering.
+   A dedicated seven-day `read/write/deploy` token and TF-owned binding are now
+   provisioned; no `root` or sensitive-data permission. The token is team-scoped,
+   not application-scoped; the private operator also guards exact TF ownership.
+3. **Complete:** check affected Linux runtime boundaries and Compose rendering.
    If a concrete packaging defect appears, reproduce it before a narrow fix and
    recheck the changed target. Do not replay accepted application suites.
-4. **Complete locally:** review the scoped diff/evidence, reconcile only task-owned test
-   resources, and save a short resume plus a linked report. Commit owned source
-   and documentation locally; no push or deploy in this stage.
+4. **Complete:** review the scoped diff/evidence,
+   reconcile only task-owned test resources, and save a short resume plus a linked
+   report. Owned source is pushed to the existing feature branch for Coolify's
+   exact checkout; no merge, GitHub Actions or runtime deployment.
 
 ## Acceptance
 
@@ -37,11 +42,23 @@ to this stage. Local evidence must not be described as authenticated acceptance.
 - Catalog, source labels, explicit canary origin and Linux architecture match.
 - Native build/runtime results, failures and cleanup are recorded truthfully.
 - Fresh registry/publisher and Platform issuer/JWKS/client proof remain separate
-  gates. A missing TF Coolify write capability limits native build proof but
-  does not authorize using LETSCUBE, minting an access token, weakening the
-  publisher guard or activating the production/canary runtime definitions.
+  gates. The user's later explicit credential-provisioning approval does not
+  authorize using LETSCUBE, weakening the publisher guard or activating the
+  production/canary runtime definitions.
 
 ## Current Evidence
+
+The bullets below retain the initial preparation evidence. The authoritative
+continuation is [native build report](../operations/2026-10-01-tf-coolify-native-build.md):
+TF access and source publication are no longer blockers. An actual native
+attempt exposed Coolify's `command: []` to `{}` YAML round-trip; `command: ""`
+clears the image CMD and passes that exact consumer path. The corrected attempt
+pins `f3828eb016e9dc034030e2da7ca2c2a39f4327c1`.
+All nine images and inert exits/masks/tools are now verified. An additional native
+custom-start path defect was corrected only on the new application; final job
+finished using cached layers. Owned temporary containers/empty bridge removed,
+candidate images retained; 35 unrelated running container IDs/images/health and
+Caddy active/configuration hash unchanged. No runtime activation/publication.
 
 - Local Docker Linux API unavailable; Desktop startup reports an inaccessible
   `sailor-ingest.sock`. Bounded start/restart did not recover it; CLI waits were
