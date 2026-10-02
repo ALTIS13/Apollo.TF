@@ -24,6 +24,7 @@ import { clearUpcoming, getNextQueueIndex, insertNext, moveUpcoming, reorderUpco
 import type { RepeatMode } from "@/lib/queue-operations";
 import { readQueueSnapshot, writeQueueSnapshot } from "@/lib/queue-persistence";
 import { expectedDurationSeconds } from "@/lib/utils";
+import { usePlayerMediaSession } from "./use-media-session";
 
 interface PlayerContextType {
   currentTrack: TrackResult | null;
@@ -113,6 +114,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const loadGeneration = useRef(0);
   const appliedLoadGeneration = useRef<number | null>(null);
   const failedStreamRef = useRef(false);
+  const loadingRef = useRef(false);
   const mountedRef = useRef(false);
   const suspendedPosition = useRef<number | null>(null);
   const queryClient = useQueryClient();
@@ -198,7 +200,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       failedStreamRef.current = false;
       if (suspendedPosition.current === null) suspendedPosition.current = audio.currentTime;
       setProgress(suspendedPosition.current);
-      audio.pause(); audio.src = ""; audio.load(); setIsLoading(false);
+      audio.pause(); audio.src = ""; audio.load(); loadingRef.current = false; setIsLoading(false);
     });
 
     audio.addEventListener("timeupdate", handleTimeUpdate);
@@ -272,12 +274,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     failedStreamRef.current = false;
     const live = () => mountedRef.current && load === loadGeneration.current && isCurrentTfSecurityGeneration(security) && canUseTfProtectedActivity() && originLive?.() !== false;
     const resumePosition = currentTrackRef.current?.id === track.id ? suspendedPosition.current : null;
-    suspendedPosition.current = null;
+    suspendedPosition.current = resumePosition ?? 0;
     try {
+      loadingRef.current = true;
       setIsLoading(true);
       setCurrentTrack(track);
       setIsPlaying(false);
-      setProgress(refresh ? resumePosition ?? 0 : 0);
+      setProgress(resumePosition ?? 0);
       setDuration(track.duration || 0);
       audioRef.current.pause();
       audioRef.current.src = "";
@@ -295,7 +298,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (!live()) return;
       if (!res.streamUrl) throw new Error("No stream URL");
       audioRef.current.src = res.streamUrl;
-      if (resumePosition !== null) { audioRef.current.currentTime = resumePosition; setProgress(resumePosition); }
+      const playbackPosition = suspendedPosition.current ?? resumePosition;
+      suspendedPosition.current = null;
+      if (playbackPosition !== null) { audioRef.current.currentTime = playbackPosition; setProgress(playbackPosition); }
       await audioRef.current.play();
       if (!live()) return;
       appliedLoadGeneration.current = load;
@@ -334,7 +339,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       });
       if (live() && recoverableSource) return "recoverable" as const;
     } finally {
-      if (mountedRef.current && load === loadGeneration.current) setIsLoading(false);
+      if (mountedRef.current && load === loadGeneration.current) { loadingRef.current = false; setIsLoading(false); }
     }
     return undefined;
   }, [queryClient, toast]);
@@ -530,16 +535,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setDuration(0);
   }, []);
 
-  const togglePlayPause = useCallback(() => {
-    if (!audioRef.current || !currentTrackRef.current || !canUseTfProtectedActivity()) return;
+  const resumePlayback = useCallback(() => {
+    if (!audioRef.current || !currentTrackRef.current || loadingRef.current || !canUseTfProtectedActivity()) return;
     if (failedStreamRef.current) {
       void _loadTrackRef.current(currentTrackRef.current, undefined, true);
       return;
     }
     if (suspendedPosition.current !== null) { void _loadTrackRef.current(currentTrackRef.current); return; }
-    if (isPlayingRef.current) {
-      audioRef.current.pause();
-    } else {
+    if (!isPlayingRef.current) {
       const attemptLoad = loadGeneration.current;
       const attemptTrack = currentTrackRef.current;
       const audio = audioRef.current;
@@ -550,6 +553,29 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       });
     }
   }, []);
+
+  const pausePlayback = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio || !currentTrackRef.current || !canUseTfProtectedActivity()) return;
+    audio.pause();
+    isPlayingRef.current = false;
+    setIsPlaying(false);
+    setTfPlaybackActive(false);
+    loadGeneration.current += 1;
+    if (loadingRef.current) {
+      appliedLoadGeneration.current = null;
+      suspendedPosition.current ??= progressRef.current;
+      loadingRef.current = false;
+      setIsLoading(false);
+      audio.src = "";
+      audio.load();
+    }
+  }, []);
+
+  const togglePlayPause = useCallback(() => {
+    if (isPlayingRef.current) pausePlayback();
+    else resumePlayback();
+  }, [pausePlayback, resumePlayback]);
 
   const seekTo = useCallback((percentage: number) => {
     if (!audioRef.current || !duration) return;
@@ -575,6 +601,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setVolumeState(clamped);
     if (audioRef.current) audioRef.current.volume = clamped;
   }, []);
+
+  usePlayerMediaSession({
+    track: currentTrack, session, active: status === "authenticated",
+    isPlaying, isLoading, progress, duration,
+    hasNext: queueIndex < queue.length - 1 || (repeatMode === "all" && queue.length > 0),
+    hasPrevious: queueIndex > 0 || progress > 3,
+    play: resumePlayback, pause: pausePlayback, next: playNext, previous: playPrev, seekTo, seekBy,
+  });
 
   // ── WebSocket sync ────────────────────────────────────────────────────────
 
