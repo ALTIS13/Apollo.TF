@@ -5,7 +5,7 @@ import type { LikedTrack } from "@workspace/api-client-react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { TfAuthProvider, useTfAuth } from "@/auth/tf-auth";
-import { suspendTfProtectedActivity, TfApiError } from "@/lib/tf-session-client";
+import { commitTfSessionSecurityState, suspendTfProtectedActivity, TfApiError, type TfBrowserSession } from "@/lib/tf-session-client";
 import { LikedCollection } from "./LikedCollection";
 
 const player = vi.hoisted(() => ({ playTrack: vi.fn(), playCollection: vi.fn(), addToQueue: vi.fn() }));
@@ -32,11 +32,12 @@ const json = (body: unknown) => new Response(JSON.stringify(body), {
 
 type TrackInput = { trackId: string; artist: string; title: string; thumbnailUrl: string | null; durationSeconds: number | null };
 
-function fixture({ holdMove = false, holdRemove = false, initialRows = tracks, admit }: {
+function fixture({ holdMove = false, holdRemove = false, initialRows = tracks, admit, removeResponse }: {
   holdMove?: boolean;
   holdRemove?: boolean;
   initialRows?: LikedTrack[];
   admit?: (track: TrackInput, index: number) => Promise<Response>;
+  removeResponse?: (trackId: string, index: number) => Promise<Response>;
 } = {}) {
   let account = accountA;
   let installation = "20000000-0000-4000-8000-000000000001";
@@ -46,6 +47,7 @@ function fixture({ holdMove = false, holdRemove = false, initialRows = tracks, a
   let nextRows: LikedTrack[] = [];
   let nextCursor: string | null = null;
   const posted: TrackInput[] = [];
+  const deleted: string[] = [];
   let revision = 7;
   let finishMove: (() => void) | undefined;
   let finishRemove: (() => void) | undefined;
@@ -78,10 +80,14 @@ function fixture({ holdMove = false, holdRemove = false, initialRows = tracks, a
       items: path.includes("cursor=") ? nextRows : rows, nextCursor: path.includes("cursor=") ? null : nextCursor, revision: String(revision),
     });
     if (path.includes("/collections/liked/") && init?.method === "DELETE") {
+      const id = decodeURIComponent(path.split("/").pop()!);
+      deleted.push(id);
       if (holdRemove) await new Promise<void>((resolve) => { finishRemove = resolve; });
-      rows = rows.filter((row) => row.trackId !== decodeURIComponent(path.split("/").pop()!));
+      const response = removeResponse ? await removeResponse(id, deleted.length - 1) : new Response(null, { status: 204 });
+      if (!response.ok) return response;
+      rows = rows.filter((row) => row.trackId !== id);
       revision += 1;
-      return new Response(null, { status: 204 });
+      return response;
     }
     if (path.endsWith("/collections/playlists/9/tracks") && init?.method === "POST") {
       const input = JSON.parse(String(init.body)) as TrackInput;
@@ -110,6 +116,7 @@ function fixture({ holdMove = false, holdRemove = false, initialRows = tracks, a
     client,
     fetchMock,
     posted,
+    deleted,
     setRows: (next: LikedTrack[]) => { rows = next; },
     setNextRows: (next: LikedTrack[]) => { nextRows = next; },
     setNextCursor: (next: string | null) => { nextCursor = next; },
@@ -162,6 +169,220 @@ async function selectTracks(user: ReturnType<typeof userEvent.setup>, titles: st
   await user.click(screen.getByRole("button", { name: "Добавить выбранные в плейлист" }));
   return screen.findByRole("button", { name: /Focus/ });
 }
+
+async function confirmRemoval(user: ReturnType<typeof userEvent.setup>, titles: string[]) {
+  await chooseTracks(user, titles);
+  await user.click(screen.getByRole("button", { name: "Удалить выбранные из избранного" }));
+  return screen.findByRole("button", { name: "Удалить из избранного" });
+}
+
+it("bulk removal requires confirmation and deletes only selected favorites in collection order", async () => {
+  const f = fixture({ initialRows: [...tracks, { ...tracks[0], trackId: "bc_third", title: "Third" }] });
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  await confirmRemoval(user, ["Third", "First"]);
+  expect(screen.getByRole("dialog", { name: "Удалить выбранные из избранного" })).toHaveTextContent("Плейлисты и очередь не изменятся");
+  expect(f.deleted).toEqual([]);
+  await user.click(screen.getByRole("button", { name: "Отмена" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: "Выбрать First" })).toBeChecked();
+  expect(f.deleted).toEqual([]);
+  await user.click(screen.getByRole("button", { name: "Удалить выбранные из избранного" }));
+  await user.click(await screen.findByRole("button", { name: "Удалить из избранного" }));
+  await waitFor(() => expect(screen.getByText(/Удалено: 2/)).toBeVisible());
+  expect(f.deleted).toEqual(["yt_first", "bc_third"]);
+  expect(screen.getByText("Second")).toBeVisible();
+  expect(screen.getByRole("checkbox", { name: "Выбрать Second" })).not.toBeChecked();
+  expect(screen.getByText("Выбрано: 0 / 20")).toBeVisible();
+  expect(f.posted).toEqual([]);
+  expect(player.playTrack).not.toHaveBeenCalled();
+  expect(player.playCollection).not.toHaveBeenCalled();
+  expect(player.addToQueue).not.toHaveBeenCalled();
+});
+
+it("bulk removal keeps its confirmed snapshot through per-member invalidation and stops on the first failure", async () => {
+  const held = deferred<Response>();
+  const failed = deferred<Response>();
+  const f = fixture({ initialRows: [...tracks, { ...tracks[0], trackId: "bc_third", title: "Third" }],
+    removeResponse: async (_, index) => index === 0 ? held.promise : index === 1 ? failed.promise : new Response(null, { status: 204 }),
+  });
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  await user.click(await confirmRemoval(user, ["Third", "Second", "First"]));
+  await waitFor(() => expect(f.deleted).toEqual(["yt_first"]));
+  await act(async () => held.resolve(new Response(null, { status: 204 })));
+  await waitFor(() => expect(f.deleted).toEqual(["yt_first", "sc_second"]));
+  expect(screen.queryByRole("checkbox", { name: "Выбрать First", hidden: true })).not.toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: "Выбрать Second", hidden: true })).toBeChecked();
+  await act(async () => failed.resolve(new Response(JSON.stringify({ error: "removal_unavailable" }), {
+    status: 500, headers: { "Content-Type": "application/json" },
+  })));
+  expect(screen.getByRole("alert")).toHaveTextContent("Не удалось подтвердить удаление");
+  expect(f.deleted).toEqual(["yt_first", "sc_second"]);
+  await user.click(screen.getByRole("button", { name: "Повторить неподтверждённые" }));
+  await waitFor(() => expect(screen.getByText(/Удалено: 3/)).toBeVisible());
+  expect(f.deleted).toEqual(["yt_first", "sc_second", "sc_second", "bc_third"]);
+  expect(screen.getByText("Выбрано: 0 / 20")).toBeVisible();
+});
+
+it.each(["account", "session"])("bulk removal rejects unpublished successful %s security state behind the old rendered selection", async (kind) => {
+  const f = fixture();
+  const user = userEvent.setup();
+  let renderedSession: TfBrowserSession | null = null;
+  function SessionWitness() {
+    renderedSession = useTfAuth().session;
+    return null;
+  }
+  render(<><SessionWitness /><LikedCollection /></>, { wrapper: f.wrapper });
+  await chooseTracks(user, ["First"]);
+  const oldSession = renderedSession!;
+  // The provider commits security before React publishes its matching session/selection.
+  act(() => commitTfSessionSecurityState({
+    ...oldSession,
+    accountId: kind === "account" ? accountB : oldSession.accountId,
+    csrfToken: "d".repeat(42) + "A",
+  }));
+  expect(renderedSession).toBe(oldSession);
+  await user.click(screen.getByRole("button", { name: "Удалить выбранные из избранного" }));
+  const confirm = screen.queryByRole("button", { name: "Удалить из избранного" });
+  if (confirm) await user.click(confirm);
+  expect(f.deleted).toEqual([]);
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+it("bulk removal snapshot survives a loaded-row change after confirmation opens", async () => {
+  const f = fixture({ initialRows: [...tracks, { ...tracks[0], trackId: "bc_third", title: "Third" }] });
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  const confirm = await confirmRemoval(user, ["Third", "First"]);
+  f.setRows([tracks[1]]);
+  act(() => f.client.setQueryData(["tf", "liked", accountA], {
+    pages: [{ items: [tracks[1]], nextCursor: null, revision: "8" }], pageParams: [null],
+  }));
+  await user.click(confirm);
+  await waitFor(() => expect(screen.getByText(/Удалено: 2/)).toBeVisible());
+  expect(f.deleted).toEqual(["yt_first", "bc_third"]);
+});
+
+it("bulk removal synchronously locks competing commands and stopping keeps a sent request unconfirmed", async () => {
+  const held = deferred<Response>();
+  const f = fixture({ removeResponse: async (_, index) => index === 0 ? held.promise : new Response(null, { status: 204 }) });
+  f.setNextCursor("next-page");
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  const confirm = await confirmRemoval(user, ["First", "Second"]);
+  const names = ["Воспроизвести выбранные", "Добавить выбранные в очередь", "Завершить выбор", "Изменить порядок",
+    "Добавить выбранные в плейлист", "Удалить First", "Воспроизвести First", "Воспроизвести загруженные треки",
+    "Обновить коллекцию", "Ещё треки", "Удалить выбранные из избранного"];
+  const commands = names.map((name) => screen.getByRole("button", { name, hidden: true }));
+  const second = screen.getByRole("checkbox", { name: "Выбрать Second", hidden: true });
+  act(() => {
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    commands.forEach((command) => fireEvent.click(command));
+    fireEvent.click(second);
+  });
+  await waitFor(() => expect(f.deleted).toEqual(["yt_first"]));
+  for (const command of commands) expect(command).toBeDisabled();
+  expect(second).toBeDisabled();
+  expect(second).toBeChecked();
+  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  expect(f.posted).toEqual([]);
+  expect(player.playCollection).not.toHaveBeenCalled();
+  expect(player.playTrack).not.toHaveBeenCalled();
+  expect(player.addToQueue).not.toHaveBeenCalled();
+  expect(f.fetchMock.mock.calls.filter(([url]) => String(url).includes("cursor=") || String(url).endsWith("/liked/order"))).toHaveLength(0);
+  await user.click(screen.getByRole("button", { name: "Остановить" }));
+  expect(screen.getByText(/Отправленный запрос может завершиться/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Повторить неподтверждённые" })).toBeDisabled();
+  await act(async () => held.resolve(new Response(null, { status: 204 })));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Повторить неподтверждённые" })).toBeEnabled());
+  expect(f.deleted).toEqual(["yt_first"]);
+  expect(screen.getByText(/Удалено: 0/)).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Повторить неподтверждённые" }));
+  await waitFor(() => expect(screen.getByText(/Удалено: 2/)).toBeVisible());
+  expect(f.deleted).toEqual(["yt_first", "yt_first", "sc_second"]);
+});
+
+it.each(["account", "installation", "entitlement", "session", "generation", "logout", "unmount"])(
+  "bulk removal %s invalidation releases the old lock without waiting and never acknowledges its late response", async (kind) => {
+    const held = deferred<Response>();
+    const f = fixture({ removeResponse: async (_, index) => index === 0 ? held.promise : new Response(null, { status: 204 }) });
+    const user = userEvent.setup();
+    const view = render(<><AuthControls /><LikedCollection /></>, { wrapper: f.wrapper });
+    await user.click(await confirmRemoval(user, ["First", "Second"]));
+    await waitFor(() => expect(f.deleted).toEqual(["yt_first"]));
+    if (kind === "unmount") view.unmount();
+    else if (kind === "generation") act(() => suspendTfProtectedActivity(new TfApiError(503, "policy_unavailable", "unavailable")));
+    else if (kind === "logout") {
+      fireEvent.click(screen.getByRole("button", { name: "Logout", hidden: true }));
+      await waitFor(() => expect(screen.getByLabelText("Auth state")).toHaveTextContent("unauthenticated"));
+    } else {
+      f.changeScope(kind);
+      fireEvent.click(screen.getByRole("button", { name: "Refresh session", hidden: true }));
+      await waitFor(() => {
+        const state = screen.getByLabelText("Auth state");
+        if (kind === "account") expect(state).toHaveTextContent(accountB);
+        if (kind === "installation") expect(state).toHaveTextContent("20000000-0000-4000-8000-000000000002");
+        if (kind === "session") expect(state).toHaveTextContent("d".repeat(42) + "A");
+        if (kind === "entitlement") expect(state).not.toHaveTextContent("tf.collections");
+      });
+    }
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    if (kind === "session") {
+      expect(screen.getByRole("checkbox", { name: "Выбрать First" })).toBeChecked();
+      expect(screen.getByRole("button", { name: "Воспроизвести выбранные" })).toBeEnabled();
+    }
+    await act(async () => held.resolve(new Response(null, { status: 204 })));
+    expect(f.deleted).toEqual(["yt_first"]);
+    expect(screen.queryByText(/Удалено: 1/)).not.toBeInTheDocument();
+    if (["account", "installation"].includes(kind)) expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  },
+);
+
+it("bulk removal old completion cannot unlock a newer removal after same-owner renewal", async () => {
+  const old = deferred<Response>();
+  const next = deferred<Response>();
+  const f = fixture({ removeResponse: async (_, index) => index === 0 ? old.promise : next.promise });
+  const user = userEvent.setup();
+  render(<><AuthControls /><LikedCollection /></>, { wrapper: f.wrapper });
+  await user.click(await confirmRemoval(user, ["First"]));
+  await waitFor(() => expect(f.deleted).toEqual(["yt_first"]));
+  f.changeScope("session");
+  fireEvent.click(screen.getByRole("button", { name: "Refresh session", hidden: true }));
+  await waitFor(() => expect(screen.getByLabelText("Auth state")).toHaveTextContent("d".repeat(42) + "A"));
+  expect(screen.getByRole("checkbox", { name: "Выбрать First" })).toBeChecked();
+  expect(f.deleted).toEqual(["yt_first"]);
+  await user.click(screen.getByRole("checkbox", { name: "Выбрать First" }));
+  await user.click(screen.getByRole("checkbox", { name: "Выбрать Second" }));
+  await user.click(screen.getByRole("button", { name: "Удалить выбранные из избранного" }));
+  await user.click(await screen.findByRole("button", { name: "Удалить из избранного" }));
+  await waitFor(() => expect(f.deleted).toEqual(["yt_first", "sc_second"]));
+  await act(async () => old.resolve(new Response(null, { status: 204 })));
+  expect(screen.getByRole("button", { name: "Воспроизвести выбранные", hidden: true })).toBeDisabled();
+  expect(screen.getByRole("checkbox", { name: "Выбрать Second", hidden: true })).toBeChecked();
+  expect(screen.getByText(/Удалено: 0/)).toBeVisible();
+  await act(async () => next.resolve(new Response(null, { status: 204 })));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Завершить выбор" })).toBeEnabled());
+  expect(screen.getByText(/Удалено: 1/)).toBeVisible();
+});
+
+it.each(["before send", "after send"])("bulk removal respects the protected deadline %s", async (when) => {
+  const held = deferred<Response>();
+  const f = fixture({ removeResponse: async () => held.promise });
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  const confirm = await confirmRemoval(user, ["First", "Second"]);
+  if (when === "after send") {
+    await user.click(confirm);
+    await waitFor(() => expect(f.deleted).toEqual(["yt_first"]));
+  }
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 600_000);
+  if (when === "before send") fireEvent.click(confirm);
+  else await act(async () => held.resolve(new Response(null, { status: 204 })));
+  expect(f.deleted).toEqual(when === "before send" ? [] : ["yt_first"]);
+  expect(screen.queryByText(/Удалено: 1/)).not.toBeInTheDocument();
+});
 
 beforeEach(() => {
   player.playTrack.mockReset().mockResolvedValue(undefined);

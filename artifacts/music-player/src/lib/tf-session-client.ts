@@ -38,9 +38,10 @@ export function suspendTfProtectedActivity(error: TfApiError): void {
   securityGeneration += 1;
   for (const listener of [...activityListeners]) listener();
 }
-export function canUseTfProtectedActivity(): boolean {
+export function canUseTfProtectedActivity(expectedSession?: TfBrowserSession | null): boolean {
   return (
     securitySession !== null &&
+    (expectedSession === undefined || securitySession === expectedSession) &&
     accessBlocked === null &&
     Date.parse(securitySession.expiresAt) > Date.now()
   );
