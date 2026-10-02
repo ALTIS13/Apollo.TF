@@ -3,14 +3,15 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { LikedTrack } from "@workspace/api-client-react";
 import type { ReactNode } from "react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { TfAuthProvider, useTfAuth } from "@/auth/tf-auth";
 import { suspendTfProtectedActivity, TfApiError } from "@/lib/tf-session-client";
 import { LikedCollection } from "./LikedCollection";
 
-const player = vi.hoisted(() => ({ playTrack: vi.fn(), playCollection: vi.fn() }));
+const player = vi.hoisted(() => ({ playTrack: vi.fn(), playCollection: vi.fn(), addToQueue: vi.fn() }));
+const toast = vi.hoisted(() => vi.fn());
 vi.mock("@/hooks/use-player", () => ({ usePlayer: () => player }));
-vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
+vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast }) }));
 
 const clients: QueryClient[] = [];
 const accountA = "10000000-0000-4000-8000-000000000001";
@@ -31,8 +32,9 @@ const json = (body: unknown) => new Response(JSON.stringify(body), {
 
 type TrackInput = { trackId: string; artist: string; title: string; thumbnailUrl: string | null; durationSeconds: number | null };
 
-function fixture({ holdMove = false, initialRows = tracks, admit }: {
+function fixture({ holdMove = false, holdRemove = false, initialRows = tracks, admit }: {
   holdMove?: boolean;
+  holdRemove?: boolean;
   initialRows?: LikedTrack[];
   admit?: (track: TrackInput, index: number) => Promise<Response>;
 } = {}) {
@@ -46,6 +48,7 @@ function fixture({ holdMove = false, initialRows = tracks, admit }: {
   const posted: TrackInput[] = [];
   let revision = 7;
   let finishMove: (() => void) | undefined;
+  let finishRemove: (() => void) | undefined;
   const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     const path = String(url);
     if (path.endsWith("/auth/me")) return json({
@@ -74,6 +77,12 @@ function fixture({ holdMove = false, initialRows = tracks, admit }: {
     if (path.includes("/collections/liked?")) return json({
       items: path.includes("cursor=") ? nextRows : rows, nextCursor: path.includes("cursor=") ? null : nextCursor, revision: String(revision),
     });
+    if (path.includes("/collections/liked/") && init?.method === "DELETE") {
+      if (holdRemove) await new Promise<void>((resolve) => { finishRemove = resolve; });
+      rows = rows.filter((row) => row.trackId !== decodeURIComponent(path.split("/").pop()!));
+      revision += 1;
+      return new Response(null, { status: 204 });
+    }
     if (path.endsWith("/collections/playlists/9/tracks") && init?.method === "POST") {
       const input = JSON.parse(String(init.body)) as TrackInput;
       posted.push(input);
@@ -108,6 +117,10 @@ function fixture({ holdMove = false, initialRows = tracks, admit }: {
       if (!finishMove) throw new Error("No move is pending");
       finishMove();
     },
+    finishRemove: () => {
+      if (!finishRemove) throw new Error("No removal is pending");
+      finishRemove();
+    },
     switchAccount: () => { account = accountB; },
     changeScope: (kind: string) => {
       if (kind === "account") account = accountB;
@@ -124,8 +137,9 @@ function admission(track: TrackInput, added = true) {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 function AuthControls() {
@@ -137,18 +151,30 @@ function AuthControls() {
   </>;
 }
 
-async function selectTracks(user: ReturnType<typeof userEvent.setup>, titles: string[]) {
+async function chooseTracks(user: ReturnType<typeof userEvent.setup>, titles: string[]) {
   await screen.findByText(titles[0]);
   await user.click(screen.getByRole("button", { name: "Выбрать треки" }));
   for (const title of titles) await user.click(screen.getByRole("checkbox", { name: `Выбрать ${title}` }));
+}
+
+async function selectTracks(user: ReturnType<typeof userEvent.setup>, titles: string[]) {
+  await chooseTracks(user, titles);
   await user.click(screen.getByRole("button", { name: "Добавить выбранные в плейлист" }));
   return screen.findByRole("button", { name: /Focus/ });
 }
+
+beforeEach(() => {
+  player.playTrack.mockReset().mockResolvedValue(undefined);
+  player.playCollection.mockReset().mockResolvedValue(undefined);
+  player.addToQueue.mockReset();
+  toast.mockReset();
+});
 
 afterEach(() => {
   cleanup();
   clients.splice(0).forEach((client) => client.clear());
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 it("keeps listening actions visible and exposes reorder controls only while editing", async () => {
@@ -351,6 +377,8 @@ it.each([
   await waitFor(() => expect(f.posted).toHaveLength(1));
   expect(screen.getByRole("button", { name: "Завершить выбор", hidden: true })).toBeDisabled();
   expect(screen.getByRole("checkbox", { name: "Выбрать Third", hidden: true })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Воспроизвести выбранные", hidden: true })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Добавить выбранные в очередь", hidden: true })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Удалить Third", hidden: true })).toBeDisabled();
   expect(screen.queryByRole("button", { name: "Добавить Third в плейлист", hidden: true })).not.toBeInTheDocument();
   const changedRows = rows.map((row) => ({ ...row, title: `${row.title} changed` }));
@@ -428,3 +456,178 @@ it.each(["account", "installation", "entitlement", "session", "generation", "log
     }
   },
 );
+
+it.each(["play", "append"])("selected queue %s uses selected-only full recordings in collection order without clearing selection", async (command) => {
+  const f = fixture({ initialRows: [...tracks, {
+    ...tracks[0], trackId: "dz_live", title: "First (Live)", artist: "Other artist",
+    thumbnailUrl: "https://example.test/live.jpg", durationSeconds: 232,
+  }] });
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  await chooseTracks(user, ["First (Live)", "Second"]);
+  const action = screen.getByRole("button", { name: command === "play" ? "Воспроизвести выбранные" : "Добавить выбранные в очередь" });
+  if (command === "play") {
+    action.focus();
+    await user.keyboard(" ");
+  } else {
+    act(() => { fireEvent.click(action); fireEvent.click(action); });
+    await waitFor(() => expect(action).toBeEnabled());
+  }
+  const expected = [
+    { id: "sc_second", title: "Second", artist: "Artist", thumbnailUrl: null, duration: 0, source: "soundcloud", type: "original", quality: [], score: 0 },
+    { id: "dz_live", title: "First (Live)", artist: "Other artist", thumbnailUrl: "https://example.test/live.jpg", duration: 232, source: "deezer", type: "original", quality: [], score: 0 },
+  ];
+  if (command === "play") {
+    expect(player.playCollection).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(player.addToQueue).not.toHaveBeenCalled();
+  } else {
+    expect(player.addToQueue.mock.calls).toEqual([[expected[0]], [expected[1]]]);
+    expect(player.playCollection).not.toHaveBeenCalled();
+  }
+  expect(player.playTrack).not.toHaveBeenCalled();
+  expect(screen.getByRole("checkbox", { name: "Выбрать First" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Выбрать Second" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Выбрать First (Live)" })).toBeChecked();
+  expect(screen.getByText("Выбрано: 2 / 20")).toBeVisible();
+  expect(toast).not.toHaveBeenCalled();
+  expect(f.fetchMock.mock.calls.filter(([, init]) => ["POST", "PATCH", "DELETE"].includes(init?.method ?? ""))).toHaveLength(0);
+});
+
+it.each(["empty", "entitlement", "generation", "deadline"])("selected queue suppresses playback and append for %s even before scheduled rendering", async (condition) => {
+  const f = fixture();
+  const user = userEvent.setup();
+  render(<><AuthControls /><LikedCollection /></>, { wrapper: f.wrapper });
+  await screen.findByText("First");
+  await user.click(screen.getByRole("button", { name: "Выбрать треки" }));
+  if (condition !== "empty") await user.click(screen.getByRole("checkbox", { name: "Выбрать First" }));
+  const play = screen.getByRole("button", { name: "Воспроизвести выбранные" });
+  const append = screen.getByRole("button", { name: "Добавить выбранные в очередь" });
+  if (condition === "empty") {
+    expect(play).toBeDisabled();
+    expect(append).toBeDisabled();
+  } else if (condition === "entitlement") {
+    f.changeScope("entitlement");
+    await user.click(screen.getByRole("button", { name: "Refresh session" }));
+    await waitFor(() => expect(screen.getByLabelText("Auth state")).not.toHaveTextContent("tf.collections"));
+  } else if (condition === "generation") {
+    act(() => suspendTfProtectedActivity(new TfApiError(503, "policy_unavailable", "unavailable")));
+  } else {
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 600_000);
+    expect(play).toBeEnabled();
+    expect(append).toBeEnabled();
+  }
+  fireEvent.click(play);
+  fireEvent.click(append);
+  expect(player.playCollection).not.toHaveBeenCalled();
+  expect(player.addToQueue).not.toHaveBeenCalled();
+});
+
+it.each(["resolve", "reject"])("selected queue blocks duplicate/conflicting commands until selected play %s settles, without audio success claims", async (settlement) => {
+  const held = deferred<void>();
+  player.playCollection.mockReturnValueOnce(held.promise);
+  const f = fixture();
+  f.setNextCursor("next-page");
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  await chooseTracks(user, ["First", "Second"]);
+  const play = screen.getByRole("button", { name: "Воспроизвести выбранные" });
+  const append = screen.getByRole("button", { name: "Добавить выбранные в очередь" });
+  act(() => {
+    fireEvent.click(play);
+    fireEvent.click(play);
+    fireEvent.click(append);
+    fireEvent.click(screen.getByRole("button", { name: "Воспроизвести First" }));
+    fireEvent.click(screen.getByRole("button", { name: "Воспроизвести загруженные треки" }));
+  });
+  const conflicting = [
+    "Воспроизвести выбранные", "Добавить выбранные в очередь", "Завершить выбор", "Изменить порядок",
+    "Добавить выбранные в плейлист", "Удалить First", "Воспроизвести First", "Воспроизвести загруженные треки",
+    "Обновить коллекцию", "Ещё треки",
+  ];
+  for (const name of conflicting) expect(screen.getByRole("button", { name })).toBeDisabled();
+  expect(screen.getByRole("checkbox", { name: "Выбрать Second" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Добавить выбранные в плейлист" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(player.playCollection).toHaveBeenCalledTimes(1);
+  expect(player.playTrack).not.toHaveBeenCalled();
+  expect(player.addToQueue).not.toHaveBeenCalled();
+  await act(async () => {
+    if (settlement === "resolve") held.resolve(undefined);
+    else held.reject(new Error("unexpected player rejection"));
+  });
+  await waitFor(() => expect(play).toBeEnabled());
+  expect(screen.getByRole("checkbox", { name: "Выбрать First" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Выбрать Second" })).toBeChecked();
+  expect(toast).not.toHaveBeenCalled();
+  if (settlement === "reject") expect(screen.getByRole("alert")).toHaveTextContent("Не удалось");
+  else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("selected queue waits for a pending liked removal and ignores disappeared selected IDs", async () => {
+  const f = fixture({ holdRemove: true });
+  const user = userEvent.setup();
+  render(<LikedCollection />, { wrapper: f.wrapper });
+  await chooseTracks(user, ["First", "Second"]);
+  await user.click(screen.getByRole("button", { name: "Удалить First" }));
+  const play = screen.getByRole("button", { name: "Воспроизвести выбранные" });
+  const append = screen.getByRole("button", { name: "Добавить выбранные в очередь" });
+  expect(play).toBeDisabled();
+  expect(append).toBeDisabled();
+  fireEvent.click(play);
+  fireEvent.click(append);
+  expect(player.playCollection).not.toHaveBeenCalled();
+  expect(player.addToQueue).not.toHaveBeenCalled();
+  await act(async () => f.finishRemove());
+  await waitFor(() => expect(screen.getByText("Выбрано: 1 / 20")).toBeVisible());
+  await user.click(append);
+  expect(player.addToQueue).toHaveBeenCalledExactlyOnceWith({
+    id: "sc_second", artist: "Artist", title: "Second", thumbnailUrl: null,
+    duration: 0, source: "soundcloud", type: "original", quality: [], score: 0,
+  });
+});
+
+it.each(["account", "installation", "session", "generation", "unmount"])("selected queue old %s completion cannot clear replacement selection or unlock a newer play", async (kind) => {
+  const old = deferred<void>();
+  const next = deferred<void>();
+  player.playCollection.mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+  const f = fixture();
+  const user = userEvent.setup();
+  const view = render(<><AuthControls /><LikedCollection /></>, { wrapper: f.wrapper });
+  await chooseTracks(user, ["First"]);
+  await user.click(screen.getByRole("button", { name: "Воспроизвести выбранные" }));
+  expect(player.playCollection).toHaveBeenCalledTimes(1);
+  if (kind === "unmount") {
+    view.unmount();
+    render(<><AuthControls /><LikedCollection /></>, { wrapper: f.wrapper });
+    await screen.findByText("Second");
+  } else {
+    if (kind === "generation") act(() => suspendTfProtectedActivity(new TfApiError(503, "policy_unavailable", "unavailable")));
+    else f.changeScope(kind);
+    await user.click(screen.getByRole("button", { name: "Refresh session" }));
+    await waitFor(() => {
+      const state = screen.getByLabelText("Auth state");
+      if (kind === "account") expect(state).toHaveTextContent(accountB);
+      if (kind === "installation") expect(state).toHaveTextContent("20000000-0000-4000-8000-000000000002");
+      if (kind === "session") expect(state).toHaveTextContent("d".repeat(42) + "A");
+      if (kind === "generation") expect(screen.getByRole("button", { name: "Воспроизвести выбранные" })).toBeEnabled();
+    });
+    await screen.findByText("Second");
+  }
+  if (!screen.queryByRole("checkbox", { name: "Выбрать First" })) await user.click(screen.getByRole("button", { name: "Выбрать треки" }));
+  const first = screen.getByRole("checkbox", { name: "Выбрать First" });
+  if (first.getAttribute("aria-checked") === "true") await user.click(first);
+  await user.click(screen.getByRole("checkbox", { name: "Выбрать Second" }));
+  const play = screen.getByRole("button", { name: "Воспроизвести выбранные" });
+  await user.click(play);
+  expect(player.playCollection).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    if (kind === "session") old.reject(new Error("obsolete failure"));
+    else old.resolve(undefined);
+  });
+  expect(play).toBeDisabled();
+  expect(screen.getByRole("checkbox", { name: "Выбрать Second" })).toBeChecked();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  await act(async () => next.resolve(undefined));
+  await waitFor(() => expect(play).toBeEnabled());
+  expect(screen.getByRole("checkbox", { name: "Выбрать Second" })).toBeChecked();
+});
