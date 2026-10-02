@@ -100,7 +100,7 @@ it("creates a current-account playlist, adds an open-source track, and drops old
   actionView.unmount();
   render(<PlaylistsCollection />, { wrapper });
   fireEvent.click(await screen.findByRole("button", { name: /New set/ }));
-  fireEvent.click(await screen.findByRole("button", { name: "Воспроизвести плейлист" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Слушать плейлист" }));
   expect(playCollection).toHaveBeenCalledWith([expect.objectContaining({ id: "yt_recording", title: "Song" })]);
 });
 
