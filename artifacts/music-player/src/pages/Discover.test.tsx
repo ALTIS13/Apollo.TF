@@ -34,6 +34,7 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
   status, headers: { "Content-Type": "application/json" },
 });
 const recommendationRequest = vi.fn<(init?: RequestInit) => Promise<Response>>();
+const preferenceRequest = vi.fn<(init?: RequestInit) => Promise<Response>>();
 const clients: QueryClient[] = [];
 let session: TfBrowserSession;
 
@@ -47,10 +48,12 @@ beforeEach(() => {
     csrfToken: "c".repeat(42) + "A",
   };
   recommendationRequest.mockResolvedValue(json({ basis: "none", results: [] }));
+  preferenceRequest.mockImplementation(async () => json({ schemaVersion: 1, status: "hidden" }));
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (path.endsWith("/auth/me")) return json(session);
     if (path.includes("/tracks/recommendations?")) return recommendationRequest(init);
+    if (path.includes("/tracks/recommendations/hidden")) return preferenceRequest(init);
     if (path.endsWith("/collections/liked/lookup")) return json({ likedTrackIds: [] });
     throw new Error(`Unexpected request: ${path}`);
   }));
@@ -87,6 +90,7 @@ afterEach(() => {
   clearTfSessionSecurityState();
   vi.unstubAllGlobals();
   recommendationRequest.mockReset();
+  preferenceRequest.mockReset();
 });
 
 it("labels recommendations from saved tracks without claiming a listening history", async () => {
@@ -99,7 +103,7 @@ it("labels recommendations from saved tracks without claiming a listening histor
   expect(
     screen.queryByText("На основе вашей истории прослушиваний"),
   ).not.toBeInTheDocument();
-  expect(await screen.findByRole("heading", { name: "New Track" })).toBeVisible();
+  await waitFor(() => expect(screen.getByRole("heading", { name: "New Track" })).toBeVisible());
   expect(screen.getByRole("button", { name: "Сохранить в избранное" })).toBeVisible();
   expect(screen.getByRole("button", { name: "Добавить New Track в плейлист" })).toBeVisible();
 });
@@ -150,7 +154,10 @@ it("keeps an active download polling and cancellable across same-owner token rot
     if (path.endsWith(`/tracks/download/jobs/${jobId}`)) return cancelRequest(init);
     return originalFetch(input, init);
   });
-  recommendationRequest.mockResolvedValueOnce(json({ basis: "liked_tracks", results: [track] }))
+  const seed = { basis: "liked_tracks", artist: "Saved Artist" };
+  const other = { ...track, id: "yt_other", title: "Other Track", recommendationReason: seed };
+  const selection = { basis: "liked_tracks", hiddenCount: 0, results: [other, { ...track, recommendationReason: seed }] };
+  recommendationRequest.mockResolvedValueOnce(json(selection))
     .mockRejectedValue(new TypeError("renewal_must_not_refetch"));
   function RotateToken() {
     const auth = useTfAuth();
@@ -161,9 +168,14 @@ it("keeps an active download polling and cancellable across same-owner token rot
   }
   renderDiscover(<><RotateToken /><Discover /></>);
   const heading = await screen.findByRole("heading", { name: track.title });
-  await user.click(screen.getByRole("button", { name: "Скачать" }));
+  await user.click(within(screen.getByRole("article", { name: track.title })).getByRole("button", { name: "Скачать" }));
   await screen.findByRole("status", { name: "Загрузка 35%" });
   const cancel = screen.getByRole("button", { name: "Отменить загрузку" });
+
+  await user.click(screen.getByRole("button", { name: "Не рекомендовать Other Track" }));
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "Other Track" })).toBeNull());
+  expect(heading).toBeInTheDocument();
+  expect(cancel).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "Rotate token" }));
   await waitFor(() => expect(rotated).toHaveBeenCalledOnce());
@@ -173,6 +185,33 @@ it("keeps an active download polling and cancellable across same-owner token rot
   expect(recommendationRequest).toHaveBeenCalledOnce();
   await screen.findByRole("status", { name: "Загрузка 64%" });
   expect(statusRequest.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+  const undoRefresh = pendingResponse();
+  preferenceRequest.mockResolvedValueOnce(json({ schemaVersion: 1, status: "restored" }));
+  recommendationRequest.mockReturnValueOnce(undoRefresh.promise);
+  await user.click(screen.getByRole("button", { name: "Отменить скрытие" }));
+  await waitFor(() => expect(recommendationRequest).toHaveBeenCalledTimes(2));
+  expect(heading).toBeInTheDocument();
+  expect(cancel).toBeInTheDocument();
+  await act(async () => { undoRefresh.resolve(json(selection)); });
+  await screen.findByRole("heading", { name: "Other Track" });
+  expect(heading).toBeInTheDocument();
+  expect(cancel).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Не рекомендовать Other Track" }));
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "Other Track" })).toBeNull());
+  preferenceRequest.mockResolvedValueOnce(json({ schemaVersion: 1, status: "cleared" }));
+  const resetRefresh = pendingResponse();
+  recommendationRequest.mockReturnValueOnce(resetRefresh.promise);
+  await user.click(screen.getByRole("button", { name: "Сбросить скрытые рекомендации" }));
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Сбросить" }));
+  await waitFor(() => expect(recommendationRequest).toHaveBeenCalledTimes(3));
+  expect(heading).toBeInTheDocument();
+  expect(cancel).toBeInTheDocument();
+  await act(async () => { resetRefresh.resolve(json(selection)); });
+  await screen.findByRole("heading", { name: "Other Track" });
+  expect(heading).toBeInTheDocument();
+  expect(cancel).toBeInTheDocument();
 
   await user.click(cancel);
   await screen.findByRole("status", { name: "Загрузка отменена" });
@@ -216,7 +255,6 @@ it("restarts a pending recommendation request after same-owner token rotation an
 it.each([
   ["account", { accountId: "10000000-0000-4000-8000-000000000002" }],
   ["installation", { installationId: "20000000-0000-4000-8000-000000000002" }],
-  ["removed entitlement", { entitlements: ["tf.search"] }],
   ["added entitlement", { entitlements: ["tf.search", "tf.collections", "tf.download"] }],
 ] as const)("discards loaded cards when the %s changes without relying on the shell", async (_name, change) => {
   const pending = pendingResponse();
@@ -301,4 +339,180 @@ it("keeps API 503 failure behind the shared unavailable boundary", async () => {
   expect(screen.queryByRole("heading", { name: "Рекомендации" })).not.toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(recommendationRequest).toHaveBeenCalledOnce();
+});
+
+it("explains each actual recommendation seed and leaves legacy candidates neutral", async () => {
+  const user = userEvent.setup();
+  recommendationRequest.mockResolvedValue(json({ basis: "mixed", hiddenCount: 0, results: [
+    { ...track, recommendationReason: { basis: "liked_tracks", artist: "Seed From Favorites" } },
+    { ...track, id: "sc_history", title: "History Track", recommendationReason: { basis: "listening_history", artist: "History Seed" } },
+    { ...track, id: "sc_legacy", title: "Legacy Track" },
+  ] }));
+  renderDiscover();
+  await screen.findByRole("heading", { name: "New Track" });
+  expect(screen.getByText("Из любимого · Seed From Favorites")).toBeVisible();
+  expect(screen.getByText("Вы слушали · History Seed")).toBeVisible();
+  expect(within(screen.getByRole("article", { name: "Legacy Track" })).queryByText(/Из любимого|Вы слушали/)).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Не рекомендовать New Track" }));
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "New Track" })).toBeNull());
+  expect(screen.getByText("Подборка для вас")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Не рекомендовать Legacy Track" }));
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "Legacy Track" })).toBeNull());
+  expect(screen.getByText("По вашей истории прослушивания")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Не рекомендовать History Track" }));
+  await screen.findByText("Пока нет рекомендаций");
+  expect(screen.getByText("Подборка для вас")).toBeVisible();
+});
+
+it("hides only after durable success and restores through an authenticated undo", async () => {
+  const user = userEvent.setup();
+  const pending = pendingResponse();
+  preferenceRequest.mockReturnValueOnce(pending.promise)
+    .mockResolvedValueOnce(json({ schemaVersion: 1, status: "restored" }));
+  recommendationRequest.mockImplementation(async () => json({ basis: "liked_tracks", hiddenCount: 0, results: [track] }));
+  renderDiscover();
+  const hide = await screen.findByRole("button", { name: "Не рекомендовать New Track" });
+  await user.click(hide);
+  expect(hide).toBeDisabled();
+  expect(screen.getByRole("heading", { name: "New Track" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Отменить скрытие" })).toBeNull();
+  await act(async () => { pending.resolve(json({ schemaVersion: 1, status: "hidden" })); });
+  expect(screen.queryByRole("heading", { name: "New Track" })).toBeNull();
+  expect(screen.getByText("Скрыто записей: 1")).toBeVisible();
+  const [url, init] = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url).includes("/hidden/") && init?.method === "PUT")!;
+  expect(String(url)).toContain(`/recommendations/hidden/${track.id}`);
+  expect(init?.credentials).toBe("include");
+  expect(new Headers(init?.headers).get("X-CSRF-Token")).toBe(session.csrfToken);
+  await user.click(screen.getByRole("button", { name: "Отменить скрытие" }));
+  await waitFor(() => expect(screen.getByRole("heading", { name: "New Track" })).toBeVisible());
+  expect(vi.mocked(fetch).mock.calls.some(([url, init]) => String(url).endsWith(`/hidden/${track.id}`) && init?.method === "DELETE")).toBe(true);
+  expect(screen.queryByRole("button", { name: "Отменить скрытие" })).toBeNull();
+});
+
+it("retains the recommendation on write failure and allows a retry without leaking details", async () => {
+  const user = userEvent.setup();
+  preferenceRequest.mockRejectedValueOnce(new Error("private_database_detail"));
+  recommendationRequest.mockResolvedValue(json({ basis: "liked_tracks", hiddenCount: 0, results: [track] }));
+  renderDiscover();
+  await user.click(await screen.findByRole("button", { name: "Не рекомендовать New Track" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Не удалось сохранить настройку рекомендаций.");
+  expect(screen.queryByText(/private_database_detail/)).toBeNull();
+  expect(screen.getByRole("heading", { name: "New Track" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Не рекомендовать New Track" }));
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "New Track" })).toBeNull());
+});
+
+it("requires confirmation before resetting account exclusions then reloads the selection", async () => {
+  const user = userEvent.setup();
+  recommendationRequest.mockResolvedValueOnce(json({ basis: "none", hiddenCount: 3, results: [] }))
+    .mockResolvedValueOnce(json({ basis: "liked_tracks", hiddenCount: 0, results: [track] }));
+  preferenceRequest.mockResolvedValue(json({ schemaVersion: 1, status: "cleared" }));
+  renderDiscover();
+  await user.click(await screen.findByRole("button", { name: "Сбросить скрытые рекомендации" }));
+  const dialog = screen.getByRole("alertdialog");
+  await user.click(within(dialog).getByRole("button", { name: "Отмена" }));
+  expect(preferenceRequest).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Сбросить скрытые рекомендации" }));
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Сбросить" }));
+  await waitFor(() => expect(screen.getByRole("heading", { name: "New Track" })).toBeVisible());
+  expect(vi.mocked(fetch).mock.calls.some(([url, init]) => String(url).endsWith("/recommendations/hidden") && init?.method === "DELETE")).toBe(true);
+  expect(screen.queryByText("Скрыто записей: 3")).toBeNull();
+});
+
+it("aborts pending preference writes on suspension and drops late feedback", async () => {
+  const user = userEvent.setup();
+  const pending = pendingResponse();
+  preferenceRequest.mockReturnValue(pending.promise);
+  recommendationRequest.mockResolvedValue(json({ basis: "liked_tracks", hiddenCount: 0, results: [track] }));
+  renderDiscover();
+  await user.click(await screen.findByRole("button", { name: "Не рекомендовать New Track" }));
+  const signal = preferenceRequest.mock.calls[0][0]?.signal;
+  act(() => { suspendTfProtectedActivity(new TfApiError(403, "policy_revoked", "forbidden")); });
+  expect(signal?.aborted).toBe(true);
+  await act(async () => { pending.resolve(json({ schemaVersion: 1, status: "hidden" })); });
+  expect(screen.queryByRole("button", { name: "Отменить скрытие" })).toBeNull();
+  expect(screen.queryByText(/Запись скрыта/)).toBeNull();
+});
+
+it("does not apply the previous owner's pending hide to the replacement account", async () => {
+  const pending = pendingResponse();
+  preferenceRequest.mockReturnValueOnce(pending.promise);
+  recommendationRequest.mockImplementation(async () => json({ basis: "liked_tracks", hiddenCount: 0, results: [track] }));
+  function SwitchOwner() {
+    const auth = useTfAuth();
+    return <button onClick={() => {
+      session = { ...session, accountId: "10000000-0000-4000-8000-000000000002" };
+      void auth.refresh();
+    }}>Switch preference owner</button>;
+  }
+  const user = userEvent.setup();
+  renderDiscover(<><SwitchOwner /><Discover /></>);
+  await user.click(await screen.findByRole("button", { name: "Не рекомендовать New Track" }));
+  const signal = preferenceRequest.mock.calls[0][0]?.signal;
+  await user.click(screen.getByRole("button", { name: "Switch preference owner" }));
+  await waitFor(() => expect(recommendationRequest).toHaveBeenCalledTimes(2));
+  await screen.findByRole("heading", { name: "New Track" });
+  expect(signal?.aborted).toBe(true);
+  await act(async () => { pending.resolve(json({ schemaVersion: 1, status: "hidden" })); });
+  expect(screen.getByRole("heading", { name: "New Track" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Отменить скрытие" })).toBeNull();
+});
+
+it("requires both search and collections access before exposing recommendations", async () => {
+  session = { ...session, entitlements: ["tf.search"] };
+  renderDiscover();
+  expect(await screen.findByText("Рекомендации недоступны для этого аккаунта.")).toBeVisible();
+  expect(recommendationRequest).not.toHaveBeenCalled();
+});
+
+it("reconciles a committed pending hide under the current token without publishing stale feedback", async () => {
+  const user = userEvent.setup();
+  const pending = pendingResponse();
+  const rotated = vi.fn();
+  preferenceRequest.mockReturnValueOnce(pending.promise);
+  recommendationRequest.mockResolvedValueOnce(json({ basis: "liked_tracks", hiddenCount: 0, results: [track] }))
+    .mockResolvedValueOnce(json({ basis: "none", hiddenCount: 1, results: [] }));
+  function RotatePreferenceToken() {
+    const auth = useTfAuth();
+    return <button onClick={() => {
+      session = { ...session, csrfToken: "d".repeat(42) + "A" };
+      void auth.refresh().then(rotated);
+    }}>Rotate preference token</button>;
+  }
+  renderDiscover(<><RotatePreferenceToken /><Discover /></>);
+  await user.click(await screen.findByRole("button", { name: "Не рекомендовать New Track" }));
+  await user.click(screen.getByRole("button", { name: "Rotate preference token" }));
+  await waitFor(() => expect(rotated).toHaveBeenCalledOnce());
+  expect(recommendationRequest).toHaveBeenCalledOnce();
+  await act(async () => { pending.resolve(json({ schemaVersion: 1, status: "hidden" })); });
+  await screen.findByText("Скрыто записей: 1");
+  expect(screen.queryByRole("heading", { name: "New Track" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Отменить скрытие" })).toBeNull();
+  expect(screen.queryByText(/Запись скрыта:/)).toBeNull();
+});
+
+it("serializes a new exclusion behind an authoritative refresh without unmounting retained rows", async () => {
+  const user = userEvent.setup();
+  const other = { ...track, id: "sc_other", title: "Other Track" };
+  const selection = { basis: "mixed", hiddenCount: 0, results: [track, other] };
+  const pending = pendingResponse();
+  recommendationRequest.mockResolvedValueOnce(json(selection)).mockReturnValueOnce(pending.promise);
+  preferenceRequest.mockResolvedValueOnce(json({ schemaVersion: 1, status: "hidden" }))
+    .mockResolvedValueOnce(json({ schemaVersion: 1, status: "restored" }));
+  renderDiscover();
+  const heading = await screen.findByRole("heading", { name: track.title });
+  await user.click(screen.getByRole("button", { name: "Не рекомендовать Other Track" }));
+  await user.click(await screen.findByRole("button", { name: "Отменить скрытие" }));
+  await waitFor(() => expect(recommendationRequest).toHaveBeenCalledTimes(2));
+  const hide = screen.getByRole("button", { name: "Не рекомендовать New Track" });
+  expect(hide).toBeDisabled();
+  expect(heading).toBeInTheDocument();
+  await user.click(hide);
+  expect(preferenceRequest).toHaveBeenCalledTimes(2);
+  await act(async () => { pending.resolve(json(selection)); });
+  await waitFor(() => expect(hide).toBeEnabled());
+  await user.click(hide);
+  await screen.findByText("Скрыто записей: 1");
+  expect(screen.queryByRole("heading", { name: track.title })).toBeNull();
+  expect(screen.getByRole("heading", { name: "Other Track" })).toBeInTheDocument();
 });

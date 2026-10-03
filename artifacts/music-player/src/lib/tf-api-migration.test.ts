@@ -79,8 +79,9 @@ describe("TF API migration", () => {
 
   it("loads recommendations without a sessionId query and with credentials", async () => {
     await loadActiveSession();
+    const recommendationSession = { ...session, entitlements: [...session.entitlements, "tf.collections"] };
     vi.mocked(fetch).mockImplementation(async (url) =>
-      String(url).endsWith("/auth/me") ? jsonResponse(session) : jsonResponse({ results: [] }),
+      String(url).endsWith("/auth/me") ? jsonResponse(recommendationSession) : jsonResponse({ results: [] }),
     );
 
     render(createElement(Discover), { wrapper: authQueryWrapper });

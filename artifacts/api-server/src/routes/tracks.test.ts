@@ -222,6 +222,10 @@ function routeDependencies(overrides: Partial<TrackRouteDependencies> = {}) {
     recordLyricsFeedback: vi.fn().mockResolvedValue("recorded"),
     loadTopArtists: vi.fn().mockResolvedValue([]),
     loadLikedArtists: vi.fn().mockResolvedValue([]),
+    loadHiddenTrackIds: vi.fn().mockResolvedValue([]),
+    hideRecommendation: vi.fn().mockResolvedValue(undefined),
+    restoreRecommendation: vi.fn().mockResolvedValue(undefined),
+    clearHiddenRecommendations: vi.fn().mockResolvedValue(undefined),
     enqueueDownload: vi.fn().mockResolvedValue({
       jobId: "job-created",
       position: 1,
@@ -688,11 +692,13 @@ describe("TF search module routing", () => {
     });
     expect(gateway.search).not.toHaveBeenCalled();
     expect(body).toMatchObject({
+      schemaVersion: 1,
+      hiddenCount: 0,
       basis: "listening_history",
       results: [
-        { id: "yt_result_0" },
-        { id: "yt_result_1" },
-        { id: "yt_unique" },
+        { id: "yt_result_0", recommendationReason: { basis: "listening_history", artist: "Artist" } },
+        { id: "yt_result_1", recommendationReason: { basis: "listening_history", artist: "Artist" } },
+        { id: "yt_unique", recommendationReason: { basis: "listening_history", artist: "Second Artist" } },
       ],
     });
     expect(JSON.stringify(body)).not.toContain("sourceUrl");
@@ -714,8 +720,10 @@ describe("TF search module routing", () => {
     const response = await fetch(`${baseUrl}/tracks/recommendations`);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
+      schemaVersion: 1,
+      hiddenCount: 0,
       basis: "liked_tracks",
-      results: [{ id: "yt_result_7" }],
+      results: [{ id: "yt_result_7", recommendationReason: { basis: "liked_tracks", artist: "Favorite Artist" } }],
     });
     expect(loadLikedArtists).toHaveBeenCalledWith(ACCOUNT_ID);
     expect(gateway.discoverArtist).toHaveBeenCalledWith({
@@ -728,9 +736,9 @@ describe("TF search module routing", () => {
   it("deduplicates artist seeds and names only sources that produced results", async () => {
     const gateway = searchGateway();
     gateway.discoverArtist
-      .mockResolvedValueOnce(artistDiscoveryResponse({ results: [result(0)] }))
+      .mockResolvedValueOnce(artistDiscoveryResponse({ results: [{ ...result(0), artist: "Candidate metadata artist" }] }))
       .mockRejectedValueOnce(new Error("saved artist unavailable"))
-      .mockResolvedValueOnce(artistDiscoveryResponse({ results: [result(9)] }));
+      .mockResolvedValueOnce(artistDiscoveryResponse({ results: [result(0), result(9)] }));
     const baseUrl = await startTracksServer(routeDependencies({
       searchGateway: gateway,
       loadLikedArtists: vi.fn().mockResolvedValue(["Artist", " artist ", "Saved"]),
@@ -740,8 +748,13 @@ describe("TF search module routing", () => {
     const response = await fetch(`${baseUrl}/tracks/recommendations`);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
+      schemaVersion: 1,
+      hiddenCount: 0,
       basis: "mixed",
-      results: [{ id: "yt_result_0" }, { id: "yt_result_9" }],
+      results: [
+        { id: "yt_result_0", recommendationReason: { basis: "liked_tracks", artist: "Artist" } },
+        { id: "yt_result_9", recommendationReason: { basis: "listening_history", artist: "History" } },
+      ],
     });
     expect(gateway.discoverArtist.mock.calls.map(([input]) => input.artist)).toEqual([
       "Artist", "Saved", "History",
@@ -750,9 +763,9 @@ describe("TF search module routing", () => {
 
   it("isolates artist discovery failures and returns at most 20 deduped public candidates", async () => {
     const gateway = searchGateway();
-    const candidates = Array.from({ length: 22 }, (_, index) =>
+    const candidates = Array.from({ length: 25 }, (_, index) =>
       result(index, {
-        id: index === 21 ? "yt_result_0" : `candidate_${index}`,
+        id: index === 24 ? "candidate_0" : `candidate_${index}`,
       }),
     );
     gateway.discoverArtist
@@ -767,17 +780,24 @@ describe("TF search module routing", () => {
       routeDependencies({
         searchGateway: gateway,
         loadTopArtists: vi.fn().mockResolvedValue(["Artist", "Second Artist"]),
+        loadHiddenTrackIds: vi.fn().mockResolvedValue(["candidate_0", "candidate_1"]),
       }),
     );
 
     const response = await fetch(`${baseUrl}/tracks/recommendations`);
     const body = (await response.json()) as {
+      schemaVersion: number;
+      hiddenCount: number;
       results: Array<Record<string, unknown>>;
     };
 
     expect(response.status).toBe(200);
     expect(gateway.discoverArtist).toHaveBeenCalledTimes(2);
+    expect(body.schemaVersion).toBe(1);
+    expect(body.hiddenCount).toBe(2);
     expect(body.results).toHaveLength(20);
+    expect(body.results[0]?.id).toBe("candidate_2");
+    expect(body.results.at(-1)?.id).toBe("candidate_21");
     expect(new Set(body.results.map((candidate) => candidate["id"])).size).toBe(
       20,
     );
@@ -800,7 +820,31 @@ describe("TF search module routing", () => {
     const response = await fetch(`${baseUrl}/tracks/recommendations`);
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ results: [], basis: "none" });
+    await expect(response.json()).resolves.toEqual({ schemaVersion: 1, hiddenCount: 0, results: [], basis: "none" });
+  });
+
+  it("fails recommendation reads closed when hidden membership storage is unavailable", async () => {
+    const dependencies = routeDependencies({
+      loadHiddenTrackIds: vi.fn().mockRejectedValue(new Error("private database detail")),
+      loadLikedArtists: vi.fn().mockResolvedValue(["Artist"]),
+    });
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/recommendations`);
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "recommendations_unavailable" });
+    expect(dependencies.searchGateway.discoverArtist).not.toHaveBeenCalled();
+  });
+
+  it("counts account exclusions but reports no recommendation basis when every candidate is hidden", async () => {
+    const dependencies = routeDependencies({
+      loadHiddenTrackIds: vi.fn().mockResolvedValue(["yt_result_0", "sc_same_work"]),
+      loadLikedArtists: vi.fn().mockResolvedValue(["Artist"]),
+    });
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/recommendations`);
+    await expect(response.json()).resolves.toEqual({
+      schemaVersion: 1, hiddenCount: 2, results: [], basis: "none",
+    });
   });
 
   it("uses private module candidates for every Deezer playback and download fallback", async () => {
@@ -933,6 +977,85 @@ it("marks lyrics.ovh fallback as unverified when LRCLIB has no matching recordin
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+describe("recommendation hidden membership", () => {
+  const mutations = [
+    { method: "PUT", suffix: `/${encodeURIComponent(" yt_hidden ")}`, status: "hidden", operation: "hideRecommendation" },
+    { method: "DELETE", suffix: "/yt_hidden", status: "restored", operation: "restoreRecommendation" },
+    { method: "DELETE", suffix: "", status: "cleared", operation: "clearHiddenRecommendations" },
+  ] as const;
+
+  it.each(mutations)("returns scoped idempotent $status recommendation receipts", async ({ method, suffix, status, operation }) => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await fetch(`${baseUrl}/tracks/recommendations/hidden${suffix}?accountId=${OTHER_ACCOUNT_ID}`, {
+        method,
+        headers: { "x-client-session": OTHER_ACCOUNT_ID },
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ schemaVersion: 1, status });
+    }
+    expect(dependencies[operation]).toHaveBeenCalledTimes(2);
+    expect(dependencies[operation]).toHaveBeenCalledWith(...(status === "cleared"
+      ? [ACCOUNT_ID]
+      : [{ accountId: ACCOUNT_ID, trackId: "yt_hidden" }]));
+    expect(dependencies.searchGateway.discoverArtist).not.toHaveBeenCalled();
+    expect(dependencies.recordPlay).not.toHaveBeenCalled();
+  });
+
+  it.each(mutations)("denies $status recommendation changes without tf.search before storage", async ({ method, suffix }) => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies, { ...principal, entitlements: ["tf.collections"] });
+    const response = await fetch(`${baseUrl}/tracks/recommendations/hidden${suffix}`, { method });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "module_access_denied" });
+    expect(dependencies.hideRecommendation).not.toHaveBeenCalled();
+    expect(dependencies.restoreRecommendation).not.toHaveBeenCalled();
+    expect(dependencies.clearHiddenRecommendations).not.toHaveBeenCalled();
+  });
+
+  it.each(mutations)("does not return optimistic $status recommendation success on storage failure", async ({ method, suffix, operation }) => {
+    const dependencies = routeDependencies();
+    dependencies[operation].mockRejectedValue(new Error("private store detail"));
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/recommendations/hidden${suffix}`, { method });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "recommendations_unavailable" });
+  });
+
+  it.each([
+    ["blank hide", "PUT", "/%20%20", undefined],
+    ["blank restore", "DELETE", "/%20%20", undefined],
+    ["oversized hide", "PUT", `/${"x".repeat(4097)}`, undefined],
+    ["oversized restore", "DELETE", `/${"x".repeat(4097)}`, undefined],
+    ["foreign-account hide", "PUT", "/yt_hidden", { accountId: OTHER_ACCOUNT_ID }],
+    ["foreign-account restore", "DELETE", "/yt_hidden", { accountId: OTHER_ACCOUNT_ID }],
+    ["foreign-account clear", "DELETE", "", { accountId: OTHER_ACCOUNT_ID }],
+  ] as const)("rejects malformed recommendation preference %s", async (_label, method, suffix, body) => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/recommendations/hidden${suffix}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    expect(response.status).toBe(400);
+    expect(dependencies.hideRecommendation).not.toHaveBeenCalled();
+    expect(dependencies.restoreRecommendation).not.toHaveBeenCalled();
+    expect(dependencies.clearHiddenRecommendations).not.toHaveBeenCalled();
+  });
+
+  it("denies recommendation reads without tf.search before hidden storage even with empty seeds", async () => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies, { ...principal, entitlements: ["tf.collections"] });
+    const response = await fetch(`${baseUrl}/tracks/recommendations`);
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "module_access_denied" });
+    expect(dependencies.loadHiddenTrackIds).not.toHaveBeenCalled();
+    expect(dependencies.searchGateway.discoverArtist).not.toHaveBeenCalled();
+  });
 });
 
 it("records a lyrics issue for the authenticated account without accepting client identity or lyrics text", async () => {
@@ -1810,6 +1933,7 @@ describe("track account ownership", () => {
     });
     expect(dependencies.loadTopArtists).toHaveBeenCalledWith(ACCOUNT_ID);
     expect(dependencies.loadLikedArtists).toHaveBeenCalledWith(ACCOUNT_ID);
+    expect(dependencies.loadHiddenTrackIds).toHaveBeenCalledWith(ACCOUNT_ID);
     expect(
       JSON.stringify(dependencies.loadRecentTracks.mock.calls),
     ).not.toContain(OTHER_ACCOUNT_ID);

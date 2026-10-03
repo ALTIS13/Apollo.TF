@@ -44,6 +44,12 @@ import {
   type LyricsFeedbackInput,
 } from "../lib/lyrics-feedback-store.js";
 import {
+  loadHiddenTrackIds,
+  hideRecommendation,
+  restoreRecommendation,
+  clearHiddenRecommendations,
+} from "../lib/recommendation-hidden-store.js";
+import {
   MediaLinkResolutionError,
   resolvePastedMediaLink,
 } from "../lib/media-link.js";
@@ -84,6 +90,10 @@ export interface TrackRouteDependencies {
   readonly loadLikedArtists: (
     accountId: string,
   ) => Promise<readonly (string | null)[]>;
+  readonly loadHiddenTrackIds: typeof loadHiddenTrackIds;
+  readonly hideRecommendation: typeof hideRecommendation;
+  readonly restoreRecommendation: typeof restoreRecommendation;
+  readonly clearHiddenRecommendations: typeof clearHiddenRecommendations;
   readonly enqueueDownload: typeof enqueueDownload;
   readonly listDownloadJobs: typeof listSessionDownloadJobs;
   readonly getDownloadJobStatus: typeof getDownloadJobStatus;
@@ -238,6 +248,8 @@ const lyricsFeedbackBody = z.object({
   lyricsSource: z.enum(["lrclib", "lyrics.ovh", "none"]),
   reason: z.enum(["wrong_track", "out_of_sync", "incomplete", "missing"]),
 }).strict().refine((body) => (body.lyricsSource === "none") === (body.reason === "missing"));
+const hiddenRecommendationTrackId = z.string().trim().min(1).max(4096);
+const emptyRecommendationBody = z.object({}).strict().optional();
 
 function unavailableGateway(): TfSearchGateway {
   const unavailable = async (): Promise<never> => {
@@ -412,6 +424,10 @@ const defaultTrackRouteDependencies: TrackRouteDependencies = {
     });
   },
   recordLyricsFeedback,
+  loadHiddenTrackIds,
+  hideRecommendation,
+  restoreRecommendation,
+  clearHiddenRecommendations,
   async loadTopArtists(accountId) {
     const rows = await db
       .select({
@@ -1142,8 +1158,20 @@ export function createTracksRouter(
   });
 
   router.get("/tracks/recommendations", async (req, res) => {
+    if (!hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
+      res.status(403).json({ error: "module_access_denied" });
+      return;
+    }
+    const accountId = req.tfPrincipal!.accountId;
+    let hidden: Set<string>;
     try {
-      const accountId = req.tfPrincipal!.accountId;
+      hidden = new Set(await routeDependencies.loadHiddenTrackIds(accountId));
+    } catch {
+      req.log?.warn("Recommendation exclusions unavailable");
+      res.status(503).json({ error: "recommendations_unavailable" });
+      return;
+    }
+    try {
       const [likedResult, historyResult] = await Promise.allSettled([
         routeDependencies.loadLikedArtists(accountId),
         routeDependencies.loadTopArtists(accountId),
@@ -1171,14 +1199,9 @@ export function createTracksRouter(
       }
 
       if (seeds.length === 0) {
-        res.json({ results: [], basis: "none" });
+        res.json({ schemaVersion: 1, hiddenCount: hidden.size, results: [], basis: "none" });
         return;
       }
-      if (!hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
-        res.status(403).json({ error: "module_access_denied" });
-        return;
-      }
-
       const discoveryPromises = seeds.map(({ artist }) =>
         routeDependencies.searchGateway
           .discoverArtist({
@@ -1192,13 +1215,18 @@ export function createTracksRouter(
       const settled = await Promise.allSettled(discoveryPromises);
       const seen = new Set<string>();
       const contributed = new Set<"liked_tracks" | "listening_history">();
-      const results: ReturnType<typeof publicSearchResult>[] = [];
+      const results: (ReturnType<typeof publicSearchResult> & {
+        recommendationReason: { basis: "liked_tracks" | "listening_history"; artist: string };
+      })[] = [];
       for (const [index, outcome] of settled.entries()) {
         if (outcome.status !== "fulfilled") continue;
         for (const candidate of outcome.value) {
-          if (seen.has(candidate.id)) continue;
+          if (hidden.has(candidate.id) || seen.has(candidate.id)) continue;
           seen.add(candidate.id);
-          results.push(publicSearchResult(candidate));
+          results.push({
+            ...publicSearchResult(candidate),
+            recommendationReason: { basis: seeds[index]!.basis, artist: seeds[index]!.artist },
+          });
           contributed.add(seeds[index]!.basis);
           if (results.length === 20) break;
         }
@@ -1211,10 +1239,51 @@ export function createTracksRouter(
           : contributed.has("listening_history")
             ? "listening_history"
             : "none";
-      res.json({ results, basis });
+      res.json({ schemaVersion: 1, hiddenCount: hidden.size, results, basis });
     } catch {
       req.log?.warn("Failed to generate recommendations");
-      res.json({ results: [], basis: "none" });
+      res.json({ schemaVersion: 1, hiddenCount: hidden.size, results: [], basis: "none" });
+    }
+  });
+
+  for (const method of ["put", "delete"] as const) {
+    router[method]("/tracks/recommendations/hidden/:trackId", async (req, res) => {
+      if (!hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
+        res.status(403).json({ error: "module_access_denied" });
+        return;
+      }
+      const parsed = hiddenRecommendationTrackId.safeParse(req.params["trackId"]);
+      if (!parsed.success || !emptyRecommendationBody.safeParse(req.body).success) {
+        res.status(400).json({ error: "bad_request" });
+        return;
+      }
+      try {
+        const input = { accountId: req.tfPrincipal!.accountId, trackId: parsed.data };
+        if (method === "put") await routeDependencies.hideRecommendation(input);
+        else await routeDependencies.restoreRecommendation(input);
+        res.json({ schemaVersion: 1, status: method === "put" ? "hidden" : "restored" });
+      } catch {
+        req.log?.warn("Recommendation preference unavailable");
+        res.status(503).json({ error: "recommendations_unavailable" });
+      }
+    });
+  }
+
+  router.delete("/tracks/recommendations/hidden", async (req, res) => {
+    if (!hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
+      res.status(403).json({ error: "module_access_denied" });
+      return;
+    }
+    if (!emptyRecommendationBody.safeParse(req.body).success) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
+    try {
+      await routeDependencies.clearHiddenRecommendations(req.tfPrincipal!.accountId);
+      res.json({ schemaVersion: 1, status: "cleared" });
+    } catch {
+      req.log?.warn("Recommendation preferences unavailable");
+      res.status(503).json({ error: "recommendations_unavailable" });
     }
   });
 

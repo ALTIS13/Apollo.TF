@@ -162,14 +162,26 @@ afterEach(async () => {
 });
 
 describe("TF route policy map", () => {
-  it("contains the exact 46 anchored capability policies", () => {
-    expect(TF_ROUTE_POLICIES).toHaveLength(46);
+  it.each([
+    ["PUT", "/api/tracks/recommendations/hidden/yt_track"],
+    ["DELETE", "/api/tracks/recommendations/hidden/yt_track"],
+    ["DELETE", "/api/tracks/recommendations/hidden"],
+  ])("gates recommendation preferences %s %s with live collections policy", (method, path) => {
+    expect(requiredPolicyForRequest(method, path)).toMatchObject({
+      capability: "tf.collections", live: true,
+    });
+    expect(requiredPolicyForRequest("POST", path)).toBeNull();
+    expect(requiredPolicyForRequest(method, `${path}/extra/path`)).toBeNull();
+  });
+
+  it("contains the exact 49 anchored capability policies", () => {
+    expect(TF_ROUTE_POLICIES).toHaveLength(49);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === false),
     ).toHaveLength(8);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === true),
-    ).toHaveLength(38);
+    ).toHaveLength(41);
 
     expect(
       requiredPolicyForRequest("POST", "/api/tracks/search?ignored=1"),

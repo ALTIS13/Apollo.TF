@@ -143,6 +143,27 @@ export const TF_ROUTE_POLICIES: readonly TfRoutePolicy[] = Object.freeze([
     live: true,
   },
   {
+    method: "PUT",
+    path: "/api/tracks/recommendations/hidden/:trackId",
+    pattern: /^\/api\/tracks\/recommendations\/hidden\/[^/]+$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "DELETE",
+    path: "/api/tracks/recommendations/hidden/:trackId",
+    pattern: /^\/api\/tracks\/recommendations\/hidden\/[^/]+$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "DELETE",
+    path: "/api/tracks/recommendations/hidden",
+    pattern: /^\/api\/tracks\/recommendations\/hidden$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
     method: "GET",
     path: "/api/collections/liked",
     pattern: /^\/api\/collections\/liked$/,
