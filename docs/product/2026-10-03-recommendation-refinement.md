@@ -2,6 +2,8 @@
 
 Owner: Apollo.TF. Base: `469fe81b6371364f18d5cc5c40af58eea1dde1b7`. Source-only bounded extension of the existing Discover flow; the root-accepted renewal-v2 candidate `1f49e426f694778850f6885e669b865471d6b1b7` is unchanged.
 
+Source: `1eb19b6f9a88c7431a67f744c69606f8599406a2`, pushed to `origin/codex/tf-listener-experience`, existing [PR #5](https://github.com/ALTIS13/Apollo.TF/pull/5). No merge, image publication, runtime selection or deployment.
+
 ## Delivered Behavior
 
 - Each recommended recording identifies its actual contributing saved-track or listening-history artist seed. Legacy candidates without that metadata stay neutral. The aggregate label reflects only surviving known reasons after a local exclusion.
