@@ -16,6 +16,14 @@ no new dependencies, daemon/restart or deployment.
 
 **Spec:** [V2 source contract](../specs/2026-10-03-tf-canary-renewal-v2-design.md).
 
+Source contract accepted by root on 2026-10-03, return raw SHA-256
+`a1f91e38a928d3cc99edcd83e7bff32ba34bfb352094ccbee90df311ae167814`.
+The API receives one additional revoke mount, not one total mount. Runtime
+admission remains closed. All three source tasks are complete; the changed
+candidate was delivered to root once. Reviewed plan prestate raw pin was
+`88327f10...`; this progress
+annotation is not a change to the accepted contract.
+
 ## Global Constraints
 
 - Base `857c26b`; only owned resume record is initially dirty.
@@ -40,13 +48,13 @@ no new dependencies, daemon/restart or deployment.
 `TfOnlyReleaseArtifact`, `ComposeDocument`, pure v1 validator. Produces a blocked
 source-only result; no caller mutation or public-key acceptance.
 
-- [ ] Write regression: valid v2 configuration is accepted structurally but
+- [x] Write regression: valid v2 configuration is accepted structurally but
   activation remains false with four admission/custody blockers; v1 rejects it.
-- [ ] Run `pnpm --filter @workspace/scripts exec vitest run src/tf-canary-renewal-v2.test.ts --maxWorkers=1`; observe expected missing-feature RED.
-- [ ] Implement exact strict profile, v2 checks, cloning and minimal projection.
-- [ ] Add meaningful negative classes from spec and observe each missing guard
+- [x] Run `pnpm --filter @workspace/scripts exec vitest run src/tf-canary-renewal-v2.test.ts --maxWorkers=1`; observe expected missing-feature RED.
+- [x] Implement exact strict profile, v2 checks, cloning and minimal projection.
+- [x] Add meaningful negative classes from spec and observe each missing guard
   fail before its fix; use parameterized variants instead of duplicate tests.
-- [ ] Run the focused file; expect all cases pass and input snapshots unchanged.
+- [x] Run the focused file; expect all cases pass and input snapshots unchanged.
 
 ## Task 2: Isolated Composition And Read-Only File Adapter
 
@@ -56,16 +64,16 @@ source-only result; no caller mutation or public-key acceptance.
 **Interfaces:** adapter consumes strict env/profile and verified existing release
 artifact; renderer compares Git vs three source files using isolated env.
 
-- [ ] Write file/render failures for missing inputs, invalid/duplicate CLI args,
+- [x] Write file/render failures for missing inputs, invalid/duplicate CLI args,
   render failure, snapshot drift and unproven activation; observe RED.
-- [ ] Create names-only overlay/env/profile with exact new resource roots and
+- [x] Create names-only overlay/env/profile with exact new resource roots and
   one revoke-only API secret mount. Keep old files untouched.
-- [ ] Mechanically render the standalone Git entrypoint using installed Compose
+- [x] Mechanically render the standalone Git entrypoint using installed Compose
   config (no daemon action). If unavailable, preserve source and report this
   concrete verification gap instead of installing another runtime.
-- [ ] Implement bounded parser/render/file adapter and strict read-only CLI.
+- [x] Implement bounded parser/render/file adapter and strict read-only CLI.
   Config PASS reports blocked activation; malformed input reports safe codes.
-- [ ] Run focused cases and actual names-only Compose parity; expect exact JSON
+- [x] Run focused cases and actual names-only Compose parity; expect exact JSON
   equality, twelve active services and ten images, with no release receipt.
 
 ## Task 3: Review, Evidence And Owner Return
@@ -73,12 +81,12 @@ artifact; renderer compares Git vs three source files using isolated env.
 **Files:** new `docs/operations/2026-10-03-tf-canary-renewal-v2-source.md` and
 owned `docs/product/tf-listener-resume.md`; existing TF handoff is historical.
 
-- [ ] Run new focused cases plus one existing v1 compatibility case, scripts
+- [x] Run new focused cases plus one existing v1 compatibility case, scripts
   typecheck, diff/link checks and spec raw-pin comparisons. No app/D05 suite.
-- [ ] Dispatch one independent source reviewer after written design acceptance,
+- [x] Dispatch one independent source reviewer after written design acceptance,
   giving exact diff and the five review-focus classes. Reproduce/fix material
   findings with targeted RED/GREEN; no acknowledgement loop.
-- [ ] Record commands/results, exact new source SHA/changed raw pins and proposed
+- [x] Record commands/results, exact new source SHA/changed raw pins and proposed
   unclaimed image tuple; keep actual runtime/fixture/cleanup status blocked.
-- [ ] Commit/push only owned scope; send the changed candidate to root once.
+- [x] Commit/push only owned scope; send the changed candidate to root once.
   Continue independent TF queue-preserving replacement work, not live setup.
