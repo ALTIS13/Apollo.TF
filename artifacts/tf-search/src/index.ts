@@ -3,16 +3,20 @@ import { parseTfSearchRuntimeConfig } from "./config.js";
 import { startSearchHeartbeat } from "./heartbeat.js";
 import { HmacInternalRequestAuthenticator } from "./internal-auth.js";
 import { logger } from "./logger.js";
-import { createRuntimeProviders } from "./runtime-providers.js";
+import { createRuntimeCatalogLookup, createRuntimeProviders, createRuntimeSourceMetadataLookup } from "./runtime-providers.js";
 import { createSearchService } from "./search-service.js";
 
 async function start(): Promise<void> {
   const config = await parseTfSearchRuntimeConfig(process.env);
   const service = createSearchService({
     providers: createRuntimeProviders(config.fixtureAdapters),
+    catalogLookup: createRuntimeCatalogLookup(config.fixtureAdapters),
+    sourceMetadataLookup: createRuntimeSourceMetadataLookup(config.fixtureAdapters),
     logger: {
       warn({ source, errorClass }) {
-        logger.warn({ source, errorClass }, "Search provider unavailable");
+        logger.warn({ source, errorClass }, errorClass === "catalog_reference_failure"
+          ? "Catalog duration reference unavailable"
+          : "Search provider unavailable");
       },
     },
   });
@@ -35,6 +39,7 @@ async function start(): Promise<void> {
     ...(config.deployedAt === undefined ? {} : { deployedAt: config.deployedAt }),
     ready: () => initialized,
     telemetry: () => service.telemetry(),
+    parserTelemetry: () => service.parserTelemetry(),
   });
   logger.info({ port: config.port }, "TF search listening");
 

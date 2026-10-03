@@ -25,6 +25,7 @@ import type {
   SpotifyTracksResult,
   TracksPage,
 } from "./providers/spotify.js";
+import { SpotifyRefreshInvalidGrantError } from "./providers/spotify.js";
 import type {
   YandexAccount,
   YandexPlaylistsResult,
@@ -568,9 +569,17 @@ export class TfIntegrationsService {
   ): Promise<SpotifySecret> {
     const record = await this.#requiredRecord(accountId, "spotify", context);
     const secret = this.#decryptSpotify(accountId, record, context);
-    const refresh = await this.#provider(context, () =>
-      this.#spotify.refresh(secret, { signal: context.signal }),
-    );
+    let refresh: SpotifyRefreshResult;
+    try {
+      refresh = await this.#provider(context, () =>
+        this.#spotify.refresh(secret, { signal: context.signal }),
+      );
+    } catch (error) {
+      if (!(error instanceof SpotifyRefreshInvalidGrantError)) throw error;
+      // A newer authorization or successful refresh must survive this old failure.
+      await this.#delete(accountId, "spotify", context, record);
+      throw new ServiceError("not_connected");
+    }
     if (
       !isObject(refresh) ||
       typeof refresh.refreshed !== "boolean" ||
@@ -684,10 +693,11 @@ export class TfIntegrationsService {
     accountId: string,
     provider: Provider,
     context: TfIntegrationsExecutionContext,
+    expected?: Pick<ProviderAccountRecord, "generation" | "tokenEnvelope">,
   ): Promise<void> {
     requireActive(context);
     try {
-      await this.#repository.delete(accountId, provider, context);
+      await this.#repository.delete(accountId, provider, context, expected);
     } catch {
       throw new ServiceError("storage_unavailable");
     }
@@ -775,6 +785,7 @@ export class TfIntegrationsService {
     try {
       result = await this.#providerLimiter.run(context.signal, operation);
     } catch (error) {
+      if (error instanceof SpotifyRefreshInvalidGrantError) throw error;
       throw new ServiceError(providerErrorCode(error));
     }
     requireActive(context);

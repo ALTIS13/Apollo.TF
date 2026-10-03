@@ -1,50 +1,132 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { searchTracks } from "@workspace/api-client-react";
-import type { SearchRequest, TrackType, TrackResult } from "@workspace/api-client-react";
+import { useLocation, useSearch } from "wouter";
+import { freeSearchTracks, getTrackSuggestions, searchTracks } from "@workspace/api-client-react";
+import type { FreeSearchRequest, MediaLinkMetadataResponse, SearchRequest, TrackResult, TrackSuggestionsResponse, TrackType } from "@workspace/api-client-react";
 import { TrackCard } from "@/components/TrackCard";
-import { reportTfAuthError, tfRequestInit } from "@/lib/tf-session-client";
-import { Search, Music2, Loader2, Sparkles } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { CollectionActions } from "@/components/CollectionActions";
+import { useLikedTrackLookup } from "@/hooks/use-liked-collection";
+import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, reportTfAuthError, TfApiError, tfRequestInit } from "@/lib/tf-session-client";
+import { useTfAuth } from "@/auth/tf-auth";
+import { usePlayer } from "@/hooks/use-player";
+import { useToast } from "@/hooks/use-toast";
+import { clearRecentSearches, readRecentSearches, rememberRecentSearch, removeRecentSearch, type RecentSearch } from "@/lib/recent-searches";
+import { loadSourcePrefs, saveSourcePrefs, type SourceKey, type SourceMode } from "@/lib/source-preferences";
+import { apiUrl } from "@/lib/api-config";
+import { Search, Music2, Loader2, AlertCircle, Clock3, RotateCcw, X, ArrowLeftRight } from "lucide-react";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 
 type FilterType = TrackType | "all";
-type SourceKey = "yt" | "sc" | "bc" | "dz";
-type SourceMode = "auto" | "manual";
+type SearchMode = "quick" | "exact";
 type HomeSearchRequest = SearchRequest & {
   mode: SourceMode;
   sources?: SourceKey[];
 };
+type SearchInput = {
+  request: SearchRequest | FreeSearchRequest;
+  replacementToken: string | null;
+};
 
-const SOURCE_INFO: { key: SourceKey; label: string; color: string; dot: string }[] = [
-  { key: "yt", label: "YouTube", color: "text-red-400 bg-red-400/10 border-red-400/30", dot: "bg-red-400" },
-  { key: "sc", label: "SoundCloud", color: "text-orange-400 bg-orange-400/10 border-orange-400/30", dot: "bg-orange-400" },
-  { key: "bc", label: "Bandcamp", color: "text-cyan-400 bg-cyan-400/10 border-cyan-400/30", dot: "bg-cyan-400" },
-  { key: "dz", label: "Deezer", color: "text-purple-400 bg-purple-400/10 border-purple-400/30", dot: "bg-purple-400" },
+const SOURCE_INFO: { key: SourceKey; label: string; dot: string }[] = [
+  { key: "yt", label: "YouTube", dot: "bg-red-400" },
+  { key: "sc", label: "SoundCloud", dot: "bg-orange-400" },
+  { key: "bc", label: "Bandcamp", dot: "bg-cyan-400" },
+  { key: "dz", label: "Deezer", dot: "bg-purple-400" },
 ];
 
-function loadSourcePrefs(): { mode: SourceMode; sources: Record<SourceKey, boolean> } {
-  try {
-    const raw = localStorage.getItem("tf_source_prefs");
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return { mode: "auto", sources: { yt: true, sc: true, bc: true, dz: true } };
+function parseExplicitTrackQuery(value: string): { artist: string; title: string } | null {
+  const match = value.trim().match(/^(.+?)\s+[-–—]\s+(.+)$/u);
+  if (!match) return null;
+  const artist = match[1]!.trim();
+  const title = match[2]!.trim();
+  if (!artist || !title || artist.length > 200 || title.length > 300) return null;
+  return { artist, title };
 }
 
-function saveSourcePrefs(mode: SourceMode, sources: Record<SourceKey, boolean>) {
-  localStorage.setItem("tf_source_prefs", JSON.stringify({ mode, sources }));
+function isPastedUrl(value: string): boolean {
+  return /^(?:https?:\/\/|www\.)/i.test(value.trim());
+}
+
+function isMediaLinkMetadata(value: unknown): value is MediaLinkMetadataResponse {
+  if (!value || typeof value !== "object") return false;
+  const metadata = value as Partial<MediaLinkMetadataResponse>;
+  return metadata.schemaVersion === 1 &&
+    ["youtube", "soundcloud", "bandcamp", "deezer"].includes(metadata.source ?? "") &&
+    typeof metadata.title === "string" && metadata.title.trim().length > 0 && metadata.title.length <= 300 &&
+    (metadata.artist === undefined || (typeof metadata.artist === "string" && metadata.artist.length <= 200));
 }
 
 export default function Home() {
-  const params = new URLSearchParams(window.location.search);
-  const [artist, setArtist] = useState(params.get("artist") ?? "");
-  const [title, setTitle] = useState(params.get("title") ?? "");
+  const reduceMotion = useReducedMotion();
+  const { session, status } = useTfAuth();
+  const { recordingReplacement, isRecordingReplacementCurrent, replaceFailedRecording, cancelRecordingReplacement } = usePlayer();
+  const { toast } = useToast();
+  const searchQuery = useSearch();
+  const [location, navigate] = useLocation();
+  const replacementParams = new URLSearchParams(searchQuery);
+  const urlReplacementToken = replacementParams.has("replacement")
+    ? replacementParams.getAll("replacement").length === 1 && replacementParams.get("replacement")
+      ? replacementParams.get("replacement")!
+      : "invalid"
+    : null;
+  const [replacementPending, setReplacementPending] = useState(false);
+  const replacementPendingRef = useRef(false);
+  const replacementSelectionRef = useRef(0);
+  const consumedSearchRef = useRef<string | null>(null);
+  const [artist, setArtist] = useState("");
+  const [title, setTitle] = useState("");
+  const [searchMode, setSearchMode] = useState<SearchMode>("quick");
+  const [quickQuery, setQuickQuery] = useState("");
+  const [quickError, setQuickError] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkPending, setLinkPending] = useState(false);
+  const linkRequestRef = useRef(0);
+  const [suggestions, setSuggestions] = useState<TrackSuggestionsResponse["suggestions"]>([]);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const [suggestionsSuppressed, setSuggestionsSuppressed] = useState(false);
+  const suggestionRegionRef = useRef<HTMLDivElement>(null);
   const [activeFilter, setActiveFilter] = useState<FilterType>("all");
   const [hasSearched, setHasSearched] = useState(false);
+  const recentAccountId = session?.accountId ?? null;
+  const recentInstallationId = session?.installationId ?? null;
+  const recentIdentityKey = recentAccountId && recentInstallationId
+    ? `${recentAccountId}:${recentInstallationId}`
+    : null;
+  const [recentState, setRecentState] = useState<{ identityKey: string | null; items: RecentSearch[] }>({
+    identityKey: null,
+    items: [],
+  });
+  const recentSearches = recentState.identityKey === recentIdentityKey ? recentState.items : [];
 
-  const [sourceMode, setSourceMode] = useState<SourceMode>(() => loadSourcePrefs().mode);
-  const [sourcesState, setSourcesState] = useState<Record<SourceKey, boolean>>(() => loadSourcePrefs().sources);
+  useEffect(() => {
+    linkRequestRef.current += 1;
+    setLinkError(null);
+    setLinkPending(false);
+    return () => { linkRequestRef.current += 1; };
+  }, [recentIdentityKey]);
 
-  const enabledSources = (Object.keys(sourcesState) as SourceKey[]).filter((k) => sourcesState[k]);
+  useEffect(() => {
+    if (!recentAccountId || !recentInstallationId) {
+      setRecentState({ identityKey: null, items: [] });
+      return;
+    }
+    setRecentState({
+      identityKey: `${recentAccountId}:${recentInstallationId}`,
+      items: readRecentSearches({ accountId: recentAccountId, installationId: recentInstallationId }),
+    });
+  }, [recentAccountId, recentInstallationId]);
+
+  const [sourceMode, setSourceMode] = useState<SourceMode>(
+    () => loadSourcePrefs().mode,
+  );
+  const [sourcesState, setSourcesState] = useState<Record<SourceKey, boolean>>(
+    () => loadSourcePrefs().sources,
+  );
+
+  const enabledSources = (Object.keys(sourcesState) as SourceKey[]).filter(
+    (k) => sourcesState[k],
+  );
   const isAllEnabled = enabledSources.length === 4;
 
   const toggleSource = useCallback((key: SourceKey) => {
@@ -58,278 +140,770 @@ export default function Home() {
   }, []);
 
   const setAutoMode = useCallback(() => {
-    const next = { yt: true, sc: true, bc: true, dz: true } as Record<SourceKey, boolean>;
+    const next = { yt: true, sc: true, bc: true, dz: true } as Record<
+      SourceKey,
+      boolean
+    >;
     setSourceMode("auto");
     setSourcesState(next);
     saveSourcePrefs("auto", next);
   }, []);
 
   const searchMutation = useMutation({
-    mutationFn: (data: SearchRequest) =>
-      searchTracks(data, tfRequestInit({ method: "POST" })),
-    onError: (error) => {
-      reportTfAuthError(error);
+    mutationFn: async ({ request: data }: SearchInput) => {
+      const generation = captureTfSecurityGeneration();
+      try {
+        const result = "query" in data
+          ? await freeSearchTracks(data, tfRequestInit({ method: "POST" }))
+          : await searchTracks(data, tfRequestInit({ method: "POST" }));
+        if (!isCurrentTfSecurityGeneration(generation)) {
+          throw new TfApiError(
+            0,
+            "stale_response",
+            "invalid",
+            false,
+            generation,
+          );
+        }
+        return result;
+      } catch (error) {
+        if (isCurrentTfSecurityGeneration(generation)) reportTfAuthError(error);
+        throw error;
+      }
+    },
+    onSuccess: (_result, { request: variables }) => {
+      if (!recentAccountId || !recentInstallationId) return;
+      const identity = { accountId: recentAccountId, installationId: recentInstallationId };
+      const input = "query" in variables
+        ? { kind: "quick" as const, query: variables.query }
+        : { kind: "exact" as const, artist: variables.artist, title: variables.title };
+      setRecentState({
+        identityKey: `${recentAccountId}:${recentInstallationId}`,
+        items: rememberRecentSearch(identity, input),
+      });
     },
   });
 
+  const replacementToken = searchMutation.variables
+    ? searchMutation.variables.replacementToken
+    : urlReplacementToken;
+  const replacementCurrent = replacementToken !== null && isRecordingReplacementCurrent(replacementToken);
+
+  const resetReplacementSelection = () => {
+    replacementSelectionRef.current += 1;
+    replacementPendingRef.current = false;
+    setReplacementPending(false);
+  };
+
+  const leaveReplacementSearch = (clearResults = false) => {
+    if (replacementToken !== null) cancelRecordingReplacement(replacementToken);
+    resetReplacementSelection();
+    const params = new URLSearchParams(searchQuery);
+    if (params.has("replacement")) {
+      params.delete("replacement");
+      const remaining = params.toString();
+      navigate(`${location}${remaining ? `?${remaining}` : ""}${window.location.hash}`, {
+        replace: true, state: window.history.state,
+      });
+    }
+    if (clearResults) {
+      searchMutation.reset();
+      setHasSearched(false);
+    }
+  };
+
+  const startOrdinarySearch = (request: SearchRequest | FreeSearchRequest) => {
+    leaveReplacementSearch();
+    searchMutation.mutate({ request, replacementToken: null });
+  };
+
+  const selectReplacement = async (token: string, candidate: TrackResult) => {
+    if (replacementPendingRef.current || !isRecordingReplacementCurrent(token)) return;
+    const selection = ++replacementSelectionRef.current;
+    replacementPendingRef.current = true;
+    setReplacementPending(true);
+    try {
+      const applied = await replaceFailedRecording(token, candidate);
+      if (selection !== replacementSelectionRef.current) return;
+      if (applied) {
+        leaveReplacementSearch(true);
+        toast({ title: "Запись в очереди заменена", description: candidate.title });
+      }
+    } finally {
+      if (selection === replacementSelectionRef.current) {
+        replacementPendingRef.current = false;
+        setReplacementPending(false);
+      }
+    }
+  };
+
+  useEffect(() => () => { replacementSelectionRef.current += 1; }, []);
+
   function buildSearchData(a: string, t: string): HomeSearchRequest {
-    if (sourceMode === "manual" && enabledSources.length > 0 && enabledSources.length < 4) {
+    if (
+      sourceMode === "manual" &&
+      enabledSources.length > 0 &&
+      enabledSources.length < 4
+    ) {
       return { artist: a, title: t, mode: "manual", sources: enabledSources };
     }
     return { artist: a, title: t, mode: "auto" };
   }
 
+  function buildFreeSearchData(query: string): FreeSearchRequest {
+    const sources = sourceMode === "manual" && enabledSources.length > 0 && enabledSources.length < 4
+      ? enabledSources
+      : undefined;
+    return { query, mode: sources ? "manual" : "auto", sources };
+  }
+
   useEffect(() => {
-    const p = new URLSearchParams(window.location.search);
-    const a = p.get("artist");
-    const t = p.get("title");
-    if (a && t) {
-      setHasSearched(true);
-      searchMutation.mutate(buildSearchData(a, t));
-      window.history.replaceState({}, "", window.location.pathname);
+    setSuggestions([]);
+    setSuggestionsOpen(false);
+    setActiveSuggestion(-1);
+    const query = (searchMode === "quick"
+      ? quickQuery.trim()
+      : `${artist.trim()} ${title.trim()}`.trim()).slice(0, 200);
+    if (!session || query.length < 2 || suggestionsSuppressed || isPastedUrl(query)) return;
+
+    const generation = captureTfSecurityGeneration();
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const response = await getTrackSuggestions(
+          { q: query },
+          tfRequestInit({ method: "GET", signal: controller.signal }),
+        );
+        if (controller.signal.aborted || !isCurrentTfSecurityGeneration(generation)) return;
+        setSuggestions(response.suggestions);
+        setSuggestionsOpen(response.suggestions.length > 0);
+      } catch (error) {
+        if (controller.signal.aborted || !isCurrentTfSecurityGeneration(generation)) return;
+        reportTfAuthError(error);
+        setSuggestions([]);
+      }
+    }, 250);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [artist, title, quickQuery, searchMode, session, suggestionsSuppressed]);
+
+  useEffect(() => {
+    if (!suggestionsOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!suggestionRegionRef.current?.contains(event.target as Node)) {
+        setSuggestionsOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, [suggestionsOpen]);
+
+  const chooseSuggestion = (suggestion: TrackSuggestionsResponse["suggestions"][number]) => {
+    linkRequestRef.current += 1;
+    setLinkPending(false);
+    setLinkError(null);
+    setSuggestionsSuppressed(true);
+    setSuggestionsOpen(false);
+    setSuggestions([]);
+    setArtist(suggestion.artist);
+    setTitle(suggestion.title);
+    setQuickQuery(`${suggestion.artist} — ${suggestion.title}`);
+    setQuickError(false);
+    setHasSearched(true);
+    startOrdinarySearch(buildSearchData(suggestion.artist, suggestion.title));
+  };
+
+  const handleSuggestionKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!suggestionsOpen || suggestions.length === 0) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveSuggestion((current) => Math.min(current + 1, suggestions.length - 1));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveSuggestion((current) => Math.max(current - 1, 0));
+    } else if (event.key === "Enter") {
+      if (activeSuggestion < 0 && (searchMode === "exact" ? artist.trim() : parseExplicitTrackQuery(quickQuery))) return;
+      event.preventDefault();
+      chooseSuggestion(suggestions[Math.max(activeSuggestion, 0)]!);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setSuggestionsOpen(false);
     }
-  }, []);
+  };
+
+  useEffect(() => {
+    const params = new URLSearchParams(searchQuery);
+    if (!params.has("artist") && !params.has("title")) {
+      consumedSearchRef.current = null;
+      return;
+    }
+    if (status !== "authenticated" || !session || consumedSearchRef.current === searchQuery) return;
+    if (params.getAll("artist").length !== 1 || params.getAll("title").length !== 1) return;
+    const a = params.get("artist")!.trim();
+    const t = params.get("title")!.trim();
+    if (!a || !t || a.length > 200 || t.length > 300) return;
+
+    // Claim before mutation/navigation so effect replay cannot repeat the search.
+    consumedSearchRef.current = searchQuery;
+    linkRequestRef.current += 1;
+    setLinkPending(false);
+    setLinkError(null);
+    setQuickError(false);
+    setSuggestionsSuppressed(true);
+    setSuggestions([]);
+    setSuggestionsOpen(false);
+    setActiveSuggestion(-1);
+    setArtist(a);
+    setTitle(t);
+    setQuickQuery(`${a} — ${t}`);
+    setHasSearched(true);
+    resetReplacementSelection();
+    if (urlReplacementToken === null && replacementToken !== null) cancelRecordingReplacement(replacementToken);
+    searchMutation.mutate({ request: buildSearchData(a, t), replacementToken: urlReplacementToken });
+
+    params.delete("artist");
+    params.delete("title");
+    const remaining = params.toString();
+    navigate(`${location}${remaining ? `?${remaining}` : ""}${window.location.hash}`, {
+      replace: true,
+      state: window.history.state,
+    });
+  }, [searchQuery, location, navigate, status, session, sourceMode, sourcesState, searchMutation.mutate]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!artist.trim() || !title.trim()) return;
-    
+    const requestId = ++linkRequestRef.current;
+    if (searchMode === "quick" && isPastedUrl(quickQuery)) {
+      const url = quickQuery.trim();
+      leaveReplacementSearch();
+      searchMutation.reset();
+      setHasSearched(false);
+      setQuickError(false);
+      setLinkError(null);
+      setLinkPending(true);
+      setSuggestionsSuppressed(true);
+      setSuggestionsOpen(false);
+      const generation = captureTfSecurityGeneration();
+      void (async () => {
+        try {
+          const response = await fetch(apiUrl("/tracks/link-metadata"), tfRequestInit({
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url }),
+          }));
+          if (requestId !== linkRequestRef.current || !isCurrentTfSecurityGeneration(generation)) return;
+          if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+              reportTfAuthError(new TfApiError(
+                response.status,
+                response.status === 401 ? "unauthorized" : "module_access_denied",
+                response.status === 401 ? "unauthenticated" : "forbidden",
+                false,
+                generation,
+              ));
+            }
+            setLinkError(response.status === 422
+              ? "Эта ссылка не поддерживается. Используйте ссылку на отдельный трек из доступных источников."
+              : response.status === 429
+                ? "Слишком много запросов к ссылкам. Подождите немного и повторите попытку."
+              : "Не удалось прочитать ссылку. Повторите попытку позже.");
+            return;
+          }
+          const metadata: unknown = await response.json();
+          if (requestId !== linkRequestRef.current || !isCurrentTfSecurityGeneration(generation)) return;
+          if (!isMediaLinkMetadata(metadata)) {
+            setLinkError("Источник вернул неполные данные трека.");
+            return;
+          }
+          const resolvedArtist = metadata.artist?.trim() ?? "";
+          const resolvedTitle = metadata.title.trim();
+          setArtist(resolvedArtist);
+          setTitle(resolvedTitle);
+          setQuickQuery(resolvedArtist ? `${resolvedArtist} — ${resolvedTitle}` : resolvedTitle);
+          setHasSearched(true);
+          if (resolvedArtist) startOrdinarySearch(buildSearchData(resolvedArtist, resolvedTitle));
+          else startOrdinarySearch(buildFreeSearchData(resolvedTitle));
+        } catch {
+          if (requestId === linkRequestRef.current && isCurrentTfSecurityGeneration(generation)) {
+            setLinkError("Не удалось прочитать ссылку. Повторите попытку позже.");
+          }
+        } finally {
+          if (requestId === linkRequestRef.current) setLinkPending(false);
+        }
+      })();
+      return;
+    }
+    setLinkPending(false);
+    setLinkError(null);
+    const pair = searchMode === "quick"
+      ? parseExplicitTrackQuery(quickQuery)
+      : artist.trim() && title.trim()
+        ? { artist: artist.trim(), title: title.trim() }
+        : null;
+    if (!pair && searchMode === "quick") {
+      const query = quickQuery.trim();
+      if (query.length < 2 || query.length > 500) {
+        setQuickError(true);
+        return;
+      }
+      setQuickError(false);
+      setSuggestionsSuppressed(true);
+      setSuggestionsOpen(false);
+      setHasSearched(true);
+      startOrdinarySearch(buildFreeSearchData(query));
+      return;
+    }
+    if (!pair) {
+      return;
+    }
+
+    setQuickError(false);
+    setArtist(pair.artist);
+    setTitle(pair.title);
+    setQuickQuery(`${pair.artist} — ${pair.title}`);
+    setSuggestionsSuppressed(true);
     setHasSearched(true);
-    searchMutation.mutate(buildSearchData(artist, title));
+    setSuggestionsOpen(false);
+    startOrdinarySearch(buildSearchData(pair.artist, pair.title));
   };
 
-  const results = searchMutation.data?.results || [];
-  
-  const filteredResults = activeFilter === "all" 
-    ? results 
-    : results.filter(track => track.type === activeFilter);
+  const repeatRecentSearch = (entry: RecentSearch) => {
+    linkRequestRef.current += 1;
+    setLinkPending(false);
+    setLinkError(null);
+    setQuickError(false);
+    setSuggestionsSuppressed(true);
+    setSuggestionsOpen(false);
+    setActiveFilter("all");
+    setHasSearched(true);
+    if (entry.kind === "quick") {
+      setSearchMode("quick");
+      setQuickQuery(entry.query);
+      setArtist("");
+      setTitle("");
+      startOrdinarySearch(buildFreeSearchData(entry.query));
+    } else {
+      setSearchMode("exact");
+      setArtist(entry.artist);
+      setTitle(entry.title);
+      setQuickQuery(`${entry.artist} — ${entry.title}`);
+      startOrdinarySearch(buildSearchData(entry.artist, entry.title));
+    }
+  };
 
-  const filterOptions: { id: FilterType; label: string; color?: string }[] = [
-    { id: "all", label: "All Types" },
-    { id: "original", label: "Originals", color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/20" },
-    { id: "remix", label: "Remixes", color: "text-purple-400 bg-purple-400/10 border-purple-400/20" },
-    { id: "live", label: "Live", color: "text-orange-400 bg-orange-400/10 border-orange-400/20" },
-    { id: "cover", label: "Covers", color: "text-blue-400 bg-blue-400/10 border-blue-400/20" },
+  const removeRecent = (entry: RecentSearch) => {
+    if (!recentAccountId || !recentInstallationId) return;
+    setRecentState({
+      identityKey: `${recentAccountId}:${recentInstallationId}`,
+      items: removeRecentSearch({ accountId: recentAccountId, installationId: recentInstallationId }, entry),
+    });
+  };
+
+  const clearRecent = () => {
+    if (!recentAccountId || !recentInstallationId) return;
+    clearRecentSearches({ accountId: recentAccountId, installationId: recentInstallationId });
+    setRecentState({ identityKey: `${recentAccountId}:${recentInstallationId}`, items: [] });
+  };
+
+  const suggestionList = suggestionsOpen && (
+    <div
+      id="tf-track-suggestions"
+      role="listbox"
+      aria-label="Подсказки треков"
+      className="relative z-20 mt-1 max-h-64 overflow-y-auto rounded-md border border-white/15 bg-[#17171b] p-1 shadow-xl sm:absolute sm:inset-x-0 sm:top-full"
+    >
+      {suggestions.map((suggestion, index) => (
+        <button
+          key={`${suggestion.artist}:${suggestion.title}:${index}`}
+          id={`tf-suggestion-${index}`}
+          type="button"
+          role="option"
+          tabIndex={-1}
+          aria-selected={index === activeSuggestion}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => chooseSuggestion(suggestion)}
+          className={`block w-full truncate rounded-sm px-3 py-2 text-left text-sm focus-visible:outline-2 focus-visible:outline-white ${index === activeSuggestion ? "bg-white/10 text-white" : "text-foreground hover:bg-white/10"}`}
+        >
+          {suggestion.artist} - {suggestion.title}
+        </button>
+      ))}
+    </div>
+  );
+
+  const results = searchMutation.data?.results || [];
+  const likedLookup = useLikedTrackLookup(results.map((track) => track.id));
+
+  const filteredResults =
+    activeFilter === "all"
+      ? results
+      : results.filter((track) => track.type === activeFilter);
+  const failedRequest = searchMutation.isError ? searchMutation.variables : undefined;
+  const failedQuery = failedRequest
+    ? "query" in failedRequest.request
+      ? failedRequest.request.query
+      : `${failedRequest.request.artist} — ${failedRequest.request.title}`
+    : null;
+
+  const filterOptions: { id: FilterType; label: string }[] = [
+    { id: "all", label: "Все" },
+    { id: "original", label: "Оригиналы" },
+    { id: "remix", label: "Ремиксы" },
+    { id: "live", label: "Лайв" },
+    { id: "cover", label: "Каверы" },
   ];
 
   return (
-    <div className="min-h-screen pb-32">
-      {/* Hero Section */}
-      <div className="relative overflow-hidden border-b border-white/5 bg-black/20">
-        <div className="absolute inset-0 z-0">
-          <img 
-            src={`${import.meta.env.BASE_URL}images/hero-bg.png`} 
-            alt="Hero background" 
-            className="w-full h-full object-cover opacity-30 mix-blend-screen"
-          />
-          <div className="absolute inset-0 bg-gradient-to-b from-transparent to-background" />
-        </div>
-        
-        <div className="relative z-10 max-w-5xl mx-auto px-4 sm:px-6 py-20 sm:py-32 flex flex-col items-center text-center">
-          <motion.div 
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-sm font-medium text-muted-foreground mb-6 backdrop-blur-md"
-          >
-            <Sparkles className="w-4 h-4 text-primary" />
-            Cross-Platform Music Discovery
-          </motion.div>
-          
-          <motion.h1 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="text-4xl sm:text-6xl lg:text-7xl font-display font-bold text-white mb-6 tracking-tight"
-          >
-            Find any track. <br className="hidden sm:block" />
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-accent">
-              Play everywhere.
-            </span>
-          </motion.h1>
-          
-          <motion.p 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="text-lg sm:text-xl text-muted-foreground max-w-2xl mb-12"
-          >
-            Search YouTube and SoundCloud simultaneously. Discover originals, rare remixes, live performances, and covers instantly.
-          </motion.p>
-
-          <motion.form 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            onSubmit={handleSearch} 
-            className="w-full max-w-3xl glass-card p-2 sm:p-3 rounded-2xl sm:rounded-full flex flex-col sm:flex-row gap-3"
-          >
-            <div className="flex-1 flex items-center bg-secondary/50 rounded-xl sm:rounded-full px-4 border border-transparent focus-within:border-primary/50 focus-within:bg-secondary transition-all h-14">
-              <Music2 className="w-5 h-5 text-muted-foreground shrink-0" />
-              <input 
-                type="text" 
-                placeholder="Artist name..." 
-                value={artist}
-                onChange={(e) => setArtist(e.target.value)}
-                className="w-full bg-transparent border-none focus:outline-none text-foreground px-3 placeholder:text-muted-foreground h-full"
-                required
-              />
-            </div>
-            
-            <div className="w-px h-8 bg-white/10 hidden sm:block self-center" />
-            
-            <div className="flex-1 flex items-center bg-secondary/50 rounded-xl sm:rounded-full px-4 border border-transparent focus-within:border-primary/50 focus-within:bg-secondary transition-all h-14">
-              <Search className="w-5 h-5 text-muted-foreground shrink-0" />
-              <input 
-                type="text" 
-                placeholder="Track title..." 
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full bg-transparent border-none focus:outline-none text-foreground px-3 placeholder:text-muted-foreground h-full"
-                required
-              />
-            </div>
-
-            <button 
-              type="submit"
-              disabled={searchMutation.isPending}
-              className="h-14 px-8 rounded-xl sm:rounded-full font-bold bg-primary text-primary-foreground shadow-lg shadow-primary/25 hover:shadow-primary/40 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none transition-all duration-200 shrink-0"
-            >
-              {searchMutation.isPending ? (
-                <span className="flex items-center gap-2">
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  Searching
-                </span>
-              ) : (
-                "Search"
-              )}
-            </button>
-          </motion.form>
-
-          {/* Source Filter Chips */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.4 }}
-            className="flex flex-wrap items-center justify-center gap-2 mt-6"
-          >
-            <button
-              onClick={setAutoMode}
-              className={`px-4 py-2 rounded-full text-sm font-semibold border transition-all duration-200 ${
-                isAllEnabled
-                  ? "bg-primary/15 border-primary/40 text-primary"
-                  : "bg-white/5 border-white/10 text-muted-foreground hover:bg-white/10"
-              }`}
-            >
-              Авто
-            </button>
-            {SOURCE_INFO.map((s) => (
+    <div className="min-h-full bg-[#09090b] pb-8">
+      <header className="border-b border-white/10">
+        <div className="mx-auto max-w-5xl px-4 py-5 sm:px-6">
+          <h1 className="mb-4 text-xl font-semibold tracking-normal text-white">
+            Apollo TF <span className="font-normal text-white/40">/ Поиск</span>
+          </h1>
+          {replacementToken !== null && (
+            <div role="status" className="mb-4 flex items-start gap-3 border-y border-white/10 py-3">
+              {replacementPending
+                ? <Loader2 className="mt-1 h-5 w-5 shrink-0 text-[#8ddbd4] motion-safe:animate-spin" />
+                : replacementCurrent
+                  ? <ArrowLeftRight className="mt-1 h-5 w-5 shrink-0 text-[#8ddbd4]" />
+                  : <AlertCircle className="mt-1 h-5 w-5 shrink-0 text-amber-400" />}
+              <div className="min-w-0 flex-1 text-sm">
+                <p className="font-medium text-foreground">
+                  {replacementCurrent || replacementPending ? "Замена записи в очереди" : "Запрос замены устарел"}
+                </p>
+                <p className="mt-1 break-words text-muted-foreground">
+                  {replacementPending ? "Подключение записи…"
+                    : replacementCurrent && recordingReplacement ? `${recordingReplacement.track.artist} · ${recordingReplacement.track.title}`
+                      : "Эта запись больше не ожидает замены."}
+                </p>
+              </div>
               <button
-                key={s.key}
-                onClick={() => toggleSource(s.key)}
-                className={`px-4 py-2 rounded-full text-sm font-semibold border transition-all duration-200 flex items-center gap-2 ${
-                  sourcesState[s.key]
-                    ? s.color + " border"
-                    : "bg-white/5 border-white/10 text-muted-foreground hover:bg-white/10"
-                }`}
+                type="button" aria-label="Отменить замену" title="Отменить замену"
+                onClick={() => { linkRequestRef.current += 1; leaveReplacementSearch(true); }}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-white/5 hover:text-white focus-visible:outline-2 focus-visible:outline-accent"
               >
-                <span className={`w-2 h-2 rounded-full ${sourcesState[s.key] ? s.dot : "bg-white/30"}`} />
-                {s.label}
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+          <div role="group" aria-label="Режим поиска" className="mb-3 flex w-fit rounded-md border border-white/15 p-0.5">
+            {(["quick", "exact"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={searchMode === mode}
+                onClick={() => {
+                  setSearchMode(mode);
+                  setQuickError(false);
+                  setSuggestionsOpen(false);
+                }}
+                className={`h-11 rounded px-4 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${searchMode === mode ? "bg-white/15 text-white" : "text-muted-foreground hover:text-white"}`}
+              >
+                {mode === "quick" ? "Быстрый" : "Точный"}
               </button>
             ))}
-          </motion.div>
-        </div>
-      </div>
-
-      {/* Main Content Area */}
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-12">
-        {hasSearched && (
-          <div className="mb-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
-            <h2 className="text-2xl font-bold text-foreground">
-              {searchMutation.isPending ? "Searching..." : searchMutation.data ? "Results" : ""}
-            </h2>
-            
-            {!searchMutation.isPending && results.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2 p-1.5 glass-card rounded-2xl w-full sm:w-auto">
-                {filterOptions.map(opt => (
-                  <button
-                    key={opt.id}
-                    onClick={() => setActiveFilter(opt.id)}
-                    className={`
-                      px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-200
-                      ${activeFilter === opt.id 
-                        ? opt.color || 'bg-white text-black shadow-md' 
-                        : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
-                      }
-                    `}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
+          </div>
+          <form
+            onSubmit={handleSearch}
+            aria-label="Поиск музыки"
+            className={`grid gap-3 sm:items-end ${searchMode === "quick" ? "sm:grid-cols-[minmax(0,1fr)_auto]" : "sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"}`}
+          >
+            {searchMode === "quick" ? (
+              <div ref={suggestionRegionRef} className="relative min-w-0">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Поиск
+                  <span className="mt-1.5 flex h-11 items-center gap-2 rounded-lg border border-white/15 bg-secondary/50 px-3 focus-within:border-primary">
+                    <Search className="h-4 w-4 shrink-0" />
+                    <input
+                      type="text"
+                      placeholder="Трек, исполнитель или ссылка"
+                      value={quickQuery}
+                      maxLength={500}
+                      onChange={(event) => {
+                        linkRequestRef.current += 1;
+                        setLinkPending(false);
+                        setLinkError(null);
+                        setQuickQuery(event.target.value);
+                        setSuggestionsSuppressed(false);
+                        setQuickError(false);
+                      }}
+                      onKeyDown={handleSuggestionKeyDown}
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-expanded={suggestionsOpen}
+                      aria-controls={suggestionsOpen ? "tf-track-suggestions" : undefined}
+                      aria-activedescendant={suggestionsOpen && activeSuggestion >= 0 ? `tf-suggestion-${activeSuggestion}` : undefined}
+                      className="h-full w-full min-w-0 bg-transparent text-sm text-foreground outline-none"
+                      required
+                    />
+                  </span>
+                </label>
+                {suggestionList}
               </div>
+            ) : (
+              <>
+                <label className="min-w-0 text-xs font-medium text-muted-foreground">
+                  Исполнитель
+                  <span className="mt-1.5 flex h-11 items-center gap-2 rounded-lg border border-white/15 bg-secondary/50 px-3 focus-within:border-primary">
+                    <Music2 className="h-4 w-4 shrink-0" />
+                    <input
+                      type="text"
+                      placeholder="Имя исполнителя"
+                      value={artist}
+                      onChange={(e) => {
+                        setSuggestionsSuppressed(false);
+                        setArtist(e.target.value);
+                      }}
+                      className="h-full w-full min-w-0 bg-transparent text-sm text-foreground outline-none"
+                      required
+                    />
+                  </span>
+                </label>
+                <div ref={suggestionRegionRef} className="relative min-w-0">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Название трека
+                    <span className="mt-1.5 flex h-11 items-center gap-2 rounded-lg border border-white/15 bg-secondary/50 px-3 focus-within:border-primary">
+                      <Search className="h-4 w-4 shrink-0" />
+                      <input
+                        type="text"
+                        placeholder="Название трека"
+                        value={title}
+                        onChange={(e) => {
+                          setSuggestionsSuppressed(false);
+                          setTitle(e.target.value);
+                        }}
+                        onKeyDown={handleSuggestionKeyDown}
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-expanded={suggestionsOpen}
+                        aria-controls={suggestionsOpen ? "tf-track-suggestions" : undefined}
+                        aria-activedescendant={suggestionsOpen && activeSuggestion >= 0 ? `tf-suggestion-${activeSuggestion}` : undefined}
+                        className="h-full w-full min-w-0 bg-transparent text-sm text-foreground outline-none"
+                        required
+                      />
+                    </span>
+                  </label>
+                  {suggestionList}
+                </div>
+              </>
             )}
+            <button
+              type="submit"
+              disabled={searchMutation.isPending || linkPending}
+              className="flex h-11 min-w-32 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/85 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:opacity-50"
+            >
+              {searchMutation.isPending || linkPending ? (
+                <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
+              ) : (
+                <Search className="h-4 w-4" />
+              )}
+              {searchMutation.isPending || linkPending ? "Поиск..." : "Найти"}
+            </button>
+          </form>
+          {searchMode === "quick" && quickError && (
+            <p role="alert" className="mt-2 text-xs text-destructive">
+              Введите не менее двух символов для поиска.
+            </p>
+          )}
+          {linkError && <p role="alert" className="mt-2 text-xs text-destructive">{linkError}</p>}
+          <fieldset className="mt-4">
+            <legend className="mb-2 text-xs text-muted-foreground">
+              Источники
+            </legend>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={setAutoMode}
+                aria-pressed={isAllEnabled}
+                className={`h-11 rounded-lg border px-3 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${isAllEnabled ? "border-white/25 bg-white/10 text-white" : "border-white/10 text-muted-foreground hover:text-foreground"}`}
+              >
+                Авто
+              </button>
+              {SOURCE_INFO.map((source) => (
+                <label
+                  key={source.key}
+                  className="flex h-11 cursor-pointer items-center gap-2 rounded-lg border border-white/10 px-3 text-xs text-muted-foreground transition-colors has-[:checked]:border-white/25 has-[:checked]:text-foreground hover:bg-white/5"
+                >
+                  <input
+                    type="checkbox"
+                    checked={sourcesState[source.key]}
+                    onChange={() => toggleSource(source.key)}
+                    className="h-3.5 w-3.5 accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                  />
+                  <span className={`h-1.5 w-1.5 rounded-full ${source.dot}`} />
+                  {source.label}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        </div>
+      </header>
+
+      <section
+        aria-label={!hasSearched && recentSearches.length > 0 ? "Недавний поиск" : "Результаты поиска"}
+        aria-busy={searchMutation.isPending || linkPending}
+        className="mx-auto max-w-5xl px-4 py-5 sm:px-6"
+      >
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-base font-semibold tracking-normal text-foreground">
+            {!hasSearched && recentSearches.length > 0 ? "Недавний поиск" : "Результаты"}{" "}
+            {searchMutation.data && !searchMutation.isPending && (
+              <span className="ml-1 font-normal tabular-nums text-muted-foreground">
+                {filteredResults.length}
+              </span>
+            )}
+          </h2>
+          {!hasSearched && recentSearches.length > 0 && (
+            <button type="button" onClick={clearRecent} className="min-h-11 px-2 text-xs text-muted-foreground hover:text-white focus-visible:outline-2 focus-visible:outline-accent">
+              Очистить
+            </button>
+          )}
+          {!searchMutation.isPending && results.length > 0 && (
+            <div
+              role="group"
+              aria-label="Тип записи"
+              className="flex flex-wrap gap-1"
+            >
+              {filterOptions.map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => setActiveFilter(opt.id)}
+                  aria-pressed={activeFilter === opt.id}
+                  className={`min-h-11 rounded-lg px-3 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent ${activeFilter === opt.id ? "bg-white/10 text-white" : "text-muted-foreground hover:bg-white/5"}`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {!hasSearched && recentSearches.length > 0 && (
+          <div className="divide-y divide-white/10 border-y border-white/10">
+            {recentSearches.map((entry) => {
+              const label = entry.kind === "quick" ? entry.query : `${entry.artist} — ${entry.title}`;
+              return (
+                <div key={`${entry.kind}:${label.toLowerCase()}`} className="flex min-h-12 items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label={`Повторить поиск: ${label}`}
+                    onClick={() => repeatRecentSearch(entry)}
+                    className="flex min-w-0 flex-1 items-center gap-3 py-3 text-left text-sm text-foreground hover:text-primary focus-visible:outline-2 focus-visible:outline-white"
+                  >
+                    <Clock3 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{label}</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Удалить из недавнего: ${label}`}
+                    title="Удалить из недавнего"
+                    onClick={() => removeRecent(entry)}
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-white/5 hover:text-white focus-visible:outline-2 focus-visible:outline-accent"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
-
-        {searchMutation.isPending && (
-          <div className="space-y-4">
-            {[...Array(5)].map((_, i) => (
-              <div key={i} className="glass-card rounded-2xl p-5 flex items-center gap-6 animate-pulse">
-                <div className="w-20 h-20 rounded-xl bg-secondary flex-shrink-0" />
-                <div className="flex-1 space-y-3">
-                  <div className="h-5 bg-secondary rounded-full w-1/3" />
-                  <div className="h-4 bg-secondary rounded-full w-1/4" />
+        {!hasSearched && recentSearches.length === 0 && (
+          <div className="flex items-center gap-3 py-8 text-sm text-muted-foreground">
+            <Search className="h-5 w-5" />
+            Нет результатов поиска
+          </div>
+        )}
+        {(searchMutation.isPending || linkPending) && (
+          <div role="status" aria-label="Поиск треков" className="space-y-3">
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="flex h-24 items-center gap-4 rounded-lg border border-white/5 p-4 motion-safe:animate-pulse"
+              >
+                <div className="h-14 w-14 shrink-0 rounded-md bg-secondary" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="h-4 w-1/2 rounded bg-secondary" />
+                  <div className="h-3 w-1/3 rounded bg-secondary" />
                 </div>
-                <div className="w-12 h-12 rounded-full bg-secondary" />
               </div>
             ))}
           </div>
         )}
-
         {!searchMutation.isPending && searchMutation.isError && (
-          <div className="text-center py-20 px-4 glass-card rounded-3xl border-destructive/20">
-            <div className="w-16 h-16 rounded-full bg-destructive/10 flex items-center justify-center mx-auto mb-6">
-              <Sparkles className="w-8 h-8 text-destructive" />
+          <div
+            role="alert"
+            className="flex items-start gap-3 border-t border-white/10 py-6 text-sm"
+          >
+            <AlertCircle className="h-5 w-5 shrink-0 text-amber-400" />
+            <div className="min-w-0">
+              <h3 className="font-medium tracking-normal text-foreground">Поиск сейчас недоступен</h3>
+              <p className="mt-1 text-muted-foreground">
+                Не удалось выполнить поиск. Повторите попытку позже.
+              </p>
+              {failedRequest && (
+                <>
+                  <p className="mt-2 break-words text-muted-foreground">{failedQuery}</p>
+                  <button
+                    type="button"
+                    onClick={() => searchMutation.mutate(failedRequest)}
+                    className="mt-3 flex min-h-11 items-center justify-center gap-2 rounded-lg border border-white/15 bg-secondary/50 px-4 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    Повторить запрос
+                  </button>
+                </>
+              )}
             </div>
-            <h3 className="text-xl font-bold text-foreground mb-2">Search Failed</h3>
-            <p className="text-muted-foreground">We couldn't find tracks right now. Please try again later.</p>
           </div>
         )}
-
         {!searchMutation.isPending && searchMutation.data && (
           <AnimatePresence mode="popLayout">
             {filteredResults.length === 0 ? (
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                className="text-center py-24 px-4 glass-card rounded-3xl"
+              <motion.div
+                initial={reduceMotion ? false : { opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: reduceMotion ? 0 : 0.15 }}
+                className="border-t border-white/10 py-8 text-sm text-muted-foreground"
               >
-                <div className="w-20 h-20 rounded-full bg-secondary flex items-center justify-center mx-auto mb-6">
-                  <Music2 className="w-10 h-10 text-muted-foreground" />
-                </div>
-                <h3 className="text-2xl font-display font-bold text-foreground mb-3">No tracks found</h3>
-                <p className="text-muted-foreground max-w-md mx-auto">
-                  We couldn't find any {activeFilter !== 'all' ? activeFilter : ''} matches for your search. Try changing the filter or searching for something else.
-                </p>
-                {activeFilter !== 'all' && (
-                  <button 
-                    onClick={() => setActiveFilter('all')}
-                    className="mt-6 text-primary hover:text-primary-foreground font-semibold hover:underline"
+                <h3 className="mb-2 text-base tracking-normal text-foreground">
+                  Треки не найдены
+                </h3>
+                <p>Совпадений нет.</p>
+                {activeFilter !== "all" && (
+                  <button
+                    onClick={() => setActiveFilter("all")}
+                    className="mt-3 min-h-11 text-primary underline focus-visible:outline-2 focus-visible:outline-accent"
                   >
-                    View all results
+                    Все результаты
                   </button>
                 )}
               </motion.div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {filteredResults.map((track, i) => (
-                  <TrackCard key={`${track.id}-${i}`} track={track} index={i} />
+                  <TrackCard
+                    key={`${track.id}-${i}`}
+                    track={track}
+                    index={i}
+                    compact
+                    onPlay={replacementToken !== null ? (candidate) => selectReplacement(replacementToken, candidate) : undefined}
+                    playLabel={replacementToken !== null ? `Заменить запись: ${track.title}` : undefined}
+                    playDisabled={replacementToken !== null && (replacementPending || !replacementCurrent || (
+                      recordingReplacement?.track.id === track.id && recordingReplacement.track.source === track.source
+                    ))}
+                    collectionAction={<CollectionActions
+                      track={track}
+                      saved={likedLookup.data?.likedTrackIds.includes(track.id) ?? false}
+                      checking={likedLookup.isFetching && !likedLookup.data}
+                    />}
+                  />
                 ))}
               </div>
             )}
           </AnimatePresence>
         )}
-      </div>
+      </section>
     </div>
   );
 }

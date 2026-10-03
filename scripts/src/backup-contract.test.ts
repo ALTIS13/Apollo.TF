@@ -6,12 +6,16 @@ import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
 const worktree = resolve(import.meta.dirname, "../..");
-const bash = "C:/Program Files/Git/bin/bash.exe";
+const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
 const backupScript = join(worktree, "deploy/ops/backup-postgres.sh");
 const verifyScript = join(worktree, "deploy/ops/verify-backup.sh");
 const restoreScript = join(worktree, "deploy/ops/restore-postgres.sh");
 const classifyScript = join(worktree, "deploy/ops/classify-retained-volume.sh");
 const temporaryRoots: string[] = [];
+const postgres16Fixture =
+  "docker.io/library/postgres:16-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55";
+const shellContractTimeoutMs = 30_000;
+const dockerContractTimeoutMs = 90_000;
 
 type Result = ReturnType<typeof spawnSync>;
 
@@ -172,6 +176,27 @@ afterEach(() => {
 });
 
 describe("encrypted PostgreSQL backup contract", () => {
+  it("launches Bash on the host platform for synchronous and asynchronous fixtures", async () => {
+    const root = temporaryRoot();
+    const script = join(root, "bash fixture with spaces.sh");
+    writeFileSync(script, "items=(one two)\nprintf '%s:%s\\n' \"${#items[@]}\" \"$APOLLO_TEST_VALUE\"\nprintf 'fixture-stderr\\n' >&2\nexit 7\n");
+    const env = {
+      ...process.env,
+      BASH_ENV: "",
+      APOLLO_TEST_VALUE: "value with spaces & shell | metacharacters",
+    };
+    const expected = {
+      status: 7,
+      stdout: "2:value with spaces & shell | metacharacters\n",
+      stderr: "fixture-stderr\n",
+    };
+
+    const synchronous = runScript(script, env);
+    expect(synchronous.error).toBeUndefined();
+    expect(synchronous).toMatchObject(expected);
+    await expect(runScriptAsync(script, env)).resolves.toEqual(expected);
+  });
+
   it("rejects password and database URL arguments without printing them", () => {
     if (!requireScript(backupScript)) return;
     const root = temporaryRoot();
@@ -355,7 +380,7 @@ describe("encrypted PostgreSQL backup contract", () => {
     let modes = "";
     try {
       docker(["volume", "create", "--label", label, volume]);
-      modes = docker(["run", "--rm", "--label", label, "-v", `${worktree.replaceAll("\\\\", "/")}:/repo:ro`, "-v", `${volume}:/work`, "postgres:16", "sh", "-ceu", `
+      modes = docker(["run", "--rm", "--label", label, "-v", `${worktree.replaceAll("\\\\", "/")}:/repo:ro`, "-v", `${volume}:/work`, postgres16Fixture, "sh", "-ceu", `
         mkdir -p /work/bin /work/backups
         cat > /work/bin/pg_dump <<'EOF'
 #!/bin/sh
@@ -397,7 +422,7 @@ EOF
     }
     expect(modes.split("\n").at(-1)).toBe("600");
     expect(dockerExists(["volume", "inspect", volume])).toBe(false);
-  });
+  }, dockerContractTimeoutMs);
 
   it("removes only invocation-owned published artifacts when publication fails", () => {
     if (!requireScript(backupScript)) return;
@@ -529,8 +554,10 @@ EOF
   it("rejects hostile metadata before running checksum verification or disclosing it", () => {
     if (!requireScript(backupScript) || !requireScript(verifyScript)) return;
     const root = temporaryRoot();
-    const env = contractEnvironment(root);
+    const env = withBashFunctions(root, contractEnvironment(root), "sha256sum() { printf 'sha256sum %s\\n' \"$*\" >> \"$FAKE_LOG\"; /usr/bin/sha256sum \"$@\"; }\n");
     expect(runScript(backupScript, env).status).toBe(0);
+    const backupLog = readFileSync(env.FAKE_LOG!, "utf8");
+    expect(backupLog).toContain("sha256sum");
     const artifacts = backupArtifacts(env.APOLLO_BACKUP_DESTINATION!);
     writeFileSync(artifacts.metadata, JSON.stringify({ hostile: env.FAKE_SENSITIVE }));
     const result = runScript(verifyScript, {
@@ -545,7 +572,11 @@ EOF
     expect(result.status).not.toBe(0);
     expect(output(result)).toBe("verify: metadata failed\n");
     expect(output(result).includes(env.FAKE_SENSITIVE!)).toBe(false);
-    expect(readFileSync(env.FAKE_LOG!, "utf8")).not.toContain("sha256sum");
+    const commandLog = readFileSync(env.FAKE_LOG!, "utf8");
+    expect(commandLog.startsWith(backupLog)).toBe(true);
+    const verifierLog = commandLog.slice(backupLog.length);
+    expect(verifierLog).not.toContain("sha256sum");
+    expect(verifierLog).not.toContain(env.FAKE_SENSITIVE!);
   });
 
   it("redacts direct verifier checksum failures", () => {
@@ -739,7 +770,7 @@ EOF
     expect(result.status).not.toBe(0);
     expect(output(result)).toBe("restore: target-check failed\n");
     expect(existsSync(env.FAKE_RESTORE_INPUT!)).toBe(false);
-  });
+  }, shellContractTimeoutMs);
 
   it.each([
     ["psql", { FAKE_PSQL_FAIL: "1" }, "restore: target-check failed\n"],
@@ -753,7 +784,7 @@ EOF
     expect(result.status).not.toBe(0);
     expect(output(result)).toBe(expected);
     expect(output(result).includes(env.FAKE_SENSITIVE!)).toBe(false);
-  });
+  }, shellContractTimeoutMs);
 
   it("classifies an original retained volume with metadata only", () => {
     if (!requireScript(classifyScript)) return;
@@ -992,8 +1023,7 @@ function runPostgresBackupRestoreProof(options: {
 describe.runIf(dockerProofEnabled)("PostgreSQL 16 encrypted restore proof", () => {
   it("restores PostgreSQL 16 marker schema and data after source destruction", () => {
     runPostgresBackupRestoreProof({
-      baseImage:
-        "docker.io/library/postgres:16-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55",
+      baseImage: postgres16Fixture,
       database: "apollo_trackfinder",
       evidencePrefix: "pg16-disposable-proof",
       major: 16,

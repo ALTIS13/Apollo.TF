@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "profile": "apollo-tf-canary-renewal.v2",
+  "clientId": "apollo-tf-api",
+  "audience": "apollo-tf",
+  "revokeKeyring": {
+    "secretName": "tf_revoke_keyring",
+    "mountPath": "/run/secrets/tf_revoke_keyring",
+    "purpose": "apollo-tf-revoke-only",
+    "ownerPolicy": "runtime-uid",
+    "mode": "0400",
+    "allowSymlink": false
+  }
+}

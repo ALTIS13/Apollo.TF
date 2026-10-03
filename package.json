@@ -6,7 +6,14 @@
   "scripts": {
     "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
-    "release:validate": "node --experimental-strip-types -- scripts/src/coolify-release.ts",
+    "release:prepare": "pnpm --filter @workspace/scripts exec tsx src/operator-release.ts prepare",
+    "release:prepare:tf-only": "pnpm --filter @workspace/scripts exec tsx src/operator-release.ts prepare-tf-only",
+    "release:preflight:tf-canary": "pnpm --filter @workspace/scripts exec tsx src/tf-canary-publisher-preflight.ts",
+    "release:publish": "pnpm --filter @workspace/scripts exec tsx src/operator-release.ts publish",
+    "release:publish:tf-only": "pnpm --filter @workspace/scripts exec tsx src/operator-release.ts publish-tf-only",
+    "release:verify:tf-web": "pnpm --filter @workspace/scripts exec tsx src/tf-canary-web-image.ts",
+    "release:validate:tf-canary": "pnpm --filter @workspace/scripts exec tsx src/tf-canary-compose-binding.ts",
+    "release:validate": "pnpm --filter @workspace/scripts exec tsx src/coolify-release.ts",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
   },

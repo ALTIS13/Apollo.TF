@@ -1,13 +1,18 @@
+import { once } from "node:events";
+import { createServer, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+
 import { createSignedBodySignature } from "@workspace/module-runtime-contract";
 import {
   TF_SEARCH_ARTIST_DISCOVERY_PATH,
   TF_SEARCH_COMMAND_PATH,
+  TF_SEARCH_FREE_COMMAND_PATH,
   TF_SEARCH_SUGGESTIONS_PATH,
   type TfSearchArtistDiscoveryResponse,
   type TfSearchResponse,
   type TfSearchSuggestionsResponse,
 } from "../../../../lib/tf-search-contract/src/index.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   HttpTfSearchClient,
@@ -21,6 +26,27 @@ const SECOND_REQUEST_ID = "20000000-0000-4000-8000-000000000002";
 const FIRST_NONCE = Buffer.alloc(32, 1).toString("base64url");
 const SECOND_NONCE = Buffer.alloc(32, 2).toString("base64url");
 const NOW_MS = 1_753_337_100_000;
+const SOURCE_REFERENCE_PATH = "/v1/source-reference";
+const SOURCE_URL = "https://www.youtube.com/watch?v=AbCdEf01234";
+const SOURCE_KEY = "youtube:AbCdEf01234";
+
+function sourceReferenceResponse(requestId = FIRST_REQUEST_ID) {
+  return {
+    schemaVersion: 1,
+    requestId,
+    sourceKey: SOURCE_KEY,
+    status: "known",
+    reference: {
+      artist: "Artist",
+      title: "Track",
+      type: "original",
+      expectedDurationSeconds: 232,
+      provenance: "catalog",
+      observedAt: NOW_MS - 60_000,
+      expiresAt: NOW_MS + 240_000,
+    },
+  };
+}
 
 function searchResponse(requestId: string): TfSearchResponse {
   return {
@@ -83,6 +109,7 @@ function artistDiscoveryResponse(
 function client(
   fetchImplementation: typeof fetch,
   overrides: Partial<ConstructorParameters<typeof HttpTfSearchClient>[0]> = {},
+  now: () => number = () => NOW_MS,
 ) {
   const requestIds = [FIRST_REQUEST_ID, SECOND_REQUEST_ID];
   const nonces = [FIRST_NONCE, SECOND_NONCE];
@@ -95,7 +122,7 @@ function client(
     },
     {
       fetch: fetchImplementation,
-      now: () => NOW_MS,
+      now,
       randomUuid: () => requestIds.shift()!,
       randomNonce: () => nonces.shift()!,
     },
@@ -185,6 +212,31 @@ describe("parseTfSearchClientConfig", () => {
 });
 
 describe("HttpTfSearchClient", () => {
+  it("signs the account-scoped free-text command at its own internal path", async () => {
+    const fetchImplementation = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { requestId: string };
+      return new Response(JSON.stringify({ ...searchResponse(body.requestId), query: "night music" }), { status: 200 });
+    });
+    const result = await client(fetchImplementation).freeSearch({
+      accountId: "11111111-1111-4111-8111-111111111111",
+      query: "night music", mode: "auto", sources: ["yt", "sc", "bc", "dz"], maxResults: 20,
+    });
+    expect(result.query).toBe("night music");
+    const [url, init] = fetchImplementation.mock.calls[0]!;
+    expect(String(url)).toBe(`https://search.apollot.ru${TF_SEARCH_FREE_COMMAND_PATH}`);
+    const rawBody = Buffer.from(String(init?.body));
+    expect(JSON.parse(rawBody.toString())).toMatchObject({
+      requestId: FIRST_REQUEST_ID,
+      accountId: "11111111-1111-4111-8111-111111111111",
+      query: "night music",
+    });
+    const headers = new Headers(init?.headers);
+    expect(headers.get("x-apollo-internal-signature")).toBe(createSignedBodySignature({
+      method: "POST", path: TF_SEARCH_FREE_COMMAND_PATH,
+      timestamp: String(Math.floor(NOW_MS / 1_000)), nonce: FIRST_NONCE,
+      rawBody, secret: SECRET,
+    }));
+  });
   it("sends an exact signed search command without browser or account context", async () => {
     const fetchImplementation = vi.fn<typeof fetch>(
       async (input, init) => {
@@ -297,7 +349,7 @@ describe("HttpTfSearchClient", () => {
     );
     const gateway = client(fetchImplementation);
 
-    await expect(gateway.suggestions("artist", 5)).resolves.toEqual(
+    await expect(gateway.suggestions(FIRST_REQUEST_ID, "artist", 5)).resolves.toEqual(
       suggestionsResponse(FIRST_REQUEST_ID),
     );
     const [url, init] = fetchImplementation.mock.calls[0]!;
@@ -308,6 +360,7 @@ describe("HttpTfSearchClient", () => {
     expect(JSON.parse(rawBody.toString("utf8"))).toEqual({
       schemaVersion: 1,
       requestId: FIRST_REQUEST_ID,
+      accountId: FIRST_REQUEST_ID,
       query: "artist",
       limit: 5,
     });
@@ -457,5 +510,417 @@ describe("HttpTfSearchClient", () => {
       }),
     ).rejects.toMatchObject({ code: "search_unavailable" });
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("HttpTfSearchClient.sourceReference", () => {
+  it("dispatches an account-scoped signed lookup and returns the fresh source-bound reference", async () => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify(sourceReferenceResponse()), { status: 200 },
+    ));
+    const gateway = client(fetchImplementation);
+    const result = await gateway.sourceReference?.({ accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL });
+
+    expect(result).toEqual(sourceReferenceResponse());
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+    const [url, init] = fetchImplementation.mock.calls[0]!;
+    expect(String(url)).toBe(`https://search.apollot.ru${SOURCE_REFERENCE_PATH}`);
+    expect(init).toMatchObject({ method: "POST", redirect: "error" });
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    const rawBody = Buffer.from(String(init?.body));
+    expect(JSON.parse(rawBody.toString("utf8"))).toEqual({
+      schemaVersion: 1, requestId: FIRST_REQUEST_ID,
+      accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+    });
+    const headers = new Headers(init?.headers);
+    expect([...headers.keys()].sort()).toEqual([
+      "content-type", "x-apollo-internal-nonce", "x-apollo-internal-signature", "x-apollo-internal-timestamp",
+    ]);
+    expect(headers.get("x-apollo-internal-signature")).toBe(createSignedBodySignature({
+      method: "POST", path: SOURCE_REFERENCE_PATH,
+      timestamp: String(Math.floor(NOW_MS / 1_000)), nonce: FIRST_NONCE,
+      rawBody, secret: SECRET,
+    }));
+  });
+
+  it.each(["known", "unknown", "ambiguous"] as const)(
+    "correlates %s results to the canonical source despite YouTube URL aliases and tracking",
+    async (status) => {
+      const response = status === "known" ? sourceReferenceResponse() : {
+        schemaVersion: 1, requestId: FIRST_REQUEST_ID, sourceKey: SOURCE_KEY, status,
+      };
+      const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(response)));
+      const result = await client(fetchImplementation).sourceReference({
+        accountId: FIRST_REQUEST_ID, sourceUrl: "https://youtu.be/AbCdEf01234?utm_source=fixture",
+      });
+      expect(result).toEqual(response);
+      expect(fetchImplementation).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["known", "unknown", "ambiguous"] as const)(
+    "rejects %s lookup results bound to a different source",
+    async (status) => {
+      const response = status === "known" ? sourceReferenceResponse() : {
+        schemaVersion: 1, requestId: FIRST_REQUEST_ID, sourceKey: SOURCE_KEY, status,
+      };
+      const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(response)));
+      await expect(client(fetchImplementation).sourceReference({
+        accountId: FIRST_REQUEST_ID, sourceUrl: "https://www.youtube.com/watch?v=ZyXwVu98765",
+      })).rejects.toBeInstanceOf(TfSearchUnavailableError);
+      expect(fetchImplementation).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["future observation", { observedAt: NOW_MS + 1, expiresAt: NOW_MS + 60_000 }],
+    ["exact expiry", { observedAt: NOW_MS - 60_000, expiresAt: NOW_MS }],
+    ["expired", { observedAt: NOW_MS - 60_000, expiresAt: NOW_MS - 1 }],
+    ["zero lifetime", { observedAt: NOW_MS, expiresAt: NOW_MS }],
+    ["negative lifetime", { observedAt: NOW_MS, expiresAt: NOW_MS - 1 }],
+    ["excessive lifetime", { observedAt: NOW_MS - 1, expiresAt: NOW_MS + 300_000 }],
+    ["fractional observation", { observedAt: NOW_MS - 0.5, expiresAt: NOW_MS + 60_000 }],
+    ["fractional expiry", { observedAt: NOW_MS, expiresAt: NOW_MS + 60_000.5 }],
+  ] as const)("fails closed for known evidence with %s", async (_label, times) => {
+    const response = sourceReferenceResponse();
+    const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      ...response, reference: { ...response.reference, ...times },
+    })));
+    await expect(client(fetchImplementation).sourceReference({
+      accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+    })).rejects.toMatchObject({ code: "search_unavailable" });
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+
+  it("accepts observation at the current instant with the full five-minute lifetime", async () => {
+    const response = sourceReferenceResponse();
+    const reference = { ...response.reference, observedAt: NOW_MS, expiresAt: NOW_MS + 300_000 };
+    const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ ...response, reference })));
+    await expect(client(fetchImplementation).sourceReference({
+      accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+    })).resolves.toEqual({ ...response, reference });
+  });
+
+  it("checks freshness on response receipt rather than only when dispatching", async () => {
+    let now = NOW_MS;
+    const response = sourceReferenceResponse();
+    const fetchImplementation = vi.fn<typeof fetch>(async () => {
+      now += 100;
+      return new Response(JSON.stringify({
+        ...response, reference: { ...response.reference, observedAt: NOW_MS, expiresAt: NOW_MS + 100 },
+      }));
+    });
+    await expect(client(fetchImplementation, {}, () => now).sourceReference({
+      accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+    })).rejects.toBeInstanceOf(TfSearchUnavailableError);
+  });
+
+  it.each([
+    ["HTTP 503", () => new Response("{}", { status: 503 })],
+    ["malformed JSON", () => new Response("{")],
+    ["request ID mismatch", () => new Response(JSON.stringify(sourceReferenceResponse(SECOND_REQUEST_ID)))],
+    ["unknown fields", () => new Response(JSON.stringify({ ...sourceReferenceResponse(), extra: "untrusted" }))],
+    ["known without reference", () => new Response(JSON.stringify({
+      schemaVersion: 1, requestId: FIRST_REQUEST_ID, sourceKey: SOURCE_KEY, status: "known",
+    }))],
+    ["unknown with reference", () => new Response(JSON.stringify({ ...sourceReferenceResponse(), status: "unknown" }))],
+    ["oversized content length", () => new Response("{}", { headers: { "content-length": "1048577" } })],
+    ["oversized streamed body", () => new Response(" ".repeat(1024 * 1024 + 1))],
+  ] as const)("preserves dispatch rejection for %s without retry", async (_label, makeResponse) => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () => makeResponse());
+    await expect(client(fetchImplementation).sourceReference({
+      accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+    })).rejects.toBeInstanceOf(TfSearchUnavailableError);
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["invalid account", { accountId: "invalid", sourceUrl: SOURCE_URL }],
+    ["unsupported origin", { accountId: FIRST_REQUEST_ID, sourceUrl: "https://attacker.invalid/track" }],
+    ["HTTP source", { accountId: FIRST_REQUEST_ID, sourceUrl: "http://www.youtube.com/watch?v=AbCdEf01234" }],
+    ["ambiguous video", { accountId: FIRST_REQUEST_ID, sourceUrl: "https://www.youtube.com/watch?v=AbCdEf01234&v=ZyXwVu98765" }],
+    ["caller metadata", { accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL, artist: "Browser Hint" }],
+  ] as const)("rejects %s before sending any lookup", async (_label, input) => {
+    const fetchImplementation = vi.fn<typeof fetch>();
+    await expect(client(fetchImplementation).sourceReference(input)).rejects.toBeInstanceOf(TfSearchUnavailableError);
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  describe("source-reference deadline", () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    function heldFetch() {
+      const requests: Array<{ readonly signal: AbortSignal | null | undefined; readonly resolve: (response: Response) => void }> = [];
+      const implementation = vi.fn<typeof fetch>((_input, init) => new Promise<Response>((resolve, reject) => {
+        const signal = init?.signal;
+        requests.push({ signal, resolve });
+        signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      }));
+      return { implementation, requests };
+    }
+
+    it("allows a source reference after twelve seconds despite the ordinary ten-second budget", async () => {
+      const fixture = heldFetch();
+      const result = client(fixture.implementation, { timeoutMs: 10_000 }).sourceReference({
+        accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+      }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(12_000);
+      fixture.requests[0]!.resolve(new Response(JSON.stringify(sourceReferenceResponse())));
+
+      expect(await result).toEqual(sourceReferenceResponse());
+      expect(fixture.requests[0]!.signal?.aborted).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("actually aborts its own twenty-second default deadline without retry", async () => {
+      const fixture = heldFetch();
+      const result = client(fixture.implementation, { timeoutMs: 10_000 }).sourceReference({
+        accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+      }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(19_999);
+      expect(fixture.requests[0]!.signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fixture.requests[0]!.signal?.aborted).toBe(true);
+      expect(await result).toBeInstanceOf(TfSearchUnavailableError);
+      expect(fixture.implementation).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each([1, 30_000])("honors a bounded explicit source-reference deadline of %s ms", async (sourceReferenceTimeoutMs) => {
+      const fixture = heldFetch();
+      const result = client(fixture.implementation, { timeoutMs: 10_000, sourceReferenceTimeoutMs }).sourceReference({
+        accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL,
+      }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(sourceReferenceTimeoutMs - 1);
+      expect(fixture.requests[0]!.signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fixture.requests[0]!.signal?.aborted).toBe(true);
+      expect(await result).toBeInstanceOf(TfSearchUnavailableError);
+      expect(fixture.implementation).toHaveBeenCalledOnce();
+    });
+
+    it.each([0, -1, 30_001, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+      "rejects an invalid source-reference deadline %s before fetching",
+      (sourceReferenceTimeoutMs) => {
+        const fixture = heldFetch();
+        expect(() => client(fixture.implementation, { sourceReferenceTimeoutMs }))
+          .toThrow("invalid TF search client configuration");
+        expect(fixture.implementation).not.toHaveBeenCalled();
+      },
+    );
+
+    it("keeps ordinary search on its original deadline alongside a longer source lookup", async () => {
+      const fixture = heldFetch();
+      const gateway = client(fixture.implementation, { timeoutMs: 10_000, sourceReferenceTimeoutMs: 20_000 });
+      const lookup = gateway.sourceReference({ accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL })
+        .catch((error: unknown) => error);
+      const search = gateway.search({ artist: "Artist", title: "Track", mode: "manual", sources: ["yt"], maxResults: 1 })
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await search).toBeInstanceOf(TfSearchUnavailableError);
+      expect(fixture.requests[1]!.signal?.aborted).toBe(true);
+      expect(fixture.requests[0]!.signal?.aborted).toBe(false);
+      fixture.requests[0]!.resolve(new Response(JSON.stringify(sourceReferenceResponse())));
+      expect(await lookup).toEqual(sourceReferenceResponse());
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+});
+
+
+describe("private gateway cancellation", () => {
+  const methods = ["search", "sourceReference"] as const;
+  type Method = typeof methods[number];
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+    return { promise, resolve, reject };
+  }
+
+  function invoke(method: Method, gateway: HttpTfSearchClient, signal?: AbortSignal) {
+    const options = signal === undefined ? undefined : { signal };
+    return method === "search"
+      ? gateway.search({ artist: "Artist", title: "Track", mode: "manual", sources: ["yt"], maxResults: 1 }, options)
+      : gateway.sourceReference({ accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL }, options);
+  }
+
+  function payload(method: Method) {
+    return method === "search" ? searchResponse(FIRST_REQUEST_ID) : sourceReferenceResponse();
+  }
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it.each(methods)("rejects pre-aborted %s without a private fetch", async (method) => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(payload(method))));
+    const controller = new AbortController();
+    controller.abort(new Error("private_abort_reason"));
+
+    const result = await invoke(method, client(fetchImplementation), controller.signal).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(TfSearchUnavailableError);
+    expect(result).toMatchObject({ message: "TF search unavailable", code: "search_unavailable" });
+    expect(fetchImplementation).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(methods.flatMap((method) => ["success", "rejection"].map((late) => ({ method, late }))))(
+    "stops $method despite an abort-ignoring fetch and observes late $late",
+    async ({ method, late }) => {
+      const pending = deferred<Response>();
+      const fetchImplementation = vi.fn<typeof fetch>(() => pending.promise);
+      const controller = new AbortController();
+      let outcome: unknown;
+      const result = invoke(method, client(fetchImplementation), controller.signal)
+        .then((value) => { outcome = value; }, (error: unknown) => { outcome = error; });
+      try {
+        controller.abort(new Error("private_abort_reason"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(outcome).toBeInstanceOf(TfSearchUnavailableError);
+        expect(outcome).toMatchObject({ message: "TF search unavailable" });
+        expect(fetchImplementation.mock.calls[0]![1]?.signal?.aborted).toBe(true);
+        expect(vi.getTimerCount()).toBe(0);
+        if (late === "rejection") pending.reject(new Error("private_late_failure"));
+        else {
+          const cancel = vi.fn();
+          const body = new ReadableStream<Uint8Array>({
+            start(stream) { stream.enqueue(new TextEncoder().encode(JSON.stringify(payload(method)))); },
+            cancel,
+          });
+          pending.resolve(new Response(body));
+          await vi.advanceTimersByTimeAsync(0);
+          expect(cancel).toHaveBeenCalledOnce();
+          expect(body.locked).toBe(false);
+        }
+        await vi.advanceTimersByTimeAsync(0);
+        expect(outcome).toBeInstanceOf(TfSearchUnavailableError);
+        expect(fetchImplementation).toHaveBeenCalledOnce();
+      } finally {
+        pending.resolve(new Response(JSON.stringify(payload(method))));
+        await result;
+      }
+    },
+  );
+
+  it.each(methods)("cancels the pending %s body read even when underlying cancel never settles", async (method) => {
+    const reading = deferred<void>();
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const cancel = vi.fn(() => new Promise<void>(() => {}));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { stream = controller; },
+      pull() { reading.resolve(); },
+      cancel,
+    }, { highWaterMark: 0 });
+    const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(body));
+    const controller = new AbortController();
+    let outcome: unknown;
+    const result = invoke(method, client(fetchImplementation), controller.signal)
+      .then((value) => { outcome = value; }, (error: unknown) => { outcome = error; });
+    try {
+      await reading.promise;
+      controller.abort(new Error("private_abort_reason"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome).toBeInstanceOf(TfSearchUnavailableError);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(body.locked).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stream.error(new Error("fixture cleanup"));
+      await result;
+    }
+  });
+
+  it.each(methods.flatMap((method) => [200, 503].map((status) => ({ method, status }))))(
+    "cleans $method cancellation listeners/timer after HTTP $status without changing its default wire command",
+    async ({ method, status }) => {
+      const controller = new AbortController();
+      const add = vi.spyOn(controller.signal, "addEventListener");
+      const remove = vi.spyOn(controller.signal, "removeEventListener");
+      const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(payload(method)), { status }));
+      const result = await invoke(method, client(fetchImplementation), controller.signal).catch((error: unknown) => error);
+      if (status === 200) expect(result).toEqual(payload(method));
+      else expect(result).toBeInstanceOf(TfSearchUnavailableError);
+      const listener = add.mock.calls.find(([event]) => event === "abort")?.[1];
+      expect(listener).toBeTypeOf("function");
+      expect(remove).toHaveBeenCalledWith("abort", listener);
+      expect(vi.getTimerCount()).toBe(0);
+      controller.abort();
+      const [url, init] = fetchImplementation.mock.calls[0]!;
+      expect(init?.signal?.aborted).toBe(false);
+      expect(init?.redirect).toBe("error");
+      const path = method === "search" ? TF_SEARCH_COMMAND_PATH : SOURCE_REFERENCE_PATH;
+      expect(new URL(String(url)).pathname).toBe(path);
+      const rawBody = Buffer.from(String(init?.body));
+      expect(JSON.parse(rawBody.toString())).toEqual(method === "search" ? {
+        schemaVersion: 1, requestId: FIRST_REQUEST_ID,
+        artist: "Artist", title: "Track", mode: "manual", sources: ["yt"], maxResults: 1,
+      } : { schemaVersion: 1, requestId: FIRST_REQUEST_ID, accountId: FIRST_REQUEST_ID, sourceUrl: SOURCE_URL });
+      const headers = new Headers(init?.headers);
+      expect([...headers.keys()].sort()).toEqual([
+        "content-type", "x-apollo-internal-nonce", "x-apollo-internal-signature", "x-apollo-internal-timestamp",
+      ]);
+      expect(headers.get("x-apollo-internal-signature")).toBe(createSignedBodySignature({
+        method: "POST", path, rawBody, secret: SECRET,
+        timestamp: String(Math.floor(NOW_MS / 1_000)), nonce: FIRST_NONCE,
+      }));
+    },
+  );
+
+  it.each(methods)("closes a native local HTTP %s response while its body is held", async (method) => {
+    vi.useRealTimers();
+    const held = deferred<{ readonly response: ServerResponse; readonly tail: string }>();
+    const closed = deferred<ServerResponse>();
+    const fetched = deferred<Response>();
+    const server = createServer((request, response) => {
+      request.resume();
+      request.once("end", () => {
+        const raw = JSON.stringify(payload(method));
+        response.once("close", () => closed.resolve(response));
+        response.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(raw) });
+        response.write(raw.slice(0, 8));
+        held.resolve({ response, tail: raw.slice(8) });
+      });
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const { port } = server.address() as AddressInfo;
+    const fetchImplementation: typeof fetch = async (input, init) => {
+      const response = await fetch(input, init);
+      fetched.resolve(response);
+      return response;
+    };
+    const controller = new AbortController();
+    let outcome: unknown;
+    const result = invoke(method, client(fetchImplementation, { origin: `http://127.0.0.1:${port}`, timeoutMs: 10_000 }), controller.signal)
+      .then((value) => { outcome = value; }, (error: unknown) => { outcome = error; });
+    let pending: Awaited<typeof held.promise> | undefined;
+    try {
+      pending = await Promise.race([held.promise, result.then(() => {
+        throw new Error("Fixture request ended before holding its body");
+      })]);
+      const response = await fetched.promise;
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(response.body?.locked).toBe(true);
+      controller.abort(new Error("private_abort_reason"));
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(outcome).toBeInstanceOf(TfSearchUnavailableError);
+      const disconnected = await closed.promise;
+      expect(disconnected.destroyed).toBe(true);
+      expect(disconnected.writableEnded).toBe(false);
+    } finally {
+      controller.abort();
+      pending?.response.end(pending.tail);
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+        server.closeAllConnections();
+      });
+      await result;
+    }
   });
 });

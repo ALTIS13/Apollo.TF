@@ -1,12 +1,394 @@
 # Apollo TF implementation status
 
-Last updated: 2026-07-29.
+Last updated: 2026-09-05.
+
+## Current remaining-gates handoff
+
+- Root reports real liked-store PG17 proof accepted on private `cc364d1`:
+  run `tf20260905_28f286c2`, two migrations/exit 0, original tests 3 passed /
+  0 skipped, proof exit 0/accepted true. Evidence retained by root; Application
+  deletion started but cleanup verification remains pending. Not HTTP/UI/audio
+  or Platform Auth acceptance. Older real-DB-pending notes below are historical.
+- Root independently accepted `700ed3e` after `9745291` and `97851c8`; those
+  source-only UI slices are closed, still local and undeployed.
+- Current residual work and ownership gates are reconciled in
+  [TF remaining gates](docs/handoffs/2026-09-05-tf-remaining-gates.md).
+  Earlier checkpoint review-pending wording is historical, not a new task.
+- Documentation only: no tests/builds/runtime probes rerun. Frozen TF PG17
+  Application remains separate from root's Supabase/account staging.
+
+## Footer native keyboard activation checkpoint
+
+Status: `TF_PLAYER_KEYBOARD_LOCAL_REVIEW_READY`.
+
+- Reproduced Space on Next/Previous/Mute toggling playback instead of the focused
+  action. Four footer buttons now stop only Space propagation, preserving native
+  activation without preventDefault or synthetic clicks. Global hotkeys, Queue,
+  layout, player state, auth and API are unchanged.
+- TDD: four intended keyboard failures before the patch; all five focused Player
+  tests pass after it, including disabled transport/tab-order coverage. Scoped
+  music-player typecheck passed. No unrelated suites/build or layout reruns.
+- Full App Chrome fixture QA passed Next/Previous Space+Enter, Play/Pause, Mute
+  without playback side effects, disabled empty controls and unchanged body Space.
+  No page/console errors. Reproduce: `node C:/Users/maksi/.codex/tmp/tf-player-keyboard-qa.cjs`
+  with local preview at `http://127.0.0.1:4191/`. HTTP/Audio are fixtures, not
+  real auth/backend/audio-decoding evidence.
+- Prior responsive commit `97851c8` is independently reviewed and root-accepted.
+  This three-file slice is local, awaiting review; no UI push/deploy. Frozen
+  TF PG17 proof and Platform account staging remain separate root-owned gates.
+
+## Bottom player responsive bounds checkpoint
+
+Status: `TF_PLAYER_RESPONSIVE_LOCAL_REVIEW_READY`.
+
+- Fixed a reproduced mobile defect: mute was at x=392..408 on 320/375/390px
+  viewports, hidden by the app's overflow boundary. Only three responsive layout
+  classes in `Player.tsx` changed: shrinkable mobile track info, bounded controls,
+  and no desktop-width volume reservation on mobile. No state/hotkey/API changes.
+- Browser RED: nine clipped-mute failures across three mobile widths/states.
+  GREEN: all 15 empty/long-title-paused/active cases at 320/375/390/768/1440px
+  passed geometry, non-overlap, mute focus bounds, actual mute/unmute and seek
+  action checks. Height remains 90px; 768/1440px empty-state section/control
+  geometry exactly matches the pre-change measurements. Screenshots inspected.
+- Reproduce with Windows Node: `node C:/Users/maksi/.codex/tmp/tf-player-responsive-qa.cjs`
+  against local preview `http://127.0.0.1:4191/`. HTTP and Audio are fixtures;
+  this does not validate live auth/backend or audio decoding. RED/GREEN geometry
+  and screenshots: `C:\Users\maksi\.codex\tmp\tf-player-responsive-evidence\`.
+- Scoped music-player typecheck and diff check passed. No unrelated suites or
+  snapshot/className tests added. Previous Queue `9745291` is root-review accepted.
+- Commit/push: local two-file slice, root review next; no push/deploy. Frozen
+  private proof source, Platform/PG17 gates and other projects remain untouched.
+
+## Queue keyboard and touch accessibility checkpoint
+
+Status: `TF_QUEUE_ACCESSIBILITY_LOCAL_REVIEW_READY`.
+
+- Queue rows now use sibling native play/remove buttons with track-specific
+  accessible names and visible keyboard focus. Remove retains desktop hover
+  visibility and is always visible on touch, with a 40px target. Existing queue
+  order, current-track styling, player callbacks and state remain unchanged.
+- Queue-local Space propagation guard preserves native button activation without
+  triggering the existing global playback shortcut; clear uses the same guard.
+  No global hotkey, API, DTO, auth, entitlement or runtime changes.
+- Validation: the 2 focused Queue behavioral tests failed before implementation
+  and passed after it; music-player typecheck passed. Chrome HTTP/Audio fixture
+  QA passed at 1440x900 (Tab, Enter, Space, focus and action isolation) and
+  390x844 with coarse touch (visible remove, tap, clear). Zero page/console
+  errors or document overflow; screenshots inspected in
+  `C:\Users\maksi\.codex\tmp\tf-queue-accessibility-evidence\`.
+- Only affected checks; no existing liked/store/sidebar suites rerun. Browser
+  checks do not prove live auth, backend integration or audio decoding.
+- Commit/push: local commit on `codex/tf-product-finish`, root review pending.
+  No UI push/deploy, WSL/Docker, HomeNode or other-project changes.
+- Next: root reviews this three-file slice. Isolated PG17/Coolify proof and
+  approved-backend liked UI verification remain separate outstanding gates;
+  the frozen private proof source is not modified by this UI change.
+
+## Disposable proof Application and canonical queue checkpoint
+
+Status: `TF_PROOF_APPLICATION_SOURCE_READY_REAL_DB_PENDING`.
+
+### Что сделано
+
+- Added a source-only Git/Compose-backed Coolify Application package: fresh PG17
+  tmpfs, canonical TF migrator, unchanged official liked-collection Node runner.
+  Separate run/resource, internal network, no public ports or persistent volumes.
+- Root-only `execute:<runId>` gate, three separate random role credentials, no
+  external database input. Proof child gets only runtime credentials; source
+  revision/content digest and observed test counts bind the redacted terminal
+  outcome. Evidence must be exported from Coolify logs before resource cleanup.
+- Independent review findings were fixed: build verifies actual copied source
+  against the approved Git-content digest; no claim that tmpfs evidence survives
+  an exited container. No remaining actionable source-only review finding.
+- Removed the duplicate sidebar queue required by the existing client design.
+  Canonical Queue page/player state, one queue navigation link, mobile close,
+  account placement and existing visual style remain unchanged.
+
+### Validation
+
+- Compose config resolves three services, zero public ports, zero persistent
+  volumes, one internal network and runtime-only proof credentials. Missing root
+  execute input is rejected. These are daemon-free configuration checks.
+- Node/Bash syntax and existing migrator bundling passed; both entrypoints reject
+  missing execution gate with exit 2 before database access.
+- On clean `08a13557c6fbab75c6ad52023b6e254edaf6df50`, Git-blob digest equals local
+  build-source digest: `eb9b0adee483c1f2f088d12bcd64e1390b86d0868d12b164b8275efc9a58a541`.
+  Wrong expected digest is rejected with exit 2. This is not an image-build proof.
+- Sidebar TDD: two expected regressions first failed, then all 3 cases passed.
+  Scoped music-player typecheck and production build passed. Existing tooltip
+  sourcemap and >500 kB bundle warnings remain (530.82 kB main bundle).
+- Playwright HTTP fixtures at 1440x900 and 390x844 confirmed one queue surface,
+  retained queued track, mobile same-route drawer close and canonical clear;
+  zero page errors/mobile document overflow. Screenshots inspected after animation
+  completion at `C:\Users\maksi\.codex\tmp\tf-sidebar-queue-evidence\`.
+- No old liked UI/store suites rerun. Runner/tests/migrations from `8756bca`
+  unchanged. Real PG17 3 passed / 0 skipped evidence is still **pending**.
+
+### Commit/push
+
+- Local package commit `05d162b`; separate sidebar commit `08a1355` on
+  `codex/tf-product-finish`. This status checkpoint is documentation-only.
+- No push, merge, Docker Desktop startup, real DB, HomeNode/Coolify deployment,
+  Platform/auth or Claude project changes.
+
+### Следующий логичный этап реализации
+
+- Root reviews `docs/operations/tf-liked-proof-application.md`, selects the exact
+  clean source revision and official PG17 digest, generates private run inputs,
+  and separately approves a new isolated Coolify Application execution.
+- Remaining gates: actual image builds, Linux/bootstrap/migration execution,
+  Coolify one-shot lifecycle, official runner exit 0 with 3 passed / 0 skipped,
+  exported evidence and verified Application cleanup. No success is inferred
+  from source checks or a healthy database indicator.
+- Afterwards validate the accepted liked UI against an approved TF backend.
+  Shared Supabase/Platform adapter and cross-project auth cutover remain owned
+  by Web Platform, not this TF slice.
+
+## TF liked collection UI and PostgreSQL proof checkpoint
+
+Status: `TF_LIKED_UI_LOCAL_VALIDATED_DB_PROOF_PENDING`.
+
+### Что сделано
+
+- Existing Favorites now opens the Apollo collection; Spotify/Yandex catalogues
+  remain available. Search and recommendations can save tracks; collection rows
+  reuse the player and support deletion and cursor pagination.
+- Query keys include the account ID. Existing auth cancellation/cache clearing
+  is reused for account switch/logout; delayed canceled responses cannot refill
+  the old account cache. Generated clients use current cookie/CSRF through
+  `tfRequestInit` and invalidate only the account collection. Auth errors are
+  reported only for the original active session; a late old-account 401 cannot
+  sign out its replacement. Successful mutations still invalidate their account
+  collection after navigation unmounts the originating hook. No login or authority cutover.
+- Compact graphite/violet collection surface includes loading, empty, error,
+  stale data, refresh and mutation failure states; reduced-motion is respected.
+- Real-store PostgreSQL proof prepared in `b89b580`, then aligned with the
+  coordinator's PostgreSQL 17 staging target in `8756bca`. Expected outcome is
+  three real database tests, zero skipped. Run is owned by infrastructure.
+
+### Validation
+
+- Collection hook behavior: 6/6 passed for mutation transport/invalidation,
+  account switch/logout, late canceled responses, cursor pagination and late
+  old-session mutation 401, and save completion after navigation. The last two
+  regressions reproduced their bugs before correction. Independent review has
+  no remaining concrete finding after the navigation fix.
+- Existing Yandex disconnected regression: 1 passed, other 12 deliberately skipped.
+- Music-player final typecheck and production build: exit 0. Build still reports
+  a tooltip sourcemap warning and a bundle-size warning above 500 kB.
+- Playwright with local HTTP fixtures: save from search, list, refresh failure
+  preserving stale rows, retry and delete passed; desktop 1440x900 and mobile
+  390x844, no page errors or mobile horizontal document overflow.
+- Screenshots reviewed for loading/empty/normal/stale/error states. Compared
+  against the saved portal composition and current written visual guardrail;
+  missing live AI/Quasar PNGs mean no new live side-by-side approval is claimed.
+- Real PostgreSQL execution and deployed full-stack UI remain unverified.
+  Local Docker is off; no daemon/network change was made. Old 45 API tests were
+  not rerun; proof export is the only API production-code change.
+
+### Commit/push
+
+- Work remains isolated in `codex/tf-product-finish`. No shared-main merge,
+  push, production deployment, AI/Quasar/LetsCube or Platform runtime change.
+- PostgreSQL proof must run as a disposable Coolify Application from the exact
+  reviewed revision. All permanent components also require Coolify Applications
+  reproducible from Git/Compose; no raw standalone deployment or Service resource.
+- Secrets stay private. Volumes, backups/restore and key custody require separate
+  ownership; Coolify alone is not high availability.
+
+### Следующий логичный этап реализации
+
+- Infra executes the prepared PostgreSQL 17 proof and returns redacted evidence
+  and cleanup outcome. Then review the isolated UI commit and validate against
+  the existing TF runtime when an approved local/staging backend is available.
+
+## TF liked collection API checkpoint
+
+Status: `TF_LIKED_COLLECTION_API_LOCAL_VALIDATED`.
+
+### Что сделано
+
+- Added account-scoped GET `/api/collections/liked` and idempotent
+  PUT/DELETE `/api/collections/liked/:trackId`, cursor pagination and bounded
+  metadata validation. Reuses existing `liked_tracks`; no migration required.
+- All three routes require live `tf.collections` policy. Owner comes only from
+  `tfPrincipal.accountId`; the existing login/session contract is unchanged.
+- Added OpenAPI, generated React client and strict Zod schemas. Corrected
+  generated collection timestamp, integer and trimmed-metadata validation.
+- Handoff: `docs/handoffs/2026-09-04-tf-liked-collection.md`.
+
+### Validation
+
+- Previously passed: 45/45 route/policy tests. Not rerun on resume because
+  their behavior did not change.
+- Collection contract: 3/3 passed after correcting the generator mismatch.
+  Includes the original two tests plus one focused JSON/input regression.
+- Final `pnpm exec tsc -b lib/api-zod lib/api-client-react` and
+  `pnpm --filter @workspace/api-server typecheck`: exit 0.
+- Codegen: exit 0. `git diff --check`: exit 0.
+- Storage predicates and composite upsert key reviewed against the existing
+  schema/migration. No live PostgreSQL two-account execution performed.
+
+### Commit/push
+
+- Isolated branch `codex/tf-product-finish`, based on `073613d`.
+- This checkpoint is saved with the implementation in a local commit.
+  No push, merge or deployment. Platform and UI ownership remains unchanged.
+
+### Следующий логичный этап реализации
+
+- Review this isolated slice and integrate it into the chosen TF branch.
+  UI wiring and a PostgreSQL two-account integration check remain separate
+  follow-up work; neither was started. Cross-project auth cutover remains gated.
+
+## Unified Apollo TF integration handoff checkpoint
+
+### Что сделано
+
+- Подготовлен proposed handoff для включения Apollo TF в единый Apollo как
+  верхнеуровневый module entitlement `TF` при сохранении TF runtime/API
+  ownership.
+- Зафиксировано разделение authority: Supabase Auth отвечает только за identity
+  и source session; Platform API - за policy, installation identity,
+  entitlements/capabilities, module access, release/download admission и root
+  audit; Apollo.GAP сохраняет AWG/OlcRTC subscriptions, signed routes/bundles,
+  nodes, rooms, runtime и network telemetry.
+- Определены необходимые unified UI contracts: module access/catalog, bounded
+  TF runtime status, one-time launch/deep-link admission, module release
+  download admission и server-to-server policy decision/introspection.
+- Зафиксированы capability keys `tf.launch`, `tf.search`, `tf.playback`,
+  `tf.integrations`, `tf.collections`, `tf.downloads`,
+  `tf.release.download`, `tf.admin.observe` и additive compatibility mapping
+  для существующих `tf.*` grants без destructive rename.
+- Подготовлен поэтапный implementation plan с обязательным source-of-truth gate
+  для `platform-contract`, `platform-api`, `platform-db`, Supabase adapters и
+  Quasar deep-link resolver.
+- Старые Platform/Identity спецификации помечены superseding-ссылками, чтобы не
+  расширять текущий Platform credential/session runtime в параллельную систему
+  identity.
+- Runtime, API behavior, БД, Supabase, контейнеры, HomeNode, Coolify, Caddy,
+  UFW, DNS, Docker, Android и GitHub Actions не изменялись.
+
+### Validation
+
+- Выполнена read-only сверка `origin`, текущих worktrees, открытых PR, последних
+  commits и существующих Platform assertion/introspection, TF route-policy и
+  installation contracts.
+- Handoff сверён с действующими legacy keys и текущим TF PKCE/cookie/CSRF/
+  WebSocket boundary; migration описана additive, без немедленного удаления
+  существующих schemas или данных.
+- Выполнены placeholder/contradiction scan и `git diff --check`. Runtime tests,
+  builds и container checks не запускались, потому что checkpoint меняет только
+  документацию.
+
+### Commit/push
+
+- Рабочая ветка: `codex/feat/admin-parser-observability` в изолированном
+  worktree.
+- Checkpoint оформляется отдельным docs-only commit. Deployment и merge не
+  выполняются; push не требуется до решения владельца по cross-project review.
+
+### Следующий логичный этап реализации
+
+- Согласовать proposed handoff между владельцами Platform/Apollo.Safe,
+  Apollo.TF, Apollo.Quasar и Apollo.GAP и назначить единственный source of truth
+  для общих контрактов.
+- После явного approval начать только Task 1 плана: добавить versioned additive
+  DTO в authoritative `platform-contract`, сохранив legacy schemas. Refactor,
+  Supabase migration и deployment до этого gate не начинать.
+
+## Admin parser and account observability checkpoint
+
+### Что сделано
+
+- `tf-search` отбрасывает обрезанные demo/preview результаты до ranking и cache write по явному preview URL, маркеру в названии или сильному отклонению длительности от медианы оригиналов.
+- Signed heartbeat `search-media` передаёт ограниченную телеметрию YouTube, SoundCloud, Bandcamp и Deezer: версия, статус, запросы, ошибки и отклонённые demo за 60 секунд. `tf-api` агрегирует её в строгий admin snapshot.
+- В админ-панель добавлена секция `Парсеры` с версиями, состоянием и счётчиками качества без изменения принятой топологии и инцидентов.
+- `platform-api` отдаёт подписанную read-only сводку максимум 100 последних аккаунтов с 15-минутной активностью, сессиями и module entitlements. `tf-integrations` отдаёт только состояние Spotify/Yandex, display name и время обновления для запрошенных account IDs.
+- Cross-account overview выполняется фиксированной SQL-проекцией с лимитом 100. FORCE RLS остаётся включённым, runtime и migrator остаются `NOBYPASSRLS`, а read-only доступ требует transaction-local контекст и живую capability `platform.accounts.manage`; обычный runtime без этого контекста по-прежнему не видит чужие строки и не получает broad mutation.
+- `tf-api` остаётся единственной browser-facing границей: недоступный Platform помечает account section как `unavailable`, а не как нулевой; при недоступности integrations пользовательские строки сохраняются, а подключения и их list-scoped summary становятся `unavailable`. Токены, provider user IDs, session digests, password data, HMAC/client secrets и DB credentials в snapshot не попадают.
+- В админ-панель добавлена секция `Пользователи`: lifecycle status, последняя активность, активные сессии, доступные модули, Spotify/Yandex и компактные итоговые счётчики. Spotify/Yandex counters явно относятся только к аккаунтам `в списке`.
+- Верхняя сводка соответствует утверждённому дизайну: активные модули, активные пользователи, предупреждения парсеров и открытые инциденты. Кириллические preview-маркеры и обычная медиана для чётных duration sets исправлены; internal overview responses читаются потоково с ранней отменой после 128 KiB.
+- HomeNode, Coolify, Caddy, UFW, DNS, Docker, Android и GitHub Actions не изменялись.
+
+### Validation
+
+- Final-review fix matrix прошла `159/159`: `tf-search` 26, Platform DB 22, Platform API 33, admin contract 7, `tf-integrations` 19, `tf-api` 21, admin UI 31. Platform API subset выполнен против свежего PostgreSQL с migrations `0001..0006` и production runtime role.
+- Package typecheck прошёл для Platform DB, `platform-api`, `tf-search`, admin contract, `tf-integrations`, `tf-api` и admin dashboard.
+- Production build прошёл для `tf-search`, `tf-api`, `platform-api`, `tf-integrations` и admin dashboard; локальный production preview отвечает `HTTP 200` на `127.0.0.1:4187`.
+- Final review findings C1, I1-I6 и M1 закрыты commit `d2c93c14558347a003afeba73274bae2a6eb9f00`; scoped re-review подтвердил все девять пунктов как `ADDRESSED`, новых Critical/Important нет, `READY TO MERGE: YES`. Max-100 и unknown-key duplicate tests остаются принятым non-blocking deferred-minor disposition.
+- После re-review на exact head свежо прошли `151/151` focused tests, `7/7` package typecheck и `5/5` production builds; отдельный fresh PostgreSQL runtime-role RLS proof прошёл `8/8`.
+- Визуальный smoke во встроенном браузере не выполнен: browser-control endpoint недоступен в текущем контексте. Standalone Playwright не использовался без разрешения владельца.
+
+### Commit/push
+
+- Ветка: `codex/feat/admin-parser-observability`, remote: `https://github.com/ALTIS13/Apollo.TF.git`.
+- Commits этапа: `685cc14`, `ef6d900`, `0194230`, `84e4d27`, `649598b`, `1122e3a`, `6c2f14b`, `d2c93c1`; этот publication-status commit является docs-only завершением ветки.
+- Ветка опубликована в `origin/codex/feat/admin-parser-observability`. Создан stacked PR `#4` к `codex/feat/operator-release-publisher`, потому что базовый PR `#3` ещё открыт: `https://github.com/ALTIS13/Apollo.TF/pull/4`.
+- GitHub workflow файлов в репозитории нет; Actions и billing не использовались. HomeNode и production rollout не выполнялись.
+
+### Следующий логичный этап реализации
+
+- После merge базового PR `#3` перенести/перенацелить PR `#4` на `main`, выполнить merged-result validation и только затем готовить локальный полный web/server release stack к read-only Coolify/HomeNode preflight.
+- После работоспособной серверной и admin-инфраструктуры отдельно проектировать клиентскую зону и плеер в стиле Spotify/старой Yandex Music; Android остаётся отложен.
+
+## Operator-owned release publisher
+
+Status: `OPERATOR_PUBLISHER_LOCAL_VALIDATED`. The exact future publication
+source is `9e04ca66a70e4a1563c6a75294d64b8d540959fb`, not ambient or
+uncommitted `HEAD`. The publisher is locally proven, but no production image
+has been pushed, no GHCR login has occurred, and no GitHub or infrastructure
+setting has been changed.
+
+- The focused fake-command publisher contract passed `79/79`.
+  Its combined successful prepare/publication path records `55` commands:
+  `15` source-preparation commands, then archive extraction, `11` pre-push tag
+  inspections, exact-name builder preflight, one task-owned builder create,
+  `11` Linux/amd64 builds with
+  owned metadata files, `11` immutable-tag digest inspections, and exact
+  task-owned builder inspect/removal/absence confirmation. It never supplies a credential, token,
+  password, secret, `prune`, `--use`, or registry override argument.
+- Preparation claims the release ID before source-gate work, validates the exact archived
+  source with an explicit child environment, and durably records a private
+  protocol-v2 receipt binding release/source identity, archive SHA-256,
+  validated tree SHA-256, and the complete image catalog. Publication consumes
+  that receipt once, rechecks archive/tree binding before Docker access, runs
+  no archived lifecycle or test command, and retains failed claims.
+- Every custom image records its Buildx metadata digest and requires the
+  immutable release tag to resolve to that digest with bounded
+  `250/500/1000/2000ms` backoff. The Redis evidence is derived from the exact
+  catalog pin. Manifest, environment, and marker are hash-checked inside one
+  sibling staging directory and published by one atomic directory rename.
+  Publication rejects pre-existing builder collisions, confirms owned-builder
+  removal, and cleans only owned temporary paths.
+- The complete nine-command non-publishing matrix passed consecutively
+  (counts are passed/skipped): scripts `268/4` in `256.92s`; Platform API
+  `422/21` tests and `18/6` files in `24.98s`; API `603/8` tests and `32/2`
+  files in `50.44s`; admin `218/0` in `19.10s`; music player `118/0` in
+  `11.84s`; search `142/1` in `6.91s`; integrations `107/10` across `14`
+  files in `7.39s`; download worker `186/2` tests and `9/1` files in `8.42s`;
+  and root typecheck in `21.1s`. Generated ignored Platform/integrations
+  `dist` roots were moved intact into ignored `.ops-private` quarantine after
+  typecheck; they were not deleted or tracked.
+- The post-review final-tree supplement passed scripts `276/4` in `276.58s`,
+  API release contract `21/21`, and root typecheck. It specifically covers
+  redirected claims, archive substitution, builder collision/reconciliation,
+  cleanup confirmation and precedence, plus repeated-signal behavior.
+- Actual publication still requires an owner-created classic PAT with
+  `write:packages`, an external `docker login --password-stdin`, the exact
+  checkpoint command documented in the rollout runbook, and a separate explicit
+  owner approval for that publication action. After the first package is
+  published, its visibility must be made public before any anonymous Coolify
+  pull proof.
+- HomeNode, Coolify, Caddy, UFW, DNS, remote volumes, tags, releases, and
+  deployment remain behind their existing explicit approval gates. This local
+  proof did not access or mutate them.
 
 ## Coolify production release package
 
 Status: `LOCAL_RELEASE_VALIDATED`. The exact local image source is
 `d0f74122d9e415d7cb9571be678188657f1ce7eb`; this status does not claim a
-deployment, workflow dispatch, GHCR publication, or remote change.
+deployment, operator publication, GHCR publication, or remote change.
 
 - The production package consists of
   `deploy/coolify/apollo-platform.compose.yml`,
@@ -45,8 +427,8 @@ deployment, workflow dispatch, GHCR publication, or remote change.
   verifier also compares exact source and reconstructed byte counts, so an
   embedded NUL or any other binary normalization fails silently before
   credential equality can pass.
-- Production validation now requires the exact workflow artifact source commit,
-  repository, digest, and immutable reference for every image and renders
+- Production validation now requires the completed operator manifest source
+  commit, repository, digest, and immutable reference for every image and renders
   Compose from an isolated allowlist. The explicit local mode remains separate.
   The checked-in env was validated in explicit `production` mode against the
   local ignored Task 3 zero-placeholder manifest at
@@ -84,8 +466,8 @@ deployment, workflow dispatch, GHCR publication, or remote change.
 - The observed legacy volume remains only `DETACHED_UNKNOWN`: unnamed,
   unmounted, unstarted, unmodified, and absent from tracked manifests.
 - The final fix wave did not contact or mutate HomeNode, Coolify, host Caddy,
-  UFW, DNS, GitHub settings/workflows, GHCR, any remote database/volume, or the
-  detached legacy volume. The release workflow was not dispatched.
+  UFW, DNS, GitHub settings, GHCR, any remote database/volume, or the detached
+  legacy volume. The operator publisher was not run.
 
 ## TF immutable migrations release candidate
 

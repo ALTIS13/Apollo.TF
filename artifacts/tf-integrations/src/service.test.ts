@@ -12,6 +12,7 @@ import type {
   TfIntegrationsCommandContext,
 } from "@workspace/tf-integrations-db";
 import { describe, expect, it } from "vitest";
+import { SpotifyProvider } from "./providers/spotify.js";
 
 import {
   ProviderTokenVault,
@@ -121,9 +122,19 @@ class MemoryRepository implements ProviderAccountRepository {
     account: string,
     provider: Provider,
     context: TfIntegrationsCommandContext,
+    expected?: Pick<ProviderAccountRecord, "generation" | "tokenEnvelope">,
   ): Promise<boolean> {
     this.events.push(`delete:${account}:${provider}`);
     this.mutationContexts.push(context);
+    const current = this.records.get(this.key(account, provider));
+    if (
+      expected &&
+      (current?.generation !== expected.generation ||
+        JSON.stringify(current.tokenEnvelope) !==
+          JSON.stringify(expected.tokenEnvelope))
+    ) {
+      return false;
+    }
     if (!this.deleteRecords) {
       return this.records.has(this.key(account, provider));
     }
@@ -314,6 +325,180 @@ function storedRecord(
 }
 
 describe("TfIntegrationsService", () => {
+  function refreshProvider(respond: () => Promise<Response>) {
+    return new SpotifyProvider({
+      clientId: "fixture-client",
+      clientSecret: "fixture-secret",
+      callbackUri: "https://api.tf.apollot.ru/api/spotify/callback",
+      now: () => Date.parse("2026-07-25T14:00:00.000Z"),
+      fetch: async () => respond(),
+    });
+  }
+
+  it("discards invalid_grant credentials, reports disconnected and never refreshes them again", async () => {
+    const tokenVault = vault();
+    const repository = new MemoryRepository();
+    const record = storedRecord(tokenVault, "spotify");
+    repository.records.set(repository.key(accountId, "spotify"), record);
+    repository.records.set(
+      repository.key(otherAccountId, "spotify"),
+      storedRecord(tokenVault, "spotify", otherAccountId),
+    );
+    repository.records.set(
+      repository.key(accountId, "yandex"),
+      storedRecord(tokenVault, "yandex"),
+    );
+    let requests = 0;
+    const logs: unknown[] = [];
+    const target = service(
+      repository,
+      tokenVault,
+      refreshProvider(async () => {
+        requests += 1;
+        return new Response(
+          JSON.stringify({
+            error: "invalid_grant",
+            error_description: "secret-canary",
+          }),
+          { status: 400 },
+        );
+      }),
+      yandexAdapter(),
+      {
+        error: (...args) => {
+          logs.push(args);
+        },
+      },
+    );
+    const input = command("spotify.liked.list", { offset: 0, limit: 50 });
+
+    expect(await target.execute(input)).toMatchObject({
+      error: { code: "not_connected" },
+    });
+    expect(repository.records.has(repository.key(accountId, "spotify"))).toBe(
+      false,
+    );
+    expect(await target.execute(command("spotify.status", {}))).toMatchObject({
+      result: { account: { connected: false } },
+    });
+    expect(await target.execute(input)).toMatchObject({
+      error: { code: "not_connected" },
+    });
+    expect(requests).toBe(1);
+    expect(repository.records.size).toBe(2);
+    expect(JSON.stringify(logs)).not.toContain("secret-canary");
+  });
+
+  it.each([
+    [400, { error: "invalid_client" }, "provider_rejected"],
+    [400, { error: { code: "invalid_grant" } }, "provider_rejected"],
+    [500, { error: "invalid_grant" }, "provider_unavailable"],
+  ])(
+    "keeps credentials for non-terminal refresh response %s %j",
+    async (status, body, code) => {
+      const tokenVault = vault();
+      const repository = new MemoryRepository();
+      const record = storedRecord(tokenVault, "spotify");
+      repository.records.set(repository.key(accountId, "spotify"), record);
+      const target = service(
+        repository,
+        tokenVault,
+        refreshProvider(
+          async () => new Response(JSON.stringify(body), { status }),
+        ),
+      );
+      expect(
+        await target.execute(
+          command("spotify.liked.list", { offset: 0, limit: 50 }),
+        ),
+      ).toMatchObject({ error: { code } });
+      expect(
+        repository.records.get(repository.key(accountId, "spotify")),
+      ).toEqual(record);
+    },
+  );
+
+  it.each(["reconnected", "refreshed"])(
+    "never deletes %s credentials when an older refresh returns invalid_grant",
+    async (replacement) => {
+      const tokenVault = vault();
+      const repository = new MemoryRepository();
+      const record = storedRecord(tokenVault, "spotify");
+      repository.records.set(repository.key(accountId, "spotify"), record);
+      let respond!: (value: Response) => void;
+      let started!: () => void;
+      const pending = new Promise<Response>((resolve) => {
+        respond = resolve;
+      });
+      const ready = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const target = service(
+        repository,
+        tokenVault,
+        refreshProvider(() => {
+          started();
+          return pending;
+        }),
+      );
+      const result = target.execute(
+        command("spotify.liked.list", { offset: 0, limit: 50 }),
+      );
+      await ready;
+      const current = {
+        ...record,
+        generation:
+          replacement === "reconnected" ? randomUUID() : record.generation,
+        tokenEnvelope: tokenVault.encrypt("spotify", accountId, {
+          accessToken: "new-access",
+          refreshToken: "new-refresh",
+          expiresAt: "2026-07-25T15:00:00.000Z",
+        }),
+      };
+      repository.records.set(repository.key(accountId, "spotify"), current);
+      respond(
+        new Response(JSON.stringify({ error: "invalid_grant" }), {
+          status: 400,
+        }),
+      );
+      expect(await result).toMatchObject({ error: { code: "not_connected" } });
+      expect(
+        repository.records.get(repository.key(accountId, "spotify")),
+      ).toEqual(current);
+      expect(await target.execute(command("spotify.status", {}))).toMatchObject(
+        { result: { account: { connected: true } } },
+      );
+    },
+  );
+
+  it("reports storage failure rather than disconnected if invalid_grant cleanup cannot persist", async () => {
+    const tokenVault = vault();
+    const repository = new MemoryRepository();
+    repository.records.set(
+      repository.key(accountId, "spotify"),
+      storedRecord(tokenVault, "spotify"),
+    );
+    repository.delete = async () => {
+      throw new Error("storage fixture");
+    };
+    const target = service(
+      repository,
+      tokenVault,
+      refreshProvider(
+        async () =>
+          new Response(JSON.stringify({ error: "invalid_grant" }), {
+            status: 400,
+          }),
+      ),
+    );
+    expect(
+      await target.execute(
+        command("spotify.liked.list", { offset: 0, limit: 50 }),
+      ),
+    ).toMatchObject({ error: { code: "storage_unavailable" } });
+    expect(repository.records.size).toBe(1);
+  });
+
   it("stores Spotify exchange tokens encrypted and returns only account summary", async () => {
     const tokenVault = vault();
     const repository = new MemoryRepository();

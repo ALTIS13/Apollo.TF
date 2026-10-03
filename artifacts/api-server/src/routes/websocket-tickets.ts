@@ -1,4 +1,11 @@
 import { Router, type IRouter, type Request } from "express";
+import {
+  familyCookies,
+  hasFamilyCookie,
+  sendRenewalError,
+} from "../lib/tf-browser-session.js";
+import type { TfFamilyWebSocket } from "../lib/tf-family-websocket.js";
+import { unavailable } from "../lib/tf-renewal-contract.js";
 
 import {
   TfSessionNotFoundError,
@@ -54,6 +61,86 @@ function hasExactEmptyInput(request: Request): boolean {
   } catch {
     return false;
   }
+}
+
+/** Family-only route owns its complete live capability gate, before the legacy policy/router. */
+export function createFamilyWebSocketTicketRouter(dependencies: {
+  webOrigin: string;
+  service?: TfFamilyWebSocket;
+}): IRouter {
+  const router = Router();
+  router.post("/ws/tickets", async (request, response, next) => {
+    if (!hasFamilyCookie(request)) {
+      next();
+      return;
+    }
+    response.setHeader("Cache-Control", "no-store");
+    response.setHeader("Pragma", "no-cache");
+    response.setHeader("Referrer-Policy", "no-referrer");
+    const seen = new Set<string>();
+    for (let n = 0; n < request.rawHeaders.length; n += 2) {
+      const name = request.rawHeaders[n]!.toLowerCase();
+      if (
+        ![
+          "origin",
+          "cookie",
+          "x-csrf-token",
+          "content-length",
+          "transfer-encoding",
+          "content-type",
+          "content-encoding",
+        ].includes(name)
+      )
+        continue;
+      if (seen.has(name)) {
+        response
+          .status(400)
+          .json({ code: "TF_RENEWAL_INVALID_REQUEST", retryable: false });
+        return;
+      }
+      seen.add(name);
+    }
+    if (request.get("origin") !== dependencies.webOrigin) {
+      response
+        .status(403)
+        .json({ code: "TF_RENEWAL_CSRF_REJECTED", retryable: false });
+      return;
+    }
+    if (
+      !hasExactEmptyInput(request) ||
+      request.headers["content-encoding"] !== undefined
+    ) {
+      response
+        .status(400)
+        .json({ code: "TF_RENEWAL_INVALID_REQUEST", retryable: false });
+      return;
+    }
+    const abort = new AbortController();
+    const cancel = () => abort.abort();
+    request.once("aborted", cancel);
+    response.once("close", cancel);
+    const timeout = setTimeout(cancel, 10_000);
+    try {
+      if (!dependencies.service) throw unavailable();
+      const { handle, csrf } = familyCookies(request);
+      const ticket = await dependencies.service.issue(
+        handle,
+        csrf,
+        request.get("x-csrf-token") ?? "",
+        abort.signal,
+      );
+      if (!abort.signal.aborted) response.status(201).json({ ticket });
+    } catch (error) {
+      if (!abort.signal.aborted) sendRenewalError(response, error);
+      else if (!response.destroyed && !response.writableEnded)
+        sendRenewalError(response, unavailable());
+    } finally {
+      clearTimeout(timeout);
+      request.off("aborted", cancel);
+      response.off("close", cancel);
+    }
+  });
+  return router;
 }
 
 export function createWebSocketTicketRouter(

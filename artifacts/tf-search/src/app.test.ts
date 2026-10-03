@@ -5,6 +5,7 @@ import type {
   TfSearchArtistDiscoveryCommand,
   TfSearchArtistDiscoveryResponse,
   TfSearchCommand,
+  TfSearchFreeCommand,
   TfSearchResponse,
   TfSearchSuggestionsCommand,
   TfSearchSuggestionsResponse,
@@ -54,6 +55,9 @@ const discoveryResponse: TfSearchArtistDiscoveryResponse = {
 function service(overrides: Partial<SearchService> = {}): SearchService {
   return {
     async search() {
+      return response;
+    },
+    async freeSearch() {
       return response;
     },
     async suggestions(input: TfSearchSuggestionsCommand): Promise<TfSearchSuggestionsResponse> {
@@ -173,6 +177,7 @@ describe("TF search HTTP boundary", () => {
     const suggestionsBody = Buffer.from(JSON.stringify({
       schemaVersion: 1,
       requestId,
+      accountId: "11111111-1111-4111-8111-111111111111",
       query: "Artist",
       limit: 1,
     }));
@@ -244,6 +249,28 @@ describe("TF search HTTP boundary", () => {
     await expect(invalid.json()).resolves.toEqual({ error: "invalid_request" });
   });
 
+  it("serves signed free-text search without rewriting the query", async () => {
+    const freeSearch = vi.fn().mockResolvedValue({ ...response, query: "late night music" });
+    const freeCommand: TfSearchFreeCommand = {
+      schemaVersion: 1, requestId, query: "late night music", mode: "auto", sources: ["yt"], maxResults: 1,
+    };
+    const rawBody = Buffer.from(JSON.stringify(freeCommand));
+    const result = await request(app({ service: service({ freeSearch }) }), "/v1/free-search", {
+      method: "POST",
+      headers: signedHeaders("/v1/free-search", rawBody),
+      body: rawBody,
+    });
+    expect(result.status).toBe(200);
+    expect(freeSearch).toHaveBeenCalledWith(freeCommand);
+    const invalidBody = Buffer.from(JSON.stringify({ ...freeCommand, query: "x" }));
+    const invalid = await request(app(), "/v1/free-search", {
+      method: "POST",
+      headers: signedHeaders("/v1/free-search", invalidBody),
+      body: invalidBody,
+    });
+    expect(invalid.status).toBe(400);
+  });
+
   it("rejects non-identity encodings, non-JSON bodies, and oversized bodies before service invocation", async () => {
     let calls = 0;
     const guarded = app({ service: service({ async search() { calls += 1; return response; } }) });
@@ -288,6 +315,7 @@ describe("TF search HTTP boundary", () => {
     const suggestionCommand: TfSearchSuggestionsCommand = {
       schemaVersion: 1,
       requestId,
+      accountId: "11111111-1111-4111-8111-111111111111",
       query: "Artist",
       limit: 1,
     };

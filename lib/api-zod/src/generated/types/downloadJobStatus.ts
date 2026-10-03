@@ -5,6 +5,7 @@
  * Music Player API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { DownloadFailureCode } from "./downloadFailureCode";
 import type { DownloadJobState } from "./downloadJobState";
 
 export interface DownloadJobStatus {
@@ -24,4 +25,5 @@ export interface DownloadJobStatus {
    * @maximum 1073741824
    */
   fileSize?: number;
+  failureCode?: DownloadFailureCode;
 }

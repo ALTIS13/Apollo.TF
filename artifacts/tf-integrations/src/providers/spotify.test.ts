@@ -180,7 +180,7 @@ describe("SpotifyProvider", () => {
     ).toBe(deploymentCallback);
   });
 
-  it("exchanges a bounded code and requires access, refresh, and expiry values", async () => {
+  it("exchanges a bounded code with confidential Basic authentication and requires valid tokens", async () => {
     const accessToken = `access-${randomUUID()}`;
     const refreshToken = `refresh-${randomUUID()}`;
     const { provider, requests } = makeProvider([
@@ -215,13 +215,17 @@ describe("SpotifyProvider", () => {
       "https://accounts.spotify.com/api/token",
       "https://api.spotify.com/v1/me",
     ]);
-    expect(String(requests[0]!.init.body)).toContain(
-      "grant_type=authorization_code",
-    );
-    expect(String(requests[0]!.init.body)).toContain("code=bounded-code");
-    expect(String(requests[0]!.init.body)).toContain(
-      `redirect_uri=${encodeURIComponent(callbackUri)}`,
-    );
+    expect(requests[0]!.init.method).toBe("POST");
+    expect(requests[0]!.init.headers).toEqual({
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: "Basic c3BvdGlmeS1jbGllbnQ6c3BvdGlmeS1jcmVkZW50aWFs",
+    });
+    expect([...new URLSearchParams(String(requests[0]!.init.body))]).toEqual([
+      ["grant_type", "authorization_code"],
+      ["code", "bounded-code"],
+      ["redirect_uri", callbackUri],
+    ]);
     expect(requests[1]!.init.headers).toEqual({
       Accept: "application/json",
       Authorization: `Bearer ${accessToken}`,
@@ -287,7 +291,7 @@ describe("SpotifyProvider", () => {
     ).rejects.toMatchObject({ code: "invalid_provider_response" });
   });
 
-  it("refreshes within 60 seconds of expiry and preserves a missing replacement refresh token", async () => {
+  it("refreshes with confidential Basic authentication and preserves a missing replacement refresh token", async () => {
     const replacementAccess = `access-${randomUUID()}`;
     const existingRefresh = `refresh-${randomUUID()}`;
     const { provider, requests } = makeProvider([
@@ -314,9 +318,16 @@ describe("SpotifyProvider", () => {
     });
     expect(requests).toHaveLength(1);
     expect(requests[0]!.url).toBe("https://accounts.spotify.com/api/token");
-    expect(String(requests[0]!.init.body)).toContain(
-      `refresh_token=${encodeURIComponent(existingRefresh)}`,
-    );
+    expect(requests[0]!.init.method).toBe("POST");
+    expect(requests[0]!.init.headers).toEqual({
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: "Basic c3BvdGlmeS1jbGllbnQ6c3BvdGlmeS1jcmVkZW50aWFs",
+    });
+    expect([...new URLSearchParams(String(requests[0]!.init.body))]).toEqual([
+      ["grant_type", "refresh_token"],
+      ["refresh_token", existingRefresh],
+    ]);
     expectRedirectError(requests);
 
     const fresh = makeProvider([]).provider;

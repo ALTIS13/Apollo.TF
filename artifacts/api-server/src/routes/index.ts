@@ -1,9 +1,6 @@
 import { Router, type IRouter } from "express";
 import { createHealthRouter } from "./health.js";
-import {
-  createTracksRouter,
-  type TrackRouteDependencies,
-} from "./tracks.js";
+import { createTracksRouter, type TrackRouteDependencies } from "./tracks.js";
 import {
   createSpotifyRouter,
   type SpotifyRouteDependencies,
@@ -12,10 +9,24 @@ import { createYandexRouter, type YandexRouteDependencies } from "./yandex.js";
 import { adminRouter } from "./admin.js";
 import { createAuthRouter, type AuthRouteDependencies } from "./auth.js";
 import { requireTfCapability } from "../lib/tf-policy.js";
-import { createWebSocketTicketRouter } from "./websocket-tickets.js";
+import { hasFamilyCookie } from "../lib/tf-browser-session.js";
+import {
+  createFamilyWebSocketTicketRouter,
+  createWebSocketTicketRouter,
+} from "./websocket-tickets.js";
 import type { TfIntegrationsGateway } from "../lib/tf-integrations-client.js";
+import type { TfFamilyWebSocket } from "../lib/tf-family-websocket.js";
+import {
+  createCollectionsRouter,
+  type CollectionRouteDependencies,
+} from "./collections.js";
+import {
+  createPlaylistsRouter,
+  type PlaylistRouteDependencies,
+} from "./playlists.js";
 
 export interface ApiRouterOptions {
+  readonly familyWebSocket?: TfFamilyWebSocket;
   readonly auth?: AuthRouteDependencies;
   readonly spotify?: Omit<
     Partial<SpotifyRouteDependencies>,
@@ -24,6 +35,8 @@ export interface ApiRouterOptions {
   readonly yandex?: Omit<Partial<YandexRouteDependencies>, "gateway">;
   readonly integrationsGateway?: TfIntegrationsGateway;
   readonly tracks?: Partial<TrackRouteDependencies>;
+  readonly collections?: Partial<CollectionRouteDependencies>;
+  readonly playlists?: Partial<PlaylistRouteDependencies>;
   readonly readiness?: () => Promise<boolean>;
 }
 
@@ -33,23 +46,39 @@ export function createApiRouter(options: ApiRouterOptions = {}): IRouter {
     router.use("/auth", createAuthRouter(options.auth));
   }
   router.use(createHealthRouter(options.readiness));
+  if (options.auth)
+    router.use(
+      createFamilyWebSocketTicketRouter({
+        webOrigin: options.auth.webOrigin,
+        service: options.familyWebSocket,
+      }),
+    );
   if (options.auth === undefined) {
     router.use(
-      ["/tracks", "/spotify", "/yandex", "/ws/tickets"],
+      ["/tracks", "/collections", "/spotify", "/yandex", "/ws/tickets"],
       (_request, response) => {
         response.status(503).json({ error: "policy_unavailable" });
       },
     );
   } else {
     router.use(
-      ["/tracks", "/spotify", "/yandex", "/ws/tickets"],
+      ["/tracks", "/collections", "/spotify", "/yandex", "/ws/tickets"],
       requireTfCapability({
         platform: options.auth.platform,
         sessionStore: options.auth.sessionStore,
+        renewal: options.auth.renewal,
       }),
     );
   }
   if (options.auth !== undefined) {
+    router.use("/ws/tickets", (request, response, next) => {
+      // Successor ticket/upgrade ownership is a separate gated integration slice.
+      if (hasFamilyCookie(request)) {
+        response.status(503).json({ error: "policy_unavailable" });
+        return;
+      }
+      next();
+    });
     router.use(
       createWebSocketTicketRouter({
         issueWebSocketTicket: (handle) =>
@@ -58,6 +87,8 @@ export function createApiRouter(options: ApiRouterOptions = {}): IRouter {
     );
   }
   router.use(createTracksRouter(options.tracks));
+  router.use(createCollectionsRouter(options.collections));
+  router.use(createPlaylistsRouter(options.playlists));
   router.use(
     createSpotifyRouter({
       ...options.spotify,

@@ -20,6 +20,7 @@ const apiDatabaseSchema = [
   "playHistory.ts",
   "likedTracks.ts",
   "playlists.ts",
+  "lyricsFeedback.ts",
 ].map((file) => path.resolve(repositoryRoot, "lib/db/src/schema", file));
 
 const apiDatabaseSchemaPlugin = {

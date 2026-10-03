@@ -1,10 +1,8 @@
-import { useState, useEffect } from "react";
-import { useLocation } from "wouter";
-import { motion, AnimatePresence } from "framer-motion";
+import { useState, useEffect, useRef } from "react";
+import { Link, useLocation } from "wouter";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import {
   Music2,
-  LogIn,
-  LogOut,
   ChevronLeft,
   ChevronRight,
   List,
@@ -13,35 +11,34 @@ import {
   Loader2,
   AlertCircle,
   ExternalLink,
-  Play,
+  Search,
 } from "lucide-react";
 import {
   useSpotifyStatus,
-  useSpotifyLogout,
   useSpotifyLiked,
   useSpotifyPlaylists,
   useSpotifyPlaylistTracks,
   useSpotifyTopTracks,
-  spotifyLoginUrl,
   type SpotifyTrack,
   type SpotifyPlaylist,
 } from "@/hooks/use-spotify";
 import {
   useYandexStatus,
-  useYandexLogout,
   useYandexLiked,
   useYandexPlaylists,
   useYandexPlaylistTracks,
   type YandexTrack,
   type YandexPlaylist,
 } from "@/hooks/use-yandex";
-import { useQueryClient } from "@tanstack/react-query";
-import { useToast } from "@/hooks/use-toast";
+import { useTfAuth } from "@/auth/tf-auth";
+import { LikedCollection } from "@/components/LikedCollection";
+import { PlaylistsCollection } from "@/components/PlaylistsCollection";
+import { ProviderCandidatePanel } from "@/components/ProviderCandidatePanel";
 
 const SPOTIFY_GREEN = "#1DB954";
 const YANDEX_YELLOW = "#FFCC00";
 
-type ServiceTab = "spotify" | "yandex";
+type ServiceTab = "apollo" | "spotify" | "yandex";
 type CatalogTab = "liked" | "playlists" | "top";
 
 function formatDuration(ms: number) {
@@ -117,14 +114,7 @@ function TrackList({ tracks, offset, accentColor, onSearchVariants }: {
           transition={{ delay: Math.min(i * 0.025, 0.4) }}
           className="group flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition-all"
         >
-          <span className="w-6 text-center text-white/25 text-xs shrink-0 group-hover:hidden">{offset + i + 1}</span>
-          <button
-            className="w-6 h-6 shrink-0 hidden group-hover:flex items-center justify-center text-white/50 hover:text-white transition-colors"
-            onClick={() => onSearchVariants(track.title, track.artist)}
-            title="Find variants"
-          >
-            <Play className="w-3.5 h-3.5" />
-          </button>
+          <span className="w-6 shrink-0 text-center text-xs text-white/25">{offset + i + 1}</span>
 
           {track.thumbnailUrl ? (
             <img src={track.thumbnailUrl} alt={track.album} className="w-10 h-10 rounded-md object-cover shrink-0" />
@@ -145,18 +135,22 @@ function TrackList({ tracks, offset, accentColor, onSearchVariants }: {
               href={track.externalUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="opacity-0 group-hover:opacity-100 text-white/35 hover:text-white/70 transition-opacity"
+              className="text-white/35 hover:text-white/70 focus-visible:outline-2 focus-visible:outline-white"
               onClick={(e) => e.stopPropagation()}
-              title="Open in streaming service"
+              title="Открыть в музыкальном сервисе"
+              aria-label={`Открыть в музыкальном сервисе: ${track.title}`}
             >
               <ExternalLink className="w-3.5 h-3.5" />
             </a>
             <button
-              className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold transition-all hover:scale-105 active:scale-95"
-              style={{ background: accentColor, color: "#000" }}
+              type="button"
+              className="flex h-9 w-9 items-center justify-center gap-2 rounded-md border border-white/15 text-xs font-medium text-white hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-white sm:w-auto sm:px-3"
+              style={{ borderColor: accentColor }}
               onClick={() => onSearchVariants(track.title, track.artist)}
+              aria-label={`Найти в TF: ${track.title}`}
             >
-              Find variants
+              <Search className="h-4 w-4 shrink-0" />
+              <span className="hidden sm:inline">Найти в TF</span>
             </button>
           </div>
         </motion.div>
@@ -165,60 +159,14 @@ function TrackList({ tracks, offset, accentColor, onSearchVariants }: {
   );
 }
 
-function SpotifyConnectPrompt() {
+function ProviderCollectionUnavailable({ name }: { name: string }) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="flex flex-col items-center gap-6 py-16 px-4"
-    >
-      <div
-        className="w-20 h-20 rounded-full flex items-center justify-center shadow-xl"
-        style={{ background: `radial-gradient(circle at 35% 35%, #1ed760, ${SPOTIFY_GREEN})` }}
-      >
-        <Music2 className="w-10 h-10 text-black" />
-      </div>
-      <div className="text-center max-w-sm">
-        <h2 className="text-2xl font-bold text-white mb-2">Connect Spotify</h2>
-        <p className="text-white/55 text-base">Browse your liked songs, playlists, and top tracks — then find every version.</p>
-      </div>
-      <a
-        href={spotifyLoginUrl()}
-        className="flex items-center gap-2.5 px-7 py-3.5 rounded-full font-semibold text-black shadow-lg transition-all hover:scale-105 hover:brightness-110 active:scale-95"
-        style={{ background: SPOTIFY_GREEN }}
-      >
-        <LogIn className="w-4 h-4" />
-        Connect with Spotify
-      </a>
-      <p className="text-white/25 text-xs text-center max-w-xs">
-        Read-only access — we never modify your library or post on your behalf.
-      </p>
-    </motion.div>
-  );
-}
-
-function YandexConnectPrompt() {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="flex flex-col items-center gap-6 py-16 px-4"
-    >
-      <div
-        className="w-20 h-20 rounded-full flex items-center justify-center shadow-xl"
-        style={{ background: `radial-gradient(circle at 35% 35%, #ffe033, ${YANDEX_YELLOW})` }}
-      >
-        <Music2 className="w-10 h-10 text-black" />
-      </div>
-
-      <div className="text-center max-w-sm">
-        <h2 className="text-xl font-bold text-white mb-2">Yandex Music connection unavailable</h2>
-        <p className="text-white/55 text-sm leading-relaxed">
-          Secure connection is temporarily unavailable while server-side OAuth onboarding is being prepared.
-          Existing connected accounts remain accessible.
-        </p>
-      </div>
-    </motion.div>
+    <div className="py-8 text-sm text-muted-foreground">
+      <p>{name} не подключён.</p>
+      <Link href="/integrations" className="mt-3 inline-flex items-center gap-2 text-white underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-white">
+        К подключениям <ExternalLink className="h-4 w-4" />
+      </Link>
+    </div>
   );
 }
 
@@ -226,19 +174,19 @@ function SpotifyCatalog({ onSearchVariants }: { onSearchVariants: (title: string
   const [activeTab, setActiveTab] = useState<CatalogTab>("liked");
 
   const tabs = [
-    { id: "liked" as CatalogTab, label: "Liked Songs", icon: <Heart className="w-4 h-4" /> },
-    { id: "playlists" as CatalogTab, label: "Playlists", icon: <List className="w-4 h-4" /> },
-    { id: "top" as CatalogTab, label: "Top Tracks", icon: <TrendingUp className="w-4 h-4" /> },
+    { id: "liked" as CatalogTab, label: "Любимые", icon: <Heart className="w-4 h-4" /> },
+    { id: "playlists" as CatalogTab, label: "Плейлисты", icon: <List className="w-4 h-4" /> },
+    { id: "top" as CatalogTab, label: "Топ", icon: <TrendingUp className="w-4 h-4" /> },
   ];
 
   return (
     <div>
-      <div className="flex gap-1 mb-5 p-1 rounded-xl bg-white/5 w-fit">
+      <div className="mb-5 flex w-full gap-1 rounded-md bg-white/5 p-1 sm:w-fit">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all"
+            className="flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-2 text-xs font-medium transition-colors sm:flex-none sm:px-4 sm:text-sm"
             style={activeTab === tab.id ? { background: "rgba(255,255,255,0.12)", color: "#fff" } : { color: "rgba(255,255,255,0.45)" }}
           >
             {tab.icon}
@@ -393,18 +341,18 @@ function YandexCatalog({ onSearchVariants }: { onSearchVariants: (title: string,
   const [activeTab, setActiveTab] = useState<"liked" | "playlists">("liked");
 
   const tabs = [
-    { id: "liked" as const, label: "Liked Songs", icon: <Heart className="w-4 h-4" /> },
-    { id: "playlists" as const, label: "Playlists", icon: <List className="w-4 h-4" /> },
+    { id: "liked" as const, label: "Любимые", icon: <Heart className="w-4 h-4" /> },
+    { id: "playlists" as const, label: "Плейлисты", icon: <List className="w-4 h-4" /> },
   ];
 
   return (
     <div>
-      <div className="flex gap-1 mb-5 p-1 rounded-xl bg-white/5 w-fit">
+      <div className="mb-5 flex w-full gap-1 rounded-md bg-white/5 p-1 sm:w-fit">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all"
+            className="flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-2 text-xs font-medium transition-colors sm:flex-none sm:px-4 sm:text-sm"
             style={activeTab === tab.id ? { background: "rgba(255,255,255,0.12)", color: "#fff" } : { color: "rgba(255,255,255,0.45)" }}
           >
             {tab.icon}
@@ -523,68 +471,75 @@ function YandexPlaylistsTab({ onSearchVariants }: { onSearchVariants: (title: st
 }
 
 export default function Favorites() {
+  const reduceMotion = useReducedMotion();
   const [, navigate] = useLocation();
-  const [service, setService] = useState<ServiceTab>("spotify");
-  const { toast } = useToast();
-  const queryClient = useQueryClient();
+  const [service, setService] = useState<ServiceTab>("apollo");
+  const [apolloTab, setApolloTab] = useState<"liked" | "playlists">("liked");
+  const [selectedTrack, setSelectedTrack] = useState<{ title: string; artist: string } | null>(null);
+  const candidateRef = useRef<HTMLDivElement>(null);
+  const { hasEntitlement } = useTfAuth();
+  const integrationsAllowed = hasEntitlement("tf.integrations");
+  const callbackQuery = new URLSearchParams(window.location.search);
+  const callback = callbackQuery.has("spotify_error") ? "spotify_error=1" : callbackQuery.get("spotify_connected") === "1" ? "spotify_connected=1" : null;
+  const spotify = useSpotifyStatus(!callback && integrationsAllowed && service === "spotify");
+  const yandex = useYandexStatus(!callback && integrationsAllowed && service === "yandex");
+  const spotifyStatus = spotify.data;
+  const yandexStatus = yandex.data;
 
-  const { data: spotifyStatus, isLoading: spotifyLoading } = useSpotifyStatus();
-  const spotifyLogout = useSpotifyLogout();
-  const { data: yandexStatus, isLoading: yandexLoading } = useYandexStatus();
-  const yandexLogout = useYandexLogout();
-
+  // Retain the existing backend callback destination without treating its query as status.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("spotify_connected") === "1") {
-      queryClient.invalidateQueries({ queryKey: ["spotify", "status"] });
-      window.history.replaceState({}, "", window.location.pathname);
-      toast({ title: "Spotify connected!", description: "Your library is ready to browse." });
-    }
-    if (params.get("spotify_error")) {
-      toast({ title: "Spotify connection failed", description: params.get("spotify_error") ?? "Unknown error", variant: "destructive" });
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-  }, []);
+    if (callback) navigate(`/integrations?${callback}`, { replace: true });
+  }, [callback, navigate]);
 
   const handleSearchVariants = (title: string, artist: string) => {
-    navigate(`/?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`);
+    setSelectedTrack({ title, artist });
   };
 
+  useEffect(() => {
+    if (selectedTrack) candidateRef.current?.scrollIntoView?.({ behavior: reduceMotion ? "auto" : "smooth", block: "nearest" });
+  }, [selectedTrack, reduceMotion]);
+
   const services = [
+    { id: "apollo" as ServiceTab, label: "Apollo", color: "#a78bfa", connected: false },
     { id: "spotify" as ServiceTab, label: "Spotify", color: SPOTIFY_GREEN, connected: spotifyStatus?.connected },
     { id: "yandex" as ServiceTab, label: "Yandex Music", color: YANDEX_YELLOW, connected: yandexStatus?.connected },
   ];
 
   const activeService = services.find((s) => s.id === service)!;
-  const activeStatus = service === "spotify" ? spotifyStatus : yandexStatus;
-  const activeLoading = service === "spotify" ? spotifyLoading : yandexLoading;
+  const activeStatus = service === "apollo" ? undefined : service === "spotify" ? spotifyStatus : yandexStatus;
+  const activeQuery = service === "spotify" ? spotify : yandex;
+  const activeLoading = service !== "apollo" && activeQuery.isPending;
   const displayName = activeStatus?.connected ? activeStatus.displayName : undefined;
 
+  if (callback) return null;
+
   return (
-    <div className="min-h-screen pb-32">
-      <div className="border-b border-white/5 bg-black/20">
-        <div className="max-w-5xl mx-auto px-4 pt-6 pb-5">
+    <div className="min-h-full bg-[#09090b] pb-12">
+      <div className="border-b border-white/8">
+        <div className="max-w-5xl mx-auto px-4 pt-6 pb-5 sm:px-6 sm:pt-8">
           <div className="flex items-center justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
               <div
-                className="w-9 h-9 rounded-full flex items-center justify-center shadow-lg transition-colors"
-                style={{ background: activeService.color }}
+                className="h-11 w-11 shrink-0 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center transition-colors motion-reduce:transition-none"
+                style={{ color: activeService.color }}
               >
-                <Music2 className="w-4 h-4 text-black" />
+                {service === "apollo" ? <Heart className="h-5 w-5" /> : <Music2 className="h-5 w-5" />}
               </div>
               <div>
-                <h1 className="text-xl font-bold text-white">Favorites</h1>
-                {displayName && <p className="text-white/35 text-xs">{displayName}</p>}
+                <h1 className="text-2xl font-semibold tracking-normal text-white">Коллекция</h1>
+                {displayName && <p className="max-w-52 truncate text-white/50 text-xs">{displayName}</p>}
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <div className="flex gap-1 p-1 rounded-xl bg-white/5">
+            <div className="flex max-w-full flex-wrap items-center gap-2">
+              <div role="group" aria-label="Источник коллекции" className="flex gap-1 p-1 rounded-lg border border-white/8 bg-white/4">
                 {services.map((svc) => (
                   <button
                     key={svc.id}
-                    onClick={() => setService(svc.id)}
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all relative"
+                    type="button"
+                    aria-pressed={service === svc.id}
+                    onClick={() => { setService(svc.id); setSelectedTrack(null); }}
+                    className="flex min-h-9 items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-[#8ddbd4] motion-reduce:transition-none relative sm:text-sm"
                     style={service === svc.id ? { background: "rgba(255,255,255,0.12)", color: "#fff" } : { color: "rgba(255,255,255,0.4)" }}
                   >
                     {svc.connected && (
@@ -595,40 +550,53 @@ export default function Favorites() {
                 ))}
               </div>
 
-              {activeStatus?.connected && (
-                <button
-                  onClick={() => service === "spotify" ? spotifyLogout.mutate() : yandexLogout.mutate()}
-                  disabled={spotifyLogout.isPending || yandexLogout.isPending}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/5 hover:bg-white/10 text-white/40 hover:text-white text-xs transition-all"
-                >
-                  <LogOut className="w-3 h-3" />
-                  Disconnect
-                </button>
-              )}
             </div>
           </div>
         </div>
       </div>
 
-      <div className="max-w-5xl mx-auto px-4 py-6">
+      <div className="max-w-5xl mx-auto px-4 py-5 sm:px-6 sm:py-6">
+        {selectedTrack && service !== "apollo" && integrationsAllowed && (
+          <div ref={candidateRef} className="mb-6 scroll-mt-16">
+            <ProviderCandidatePanel
+              key={`${service}:${selectedTrack.artist}:${selectedTrack.title}`}
+              artist={selectedTrack.artist}
+              title={selectedTrack.title}
+              onClose={() => setSelectedTrack(null)}
+            />
+          </div>
+        )}
         <AnimatePresence mode="wait">
           <motion.div
             key={service}
-            initial={{ opacity: 0, x: service === "spotify" ? -12 : 12 }}
+            initial={reduceMotion ? false : { opacity: 0, x: service === "spotify" ? -12 : 12 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
+            transition={{ duration: reduceMotion ? 0 : 0.15 }}
           >
-            {activeLoading ? (
-              <LoadingState label="Checking connection..." color={activeService.color} />
+            {service === "apollo" ? <>
+              <div role="group" aria-label="Коллекция Apollo" className="mb-5 flex gap-4 border-b border-white/10">
+                <button type="button" aria-pressed={apolloTab === "liked"} onClick={() => setApolloTab("liked")} className={`min-h-11 border-b-2 px-1 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-[#8ddbd4] ${apolloTab === "liked" ? "border-[#8ddbd4] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Любимые</button>
+                <button type="button" aria-pressed={apolloTab === "playlists"} onClick={() => setApolloTab("playlists")} className={`min-h-11 border-b-2 px-1 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-[#8ddbd4] ${apolloTab === "playlists" ? "border-[#8ddbd4] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Плейлисты</button>
+              </div>
+              {apolloTab === "liked" ? <LikedCollection /> : <PlaylistsCollection />}
+            </> : !integrationsAllowed ? (
+              <div className="py-8 text-sm text-muted-foreground">Подключение музыкальных сервисов недоступно для этого аккаунта.</div>
+            ) : activeLoading ? (
+              <LoadingState label="Проверяем подключение..." color={activeService.color} />
+            ) : activeQuery.isError ? (
+              <div role="alert" className="py-8 text-sm text-amber-300">
+                Не удалось проверить подключение.
+                <button onClick={() => void activeQuery.refetch()} className="ml-2 underline focus-visible:outline-2 focus-visible:outline-white">Повторить</button>
+              </div>
             ) : service === "spotify" ? (
               spotifyStatus?.connected
                 ? <SpotifyCatalog onSearchVariants={handleSearchVariants} />
-                : <SpotifyConnectPrompt />
+                : <ProviderCollectionUnavailable name="Spotify" />
             ) : (
               yandexStatus?.connected
                 ? <YandexCatalog onSearchVariants={handleSearchVariants} />
-                : <YandexConnectPrompt />
+                : <ProviderCollectionUnavailable name="Yandex Music" />
             )}
           </motion.div>
         </AnimatePresence>

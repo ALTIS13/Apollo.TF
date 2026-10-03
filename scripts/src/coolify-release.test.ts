@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import * as coolifyReleaseModule from "./coolify-release.js";
@@ -5,6 +10,7 @@ import {
   validateCoolifyRelease,
   type ComposeSecretMount,
   type ComposeService,
+  type ReleaseArtifact,
   type ReleaseStackInput,
   type ReleaseValidationInput,
 } from "./coolify-release.js";
@@ -109,6 +115,8 @@ const imageDigests = Object.fromEntries(
     `sha256:${(index + 1).toString(16).repeat(64)}`,
   ]),
 ) as Record<ImageName, string>;
+imageDigests.redis =
+  "sha256:595cc6f2bb3af6e03347b90deb6123c6aa2c81dea05ce08128de8a174b6ac67b";
 
 const exactNetworks: Readonly<
   Record<
@@ -418,6 +426,9 @@ const exactSecretMounts = {
   "tf-api": [
     mount("admin_dashboard_token"),
     mount("tf_client_secret"),
+    mount("tf_auth_redis_url"),
+    mount("tf_cache_redis_url"),
+    mount("tf_revoke_keyring"),
     mount("tf_runtime_database_url"),
     mount("tf_integrations_internal_auth_secret"),
     mount("tf_download_queue_redis_url"),
@@ -452,7 +463,10 @@ const exactSecretMounts = {
     mount("tf_migrator_password", "999"),
     mount("tf_runtime_password", "999"),
   ],
-  "tf-redis": [],
+  "tf-redis": [
+    mount("tf_redis_acl", "999"),
+    mount("tf_redis_health_password", "999"),
+  ],
   "tf-role-bootstrap": [
     mount("tf_admin_database_url", "0", "10002", "0440"),
     mount("tf_migrator_password", "999"),
@@ -491,7 +505,10 @@ const exactSecretFileEnvironment: Readonly<
     ADMIN_DASHBOARD_TOKEN_FILE: "/run/secrets/admin_dashboard_token",
     APOLLO_MODULE_HEARTBEAT_KEYS_FILE: "/run/secrets/tf_module_heartbeat_keys",
     APOLLO_TF_CLIENT_SECRET_FILE: "/run/secrets/tf_client_secret",
+    APOLLO_TF_AUTH_REDIS_URL_FILE: "/run/secrets/tf_auth_redis_url",
+    APOLLO_TF_REVOKE_KEYRING_FILE: "/run/secrets/tf_revoke_keyring",
     DATABASE_URL_FILE: "/run/secrets/tf_runtime_database_url",
+    REDIS_URL_FILE: "/run/secrets/tf_cache_redis_url",
     TF_DOWNLOAD_QUEUE_REDIS_URL_FILE:
       "/run/secrets/tf_download_queue_redis_url",
     TF_DOWNLOAD_WORKER_INTERNAL_AUTH_SECRET_FILE:
@@ -579,16 +596,17 @@ function exactPlainEnvironment(
     "tf-api": {
       APOLLO_API_VERSION: releaseEnvironment["TF_API_VERSION"]!,
       APOLLO_DEPLOYED_AT: releaseEnvironment["TF_DEPLOYED_AT"]!,
-      APOLLO_PLATFORM_API_ORIGIN: "http://platform-api:8080",
-      APOLLO_PLATFORM_ISSUER: releaseEnvironment["PLATFORM_PUBLIC_ORIGIN"]!,
-      APOLLO_TF_AUTH_REDIS_URL: "redis://tf-redis:6379/1",
-      APOLLO_TF_BRIDGE_ALLOW_INTERNAL_HTTP: "true",
-      APOLLO_TF_CALLBACK_URL: `${releaseEnvironment["TF_API_PUBLIC_ORIGIN"]!}/api/auth/callback`,
+      APOLLO_PLATFORM_API_ORIGIN: "https://api.apollot.ru",
+      APOLLO_PLATFORM_ISSUER: "https://api.apollot.ru",
+      APOLLO_TF_BRIDGE_ALLOW_INTERNAL_HTTP: "false",
+      APOLLO_TF_CALLBACK_URL: "https://api.tf.apollot.ru/api/auth/callback",
       APOLLO_TF_CLIENT_ID: "apollo-tf-api",
-      APOLLO_TF_WEB_ORIGIN: releaseEnvironment["TF_PUBLIC_ORIGIN"]!,
+      APOLLO_TF_RENEWAL_ENABLED: "true",
+      APOLLO_TF_SUCCESSOR_WS_ENABLED:
+        releaseEnvironment["TF_SUCCESSOR_WS_ENABLED"]!,
+      APOLLO_TF_WEB_ORIGIN: "https://tf.apollot.ru",
       NODE_ENV: "production",
       PORT: "8080",
-      REDIS_URL: "redis://tf-redis:6379/0",
       SERVER_URL: releaseEnvironment["TF_API_PUBLIC_ORIGIN"]!,
       TF_DOWNLOAD_QUEUE_ALLOW_INSECURE_REDIS: "true",
       TF_DOWNLOAD_WORKER_ALLOW_INSECURE_HTTP: "true",
@@ -613,8 +631,7 @@ function exactPlainEnvironment(
     },
     "tf-integrations": {
       APOLLO_API_VERSION: releaseEnvironment["TF_INTEGRATIONS_VERSION"]!,
-      APOLLO_DEPLOYED_AT:
-        releaseEnvironment["TF_INTEGRATIONS_DEPLOYED_AT"]!,
+      APOLLO_DEPLOYED_AT: releaseEnvironment["TF_INTEGRATIONS_DEPLOYED_AT"]!,
       NODE_ENV: "production",
       PORT: "8080",
       TF_INTEGRATIONS_HEARTBEAT_ALLOW_INSECURE_HTTP: "true",
@@ -726,7 +743,10 @@ function serviceMap(
   releaseEnvironment: Readonly<Record<string, string>>,
 ): Record<string, ComposeService> {
   return Object.fromEntries(
-    names.map((name) => [name, serviceFixture(stackName, name, releaseEnvironment)]),
+    names.map((name) => [
+      name,
+      serviceFixture(stackName, name, releaseEnvironment),
+    ]),
   );
 }
 
@@ -775,9 +795,11 @@ function validInput(): ReleaseValidationInput {
     TF_INTEGRATIONS_DEPLOYED_AT: "2026-07-28T00:00:00Z",
     TF_INTEGRATIONS_VERSION: "release-a",
     TF_PUBLIC_ORIGIN: "https://tf.apollot.ru",
+    TF_RENEWAL_ENABLED: "false",
     TF_SEARCH_DEPLOYED_AT: "2026-07-28T00:00:00Z",
     TF_SEARCH_VERSION: "release-a",
     TF_SECRET_DIRECTORY: "/var/lib/apollo-tf/secrets",
+    TF_SUCCESSOR_WS_ENABLED: "false",
     TF_WEB_PORT: "18202",
     PLATFORM_API_IMAGE: `${imageRepositories["platform-api"]}@${imageDigests["platform-api"]}`,
     PLATFORM_POSTGRES_IMAGE: `${imageRepositories["platform-postgres"]}@${imageDigests["platform-postgres"]}`,
@@ -849,6 +871,169 @@ function exactInput(): ExactValidationInput {
   return validInput() as ExactValidationInput;
 }
 
+const releaseEnvironmentOrder = [
+  "PLATFORM_POSTGRES_IMAGE",
+  "PLATFORM_REDIS_IMAGE",
+  "PLATFORM_API_IMAGE",
+  "TF_POSTGRES_IMAGE",
+  "TF_REDIS_IMAGE",
+  "TF_API_IMAGE",
+  "TF_WEB_IMAGE",
+  "TF_ADMIN_IMAGE",
+  "TF_SEARCH_IMAGE",
+  "TF_INTEGRATIONS_POSTGRES_IMAGE",
+  "TF_INTEGRATIONS_IMAGE",
+  "TF_DOWNLOAD_REDIS_IMAGE",
+  "TF_DOWNLOAD_WORKER_IMAGE",
+] as const;
+
+function sha256(contents: string): string {
+  return createHash("sha256").update(contents).digest("hex");
+}
+
+async function completeReleaseEvidenceFixture() {
+  const root = await mkdtemp(join(tmpdir(), "apollo-release-evidence-test-"));
+  const releaseId = "v0.1.0-evidence";
+  const releaseDirectory = join(root, releaseId);
+  await mkdir(releaseDirectory);
+  const input = exactInput();
+  const releaseArtifact = structuredClone(
+    input.releaseArtifact!,
+  ) as ReleaseArtifact;
+  const manifestContents = `${JSON.stringify(releaseArtifact, null, 2)}\n`;
+  const envContents = `${[
+    `RELEASE_SOURCE_COMMIT=${releaseArtifact.sourceCommit}`,
+    `TF_SUCCESSOR_WS_ENABLED=${input.environment.TF_SUCCESSOR_WS_ENABLED}`,
+    ...releaseEnvironmentOrder.map(
+      (name) => `${name}=${input.environment[name]}`,
+    ),
+  ].join("\n")}\n`;
+  const manifestPath = join(releaseDirectory, "apollo-release-manifest.json");
+  const envFragmentPath = join(releaseDirectory, "release-images.env");
+  const completionPath = join(releaseDirectory, "apollo-release-complete.json");
+  const completion = {
+    environmentSha256: sha256(envContents),
+    formatVersion: 1,
+    manifestSha256: sha256(manifestContents),
+    releaseId,
+    sourceCommit: releaseArtifact.sourceCommit,
+  };
+  await writeFile(manifestPath, manifestContents, "utf8");
+  await writeFile(envFragmentPath, envContents, "utf8");
+  await writeFile(
+    completionPath,
+    `${JSON.stringify(completion, null, 2)}\n`,
+    "utf8",
+  );
+  return {
+    completion,
+    completionPath,
+    envContents,
+    envFragmentPath,
+    manifestPath,
+    releaseArtifact,
+    root,
+  };
+}
+
+describe("operator release evidence consumption", () => {
+  it("accepts valid evidence and rejects partial, hash-mismatched, or reordered evidence", async () => {
+    const fixture = await completeReleaseEvidenceFixture();
+    try {
+      expect(
+        coolifyReleaseModule.loadCoolifyReleaseArtifact(fixture.manifestPath),
+      ).toEqual(fixture.releaseArtifact);
+
+      await rm(fixture.completionPath);
+      expect(() =>
+        coolifyReleaseModule.loadCoolifyReleaseArtifact(fixture.manifestPath),
+      ).toThrowError(/^invalid_release_manifest$/);
+
+      await writeFile(
+        fixture.completionPath,
+        `${JSON.stringify(
+          { ...fixture.completion, manifestSha256: "f".repeat(64) },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+      expect(() =>
+        coolifyReleaseModule.loadCoolifyReleaseArtifact(fixture.manifestPath),
+      ).toThrowError(/^invalid_release_manifest$/);
+
+      const reorderedEnvironment = fixture.envContents.split("\n");
+      [reorderedEnvironment[1], reorderedEnvironment[2]] = [
+        reorderedEnvironment[2]!,
+        reorderedEnvironment[1]!,
+      ];
+      const reorderedEnvironmentContents = reorderedEnvironment.join("\n");
+      await writeFile(
+        fixture.envFragmentPath,
+        reorderedEnvironmentContents,
+        "utf8",
+      );
+      await writeFile(
+        fixture.completionPath,
+        `${JSON.stringify(
+          {
+            ...fixture.completion,
+            environmentSha256: sha256(reorderedEnvironmentContents),
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+      expect(() =>
+        coolifyReleaseModule.loadCoolifyReleaseArtifact(fixture.manifestPath),
+      ).toThrowError(/^invalid_release_manifest$/);
+    } finally {
+      await rm(fixture.root, { force: true, recursive: true });
+    }
+  });
+
+  it("sanitizes incomplete production evidence at the CLI boundary", async () => {
+    const fixture = await completeReleaseEvidenceFixture();
+    const stderr: string[] = [];
+    const stdout: string[] = [];
+    const writeError = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk) => {
+        stderr.push(String(chunk));
+        return true;
+      });
+    const writeOutput = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((chunk) => {
+        stdout.push(String(chunk));
+        return true;
+      });
+    try {
+      await rm(fixture.completionPath);
+      expect(
+        coolifyReleaseModule.runCoolifyReleaseCli([
+          "--env-file",
+          fixture.envFragmentPath,
+          "--mode",
+          "production",
+          "--release-manifest",
+          fixture.manifestPath,
+        ]),
+      ).toBe(1);
+    } finally {
+      writeError.mockRestore();
+      writeOutput.mockRestore();
+      await rm(fixture.root, { force: true, recursive: true });
+    }
+    expect(stdout).toEqual([]);
+    expect(JSON.parse(stderr.join(""))).toEqual({
+      errors: [{ code: "invalid_release_manifest" }],
+      ok: false,
+    });
+  });
+});
+
 describe("validateCoolifyRelease", () => {
   it("returns only deterministic redacted release manifest fields", () => {
     const result = validateCoolifyRelease(validInput());
@@ -903,34 +1088,37 @@ describe("validateCoolifyRelease", () => {
     expect(validateCoolifyRelease(input).ok).toBe(true);
   });
 
+  it("rejects partial or mismatched atomic TF production bindings", () => {
+    const partial = validInput();
+    delete partial.stacks[1].compose.services["tf-api"].environment!
+      .APOLLO_TF_REVOKE_KEYRING_FILE;
+    expect(errorCodes(partial)).toContain("tf_production_binding");
+
+    const mismatch = validInput();
+    mismatch.environment.TF_SUCCESSOR_WS_ENABLED = "true";
+    expect(errorCodes(mismatch)).toContain("tf_production_binding");
+
+    const enabled = validInput();
+    enabled.environment.TF_SUCCESSOR_WS_ENABLED = "true";
+    enabled.stacks[1].compose.services["tf-api"].environment![
+      "APOLLO_TF_SUCCESSOR_WS_ENABLED"
+    ] = "true";
+    expect(validateCoolifyRelease(enabled).ok).toBe(true);
+  });
+
   it.each([
     ["apollo-platform", "platform-api", "APOLLO_ISSUER"],
     ["apollo-platform", "platform-api", "APOLLO_ALLOWED_ORIGINS"],
     ["apollo-platform", "platform-api", "NODE_ENV"],
-    [
-      "apollo-tf",
-      "tf-integrations",
-      "TF_INTEGRATIONS_HEARTBEAT_API_ORIGIN",
-    ],
-    [
-      "apollo-tf",
-      "tf-integrations",
-      "TF_INTEGRATIONS_SPOTIFY_CALLBACK_URI",
-    ],
-    [
-      "apollo-tf",
-      "tf-search",
-      "TF_SEARCH_HEARTBEAT_ALLOW_INSECURE_HTTP",
-    ],
-    [
-      "apollo-tf",
-      "tf-download-worker",
-      "TF_DOWNLOAD_HEARTBEAT_API_ORIGIN",
-    ],
-    ["apollo-tf", "tf-api", "APOLLO_PLATFORM_API_ORIGIN"],
-    ["apollo-tf", "tf-api", "APOLLO_PLATFORM_ISSUER"],
-    ["apollo-tf", "tf-api", "APOLLO_TF_BRIDGE_ALLOW_INTERNAL_HTTP"],
-    ["apollo-tf", "tf-api", "APOLLO_TF_CALLBACK_URL"],
+    ["apollo-tf", "tf-integrations", "TF_INTEGRATIONS_HEARTBEAT_API_ORIGIN"],
+    ["apollo-tf", "tf-integrations", "TF_INTEGRATIONS_SPOTIFY_CALLBACK_URI"],
+    ["apollo-tf", "tf-search", "TF_SEARCH_HEARTBEAT_ALLOW_INSECURE_HTTP"],
+    ["apollo-tf", "tf-download-worker", "TF_DOWNLOAD_HEARTBEAT_API_ORIGIN"],
+    // These fields also violate the atomic TF production binding.
+    ["apollo-tf", "tf-api", "APOLLO_PLATFORM_API_ORIGIN", true],
+    ["apollo-tf", "tf-api", "APOLLO_PLATFORM_ISSUER", true],
+    ["apollo-tf", "tf-api", "APOLLO_TF_BRIDGE_ALLOW_INTERNAL_HTTP", true],
+    ["apollo-tf", "tf-api", "APOLLO_TF_CALLBACK_URL", true],
     ["apollo-tf", "tf-api", "SERVER_URL"],
     ["apollo-tf", "tf-api", "WEB_URL"],
     ["apollo-tf", "tf-api", "TF_DOWNLOAD_WORKER_ORIGIN"],
@@ -939,7 +1127,12 @@ describe("validateCoolifyRelease", () => {
     ["apollo-tf", "tf-admin", "APOLLO_API_UPSTREAM"],
   ] as const)(
     "rejects rendered environment drift for %s.%s.%s without leaking values",
-    (stackName, serviceName, environmentName) => {
+    (
+      stackName,
+      serviceName,
+      environmentName,
+      violatesProductionBinding: boolean = false,
+    ) => {
       const input = validInput();
       const hostileValue = `https://hostile.invalid/${environmentName.toLowerCase()}`;
       const stack = input.stacks.find(({ name }) => name === stackName)!;
@@ -956,6 +1149,15 @@ describe("validateCoolifyRelease", () => {
             service: serviceName,
             stack: stackName,
           },
+          ...(violatesProductionBinding
+            ? [
+                {
+                  code: "tf_production_binding",
+                  service: "tf-api",
+                  stack: "apollo-tf",
+                },
+              ]
+            : []),
         ],
       });
 
@@ -1527,7 +1729,7 @@ describe("validateCoolifyRelease", () => {
     );
   });
 
-  it("matches the release source commit and every immutable image to the workflow artifact", () => {
+  it("matches the release source commit and every immutable image to the operator release manifest", () => {
     const commitMismatch = exactInput();
     commitMismatch.releaseArtifact!.sourceCommit = "b".repeat(40);
     expect(errorCodes(commitMismatch)).toContain("source_commit_mismatch");
@@ -1538,6 +1740,24 @@ describe("validateCoolifyRelease", () => {
     )!.imageReference =
       `ghcr.io/altis13/apollo-tf-api@sha256:${"f".repeat(64)}`;
     expect(errorCodes(imageMismatch)).toContain("image_provenance");
+  });
+
+  it("requires the exact catalog-pinned Redis digest across artifact, environment, and services", () => {
+    const input = exactInput();
+    const tamperedDigest = `sha256:${"f".repeat(64)}`;
+    const tamperedReference = `docker.io/library/redis@${tamperedDigest}`;
+    const redis = input.releaseArtifact!.images.find(
+      ({ name }) => name === "redis",
+    )!;
+    redis.imageDigest = tamperedDigest;
+    redis.imageReference = tamperedReference;
+    input.environment.PLATFORM_REDIS_IMAGE = tamperedReference;
+    input.environment.TF_REDIS_IMAGE = tamperedReference;
+    input.stacks[0].compose.services["platform-redis"]!.image =
+      tamperedReference;
+    input.stacks[1].compose.services["tf-redis"]!.image = tamperedReference;
+
+    expect(errorCodes(input)).toContain("image_provenance");
   });
 
   it("requires the complete exact release artifact image inventory in production", () => {
@@ -1653,11 +1873,18 @@ describe("validator process boundaries", () => {
     "/private/posix-sentinel/release.env",
     "C:\\Users\\windows-sentinel\\release.env",
   ])("does not disclose a sentinel env path through the CLI", (path) => {
-    const output: string[] = [];
-    const write = vi
+    const stderr: string[] = [];
+    const stdout: string[] = [];
+    const writeError = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk) => {
+        stderr.push(String(chunk));
+        return true;
+      });
+    const writeOutput = vi
       .spyOn(process.stdout, "write")
       .mockImplementation((chunk) => {
-        output.push(String(chunk));
+        stdout.push(String(chunk));
         return true;
       });
     try {
@@ -1670,12 +1897,14 @@ describe("validator process boundaries", () => {
         ]),
       ).toBe(1);
     } finally {
-      write.mockRestore();
+      writeError.mockRestore();
+      writeOutput.mockRestore();
     }
-    expect(JSON.parse(output.join(""))).toEqual({
+    expect(stdout).toEqual([]);
+    expect(JSON.parse(stderr.join(""))).toEqual({
       errors: [{ code: "release_error" }],
       ok: false,
     });
-    expect(output.join("")).not.toContain("sentinel");
+    expect(stderr.join("")).not.toContain("sentinel");
   });
 });
