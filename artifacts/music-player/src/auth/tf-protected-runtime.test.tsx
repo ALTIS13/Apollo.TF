@@ -15,6 +15,7 @@ import {
   TfApiError,
   canUseTfProtectedActivity,
   clearTfSessionSecurityState,
+  suspendTfProtectedActivity,
 } from "@/lib/tf-session-client";
 import { TfSessionBoundary } from "./TfSessionBoundary";
 import { TfAuthProvider } from "./tf-auth";
@@ -178,6 +179,27 @@ function NextTrackRecoveryActions() {
   </div>;
 }
 
+let replacementPlayer: ReturnType<typeof usePlayer>;
+function RecordingReplacementState() {
+  replacementPlayer = usePlayer();
+  return <output data-testid="replacement-queue"
+    data-ids={replacementPlayer.queue.map((item) => item.id).join(",")}
+    data-index={replacementPlayer.queueIndex}
+    data-current={replacementPlayer.currentTrack?.id ?? ""} />;
+}
+const alternative = { ...track, id: "alternate", source: "soundcloud" as const };
+async function failedReplacementQueue() {
+  runtime.fetchSession.mockResolvedValueOnce(session);
+  runtime.streamQuery.mockRejectedValueOnce(generatedError(422, "preview_rejected"))
+    .mockResolvedValue({ streamUrl: "https://example.test/current" });
+  renderProtectedRuntime(<RecordingReplacementState />);
+  await screen.findByTestId("replacement-queue");
+  await waitFor(() => expect(FakeAudio.instances).toHaveLength(1));
+  await act(async () => { await replacementPlayer.playCollection([track, { ...track, id: "tail" }]); });
+  expect(replacementPlayer.recordingReplacement?.token).toEqual(expect.any(String));
+  return replacementPlayer.recordingReplacement!.token;
+}
+
 function renderProtectedRuntime(children: ReactNode = <PlayerActions />) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -219,6 +241,88 @@ beforeEach(() => {
   vi.stubGlobal("Audio", FakeAudio);
 });
 
+it("recording replacement follows the failed duplicate occurrence through shuffle", async () => {
+  runtime.fetchSession.mockResolvedValueOnce(session);
+  runtime.streamQuery.mockResolvedValueOnce({ streamUrl: "https://example.test/first" })
+    .mockRejectedValueOnce(generatedError(503, "duration_unverified"))
+    .mockResolvedValue({ streamUrl: "https://example.test/current" });
+  renderProtectedRuntime(<RecordingReplacementState />);
+  await screen.findByTestId("replacement-queue");
+  await waitFor(() => expect(FakeAudio.instances).toHaveLength(1));
+  await act(async () => { await replacementPlayer.playCollection([track, { ...track, id: "tail" }, track]); });
+  await act(async () => { await replacementPlayer.playFromQueue(2); });
+  expect(replacementPlayer.recordingReplacement?.token).toEqual(expect.any(String));
+  const token = replacementPlayer.recordingReplacement!.token;
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  act(() => replacementPlayer.toggleShuffle());
+  let applied = false;
+  await act(async () => { applied = await replacementPlayer.replaceFailedRecording(token, alternative); });
+  expect(applied).toBe(true);
+  expect(screen.getByTestId("replacement-queue")).toHaveAttribute("data-ids", "tail,alternate,track-1");
+  expect(screen.getByTestId("replacement-queue")).toHaveAttribute("data-index", "1");
+  expect(FakeAudio.instances[0].currentTime).toBe(0);
+  await act(async () => { await replacementPlayer.playFromQueue(0); });
+  act(() => replacementPlayer.toggleShuffle());
+  expect(screen.getByTestId("replacement-queue")).toHaveAttribute("data-ids", "tail,track-1,alternate");
+});
+
+it.each(["new selection", "target removed", "cancelled", "security changed", "already consumed"] as const)(
+  "recording replacement rejects a stale marker after %s without ordinary playback fallback", async (reason) => {
+    const token = await failedReplacementQueue();
+    await act(async () => {
+      if (reason === "new selection") await replacementPlayer.playTrack({ ...track, id: "new-selection" });
+      if (reason === "target removed") replacementPlayer.removeFromQueue(0);
+      if (reason === "cancelled") replacementPlayer.cancelRecordingReplacement(token);
+      if (reason === "security changed") suspendTfProtectedActivity(new TfApiError(503, "service_unavailable", "unavailable", true));
+      if (reason === "already consumed") await replacementPlayer.replaceFailedRecording(token, alternative);
+    });
+    const ids = replacementPlayer.queue.map((item) => item.id);
+    const source = FakeAudio.instances[0].src;
+    let applied = true;
+    await act(async () => { applied = await replacementPlayer.replaceFailedRecording(token, { ...alternative, id: "late-choice" }); });
+    expect(applied).toBe(false);
+    expect(replacementPlayer.queue.map((item) => item.id)).toEqual(ids);
+    expect(FakeAudio.instances[0].src).toBe(source);
+  },
+);
+
+it("recording replacement leaves the request usable when the failed recording itself is selected", async () => {
+  const token = await failedReplacementQueue();
+  let applied = true;
+  await act(async () => { applied = await replacementPlayer.replaceFailedRecording(token, track); });
+  expect(applied).toBe(false);
+  expect(screen.getByTestId("replacement-queue")).toHaveAttribute("data-ids", "track-1,tail");
+  expect(replacementPlayer.isRecordingReplacementCurrent(token)).toBe(true);
+});
+
+it.each(["cancelled", "removed"] as const)("recording replacement cannot start a delayed candidate after its pending slot is %s", async (reason) => {
+  const token = await failedReplacementQueue();
+  act(() => replacementPlayer.removeFromQueue(1));
+  let finishStream!: (value: { streamUrl: string }) => void;
+  runtime.streamQuery.mockImplementationOnce(() => new Promise((resolve) => { finishStream = resolve; }));
+  let replacement!: Promise<boolean>;
+  await act(async () => { replacement = replacementPlayer.replaceFailedRecording(token, alternative); });
+  expect(replacementPlayer.isLoading).toBe(true);
+  act(() => {
+    if (reason === "cancelled") replacementPlayer.cancelRecordingReplacement(token);
+    else {
+      replacementPlayer.removeFromQueue(0);
+      replacementPlayer.removeFromQueue(0);
+    }
+  });
+  await act(async () => {
+    finishStream({ streamUrl: "https://example.test/late-candidate" });
+    await replacement;
+  });
+  expect(FakeAudio.instances[0].play).not.toHaveBeenCalled();
+  expect(await replacement).toBe(false);
+  expect(FakeAudio.instances[0].src).toBe("");
+  expect(replacementPlayer.isPlaying).toBe(false);
+  expect(replacementPlayer.isLoading).toBe(false);
+  expect(runtime.tfFetch).not.toHaveBeenCalled();
+  expect(replacementPlayer.queue.map((item) => item.id)).toEqual(reason === "removed" ? [] : [alternative.id]);
+});
+
 afterEach(() => {
   cleanup();
   clearTfSessionSecurityState();
@@ -245,9 +349,11 @@ describe("protected generated API auth failures", () => {
     const action = runtime.toast.mock.lastCall?.[0]?.action;
     expect(action).toBeDefined();
     const { getByRole } = render(action.props.children);
-    expect(getByRole("link", { name: "Найти другую запись" })).toHaveAttribute(
-      "href", "/?artist=Test+Artist&title=Test+Track",
-    );
+    const recoveryUrl = new URL(getByRole("link", { name: "Найти другую запись" }).getAttribute("href")!, window.location.origin);
+    expect(recoveryUrl.pathname).toBe("/");
+    expect(recoveryUrl.searchParams.get("artist")).toBe("Test Artist");
+    expect(recoveryUrl.searchParams.get("title")).toBe("Test Track");
+    expect(recoveryUrl.searchParams.get("replacement")).toMatch(/^[0-9a-f-]{36}$/);
     expect(canUseTfProtectedActivity()).toBe(true);
     expect(screen.getByTestId("protected-runtime")).toBeInTheDocument();
   });
@@ -638,7 +744,8 @@ it.each(["Next track", "Select second track"])("does not skip a failed manual %s
     .mockResolvedValueOnce({ streamUrl: "https://example.test/first" })
     .mockRejectedValueOnce(generatedError(422, "preview_rejected"));
   renderProtectedRuntime(<NextTrackRecoveryActions />);
-  fireEvent.click(await screen.findByRole("button", { name: "Play recovery queue" }));
+  const start = await screen.findByRole("button", { name: "Play recovery queue" });
+  await act(async () => { fireEvent.click(start); });
   await waitFor(() => expect(screen.getByTestId("recovery-queue")).toHaveAttribute("data-current", "track-1"));
 
   fireEvent.click(screen.getByRole("button", { name: button }));

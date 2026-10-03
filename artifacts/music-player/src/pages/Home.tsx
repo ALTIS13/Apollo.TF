@@ -2,16 +2,18 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
 import { freeSearchTracks, getTrackSuggestions, searchTracks } from "@workspace/api-client-react";
-import type { FreeSearchRequest, MediaLinkMetadataResponse, SearchRequest, TrackSuggestionsResponse, TrackType } from "@workspace/api-client-react";
+import type { FreeSearchRequest, MediaLinkMetadataResponse, SearchRequest, TrackResult, TrackSuggestionsResponse, TrackType } from "@workspace/api-client-react";
 import { TrackCard } from "@/components/TrackCard";
 import { CollectionActions } from "@/components/CollectionActions";
 import { useLikedTrackLookup } from "@/hooks/use-liked-collection";
 import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, reportTfAuthError, TfApiError, tfRequestInit } from "@/lib/tf-session-client";
 import { useTfAuth } from "@/auth/tf-auth";
+import { usePlayer } from "@/hooks/use-player";
+import { useToast } from "@/hooks/use-toast";
 import { clearRecentSearches, readRecentSearches, rememberRecentSearch, removeRecentSearch, type RecentSearch } from "@/lib/recent-searches";
 import { loadSourcePrefs, saveSourcePrefs, type SourceKey, type SourceMode } from "@/lib/source-preferences";
 import { apiUrl } from "@/lib/api-config";
-import { Search, Music2, Loader2, AlertCircle, Clock3, RotateCcw, X } from "lucide-react";
+import { Search, Music2, Loader2, AlertCircle, Clock3, RotateCcw, X, ArrowLeftRight } from "lucide-react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 
 type FilterType = TrackType | "all";
@@ -19,6 +21,10 @@ type SearchMode = "quick" | "exact";
 type HomeSearchRequest = SearchRequest & {
   mode: SourceMode;
   sources?: SourceKey[];
+};
+type SearchInput = {
+  request: SearchRequest | FreeSearchRequest;
+  replacementToken: string | null;
 };
 
 const SOURCE_INFO: { key: SourceKey; label: string; dot: string }[] = [
@@ -53,8 +59,19 @@ function isMediaLinkMetadata(value: unknown): value is MediaLinkMetadataResponse
 export default function Home() {
   const reduceMotion = useReducedMotion();
   const { session, status } = useTfAuth();
+  const { recordingReplacement, isRecordingReplacementCurrent, replaceFailedRecording, cancelRecordingReplacement } = usePlayer();
+  const { toast } = useToast();
   const searchQuery = useSearch();
   const [location, navigate] = useLocation();
+  const replacementParams = new URLSearchParams(searchQuery);
+  const urlReplacementToken = replacementParams.has("replacement")
+    ? replacementParams.getAll("replacement").length === 1 && replacementParams.get("replacement")
+      ? replacementParams.get("replacement")!
+      : "invalid"
+    : null;
+  const [replacementPending, setReplacementPending] = useState(false);
+  const replacementPendingRef = useRef(false);
+  const replacementSelectionRef = useRef(0);
   const consumedSearchRef = useRef<string | null>(null);
   const [artist, setArtist] = useState("");
   const [title, setTitle] = useState("");
@@ -133,7 +150,7 @@ export default function Home() {
   }, []);
 
   const searchMutation = useMutation({
-    mutationFn: async (data: SearchRequest | FreeSearchRequest) => {
+    mutationFn: async ({ request: data }: SearchInput) => {
       const generation = captureTfSecurityGeneration();
       try {
         const result = "query" in data
@@ -154,7 +171,7 @@ export default function Home() {
         throw error;
       }
     },
-    onSuccess: (_result, variables) => {
+    onSuccess: (_result, { request: variables }) => {
       if (!recentAccountId || !recentInstallationId) return;
       const identity = { accountId: recentAccountId, installationId: recentInstallationId };
       const input = "query" in variables
@@ -166,6 +183,61 @@ export default function Home() {
       });
     },
   });
+
+  const replacementToken = searchMutation.variables
+    ? searchMutation.variables.replacementToken
+    : urlReplacementToken;
+  const replacementCurrent = replacementToken !== null && isRecordingReplacementCurrent(replacementToken);
+
+  const resetReplacementSelection = () => {
+    replacementSelectionRef.current += 1;
+    replacementPendingRef.current = false;
+    setReplacementPending(false);
+  };
+
+  const leaveReplacementSearch = (clearResults = false) => {
+    if (replacementToken !== null) cancelRecordingReplacement(replacementToken);
+    resetReplacementSelection();
+    const params = new URLSearchParams(searchQuery);
+    if (params.has("replacement")) {
+      params.delete("replacement");
+      const remaining = params.toString();
+      navigate(`${location}${remaining ? `?${remaining}` : ""}${window.location.hash}`, {
+        replace: true, state: window.history.state,
+      });
+    }
+    if (clearResults) {
+      searchMutation.reset();
+      setHasSearched(false);
+    }
+  };
+
+  const startOrdinarySearch = (request: SearchRequest | FreeSearchRequest) => {
+    leaveReplacementSearch();
+    searchMutation.mutate({ request, replacementToken: null });
+  };
+
+  const selectReplacement = async (token: string, candidate: TrackResult) => {
+    if (replacementPendingRef.current || !isRecordingReplacementCurrent(token)) return;
+    const selection = ++replacementSelectionRef.current;
+    replacementPendingRef.current = true;
+    setReplacementPending(true);
+    try {
+      const applied = await replaceFailedRecording(token, candidate);
+      if (selection !== replacementSelectionRef.current) return;
+      if (applied) {
+        leaveReplacementSearch(true);
+        toast({ title: "Запись в очереди заменена", description: candidate.title });
+      }
+    } finally {
+      if (selection === replacementSelectionRef.current) {
+        replacementPendingRef.current = false;
+        setReplacementPending(false);
+      }
+    }
+  };
+
+  useEffect(() => () => { replacementSelectionRef.current += 1; }, []);
 
   function buildSearchData(a: string, t: string): HomeSearchRequest {
     if (
@@ -240,7 +312,7 @@ export default function Home() {
     setQuickQuery(`${suggestion.artist} — ${suggestion.title}`);
     setQuickError(false);
     setHasSearched(true);
-    searchMutation.mutate(buildSearchData(suggestion.artist, suggestion.title));
+    startOrdinarySearch(buildSearchData(suggestion.artist, suggestion.title));
   };
 
   const handleSuggestionKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -287,7 +359,9 @@ export default function Home() {
     setTitle(t);
     setQuickQuery(`${a} — ${t}`);
     setHasSearched(true);
-    searchMutation.mutate(buildSearchData(a, t));
+    resetReplacementSelection();
+    if (urlReplacementToken === null && replacementToken !== null) cancelRecordingReplacement(replacementToken);
+    searchMutation.mutate({ request: buildSearchData(a, t), replacementToken: urlReplacementToken });
 
     params.delete("artist");
     params.delete("title");
@@ -303,6 +377,7 @@ export default function Home() {
     const requestId = ++linkRequestRef.current;
     if (searchMode === "quick" && isPastedUrl(quickQuery)) {
       const url = quickQuery.trim();
+      leaveReplacementSearch();
       searchMutation.reset();
       setHasSearched(false);
       setQuickError(false);
@@ -348,8 +423,8 @@ export default function Home() {
           setTitle(resolvedTitle);
           setQuickQuery(resolvedArtist ? `${resolvedArtist} — ${resolvedTitle}` : resolvedTitle);
           setHasSearched(true);
-          if (resolvedArtist) searchMutation.mutate(buildSearchData(resolvedArtist, resolvedTitle));
-          else searchMutation.mutate(buildFreeSearchData(resolvedTitle));
+          if (resolvedArtist) startOrdinarySearch(buildSearchData(resolvedArtist, resolvedTitle));
+          else startOrdinarySearch(buildFreeSearchData(resolvedTitle));
         } catch {
           if (requestId === linkRequestRef.current && isCurrentTfSecurityGeneration(generation)) {
             setLinkError("Не удалось прочитать ссылку. Повторите попытку позже.");
@@ -377,7 +452,7 @@ export default function Home() {
       setSuggestionsSuppressed(true);
       setSuggestionsOpen(false);
       setHasSearched(true);
-      searchMutation.mutate(buildFreeSearchData(query));
+      startOrdinarySearch(buildFreeSearchData(query));
       return;
     }
     if (!pair) {
@@ -391,7 +466,7 @@ export default function Home() {
     setSuggestionsSuppressed(true);
     setHasSearched(true);
     setSuggestionsOpen(false);
-    searchMutation.mutate(buildSearchData(pair.artist, pair.title));
+    startOrdinarySearch(buildSearchData(pair.artist, pair.title));
   };
 
   const repeatRecentSearch = (entry: RecentSearch) => {
@@ -408,13 +483,13 @@ export default function Home() {
       setQuickQuery(entry.query);
       setArtist("");
       setTitle("");
-      searchMutation.mutate(buildFreeSearchData(entry.query));
+      startOrdinarySearch(buildFreeSearchData(entry.query));
     } else {
       setSearchMode("exact");
       setArtist(entry.artist);
       setTitle(entry.title);
       setQuickQuery(`${entry.artist} — ${entry.title}`);
-      searchMutation.mutate(buildSearchData(entry.artist, entry.title));
+      startOrdinarySearch(buildSearchData(entry.artist, entry.title));
     }
   };
 
@@ -466,9 +541,9 @@ export default function Home() {
       : results.filter((track) => track.type === activeFilter);
   const failedRequest = searchMutation.isError ? searchMutation.variables : undefined;
   const failedQuery = failedRequest
-    ? "query" in failedRequest
-      ? failedRequest.query
-      : `${failedRequest.artist} — ${failedRequest.title}`
+    ? "query" in failedRequest.request
+      ? failedRequest.request.query
+      : `${failedRequest.request.artist} — ${failedRequest.request.title}`
     : null;
 
   const filterOptions: { id: FilterType; label: string }[] = [
@@ -486,6 +561,32 @@ export default function Home() {
           <h1 className="mb-4 text-xl font-semibold tracking-normal text-white">
             Apollo TF <span className="font-normal text-white/40">/ Поиск</span>
           </h1>
+          {replacementToken !== null && (
+            <div role="status" className="mb-4 flex items-start gap-3 border-y border-white/10 py-3">
+              {replacementPending
+                ? <Loader2 className="mt-1 h-5 w-5 shrink-0 text-[#8ddbd4] motion-safe:animate-spin" />
+                : replacementCurrent
+                  ? <ArrowLeftRight className="mt-1 h-5 w-5 shrink-0 text-[#8ddbd4]" />
+                  : <AlertCircle className="mt-1 h-5 w-5 shrink-0 text-amber-400" />}
+              <div className="min-w-0 flex-1 text-sm">
+                <p className="font-medium text-foreground">
+                  {replacementCurrent || replacementPending ? "Замена записи в очереди" : "Запрос замены устарел"}
+                </p>
+                <p className="mt-1 break-words text-muted-foreground">
+                  {replacementPending ? "Подключение записи…"
+                    : replacementCurrent && recordingReplacement ? `${recordingReplacement.track.artist} · ${recordingReplacement.track.title}`
+                      : "Эта запись больше не ожидает замены."}
+                </p>
+              </div>
+              <button
+                type="button" aria-label="Отменить замену" title="Отменить замену"
+                onClick={() => { linkRequestRef.current += 1; leaveReplacementSearch(true); }}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-white/5 hover:text-white focus-visible:outline-2 focus-visible:outline-accent"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
           <div role="group" aria-label="Режим поиска" className="mb-3 flex w-fit rounded-md border border-white/15 p-0.5">
             {(["quick", "exact"] as const).map((mode) => (
               <button
@@ -786,6 +887,11 @@ export default function Home() {
                     track={track}
                     index={i}
                     compact
+                    onPlay={replacementToken !== null ? (candidate) => selectReplacement(replacementToken, candidate) : undefined}
+                    playLabel={replacementToken !== null ? `Заменить запись: ${track.title}` : undefined}
+                    playDisabled={replacementToken !== null && (replacementPending || !replacementCurrent || (
+                      recordingReplacement?.track.id === track.id && recordingReplacement.track.source === track.source
+                    ))}
                     collectionAction={<CollectionActions
                       track={track}
                       saved={likedLookup.data?.likedTrackIds.includes(track.id) ?? false}

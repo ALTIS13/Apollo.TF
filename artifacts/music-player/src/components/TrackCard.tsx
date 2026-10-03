@@ -9,6 +9,7 @@ import {
   ListStart,
   Check,
   X,
+  ArrowLeftRight,
 } from "lucide-react";
 import { formatDuration } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -26,9 +27,12 @@ interface TrackCardProps {
   index: number;
   collectionAction?: ReactNode;
   compact?: boolean;
+  onPlay?: (track: TrackResult) => void | Promise<unknown>;
+  playLabel?: string;
+  playDisabled?: boolean;
 }
 
-export function TrackCard({ track, index, collectionAction, compact = false }: TrackCardProps) {
+export function TrackCard({ track, index, collectionAction, compact = false, onPlay, playLabel, playDisabled = false }: TrackCardProps) {
   const reduceMotion = useReducedMotion();
   const {
     currentTrack,
@@ -50,7 +54,10 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
   const isThisPlaying = isCurrentTrack && isPlaying;
 
   const handlePlayClick = () => {
-    if (isCurrentTrack) {
+    if (playDisabled) return;
+    if (onPlay) {
+      void onPlay(track);
+    } else if (isCurrentTrack) {
       togglePlayPause();
     } else {
       playTrack(track);
@@ -151,8 +158,10 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
       {/* Thumbnail + Play Overlay */}
       <button
         type="button"
-        aria-label={`${isThisPlaying ? "Пауза" : "Воспроизвести"}: ${track.title}`}
-        className={`relative overflow-hidden bg-[#09090b] flex-shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8ddbd4] ${compact ? "h-[48px] w-[48px] rounded-md" : "w-full sm:w-20 h-48 sm:h-20 rounded-xl shadow-lg"}`}
+        aria-label={playLabel ?? `${isThisPlaying ? "Пауза" : "Воспроизвести"}: ${track.title}`}
+        title={playLabel}
+        disabled={playDisabled}
+        className={`relative overflow-hidden bg-[#09090b] flex-shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8ddbd4] ${compact ? "h-[48px] w-[48px] rounded-md" : "w-full sm:w-20 h-48 sm:h-20 rounded-xl shadow-lg"}`}
         onClick={handlePlayClick}
       >
         {track.thumbnailUrl ? (
@@ -172,7 +181,9 @@ export function TrackCard({ track, index, collectionAction, compact = false }: T
           <div
             className={`flex items-center justify-center rounded-full bg-[#8ddbd4] text-[#09090b] ${compact ? "h-[32px] w-[32px]" : "h-[44px] w-[44px]"}`}
           >
-            {isThisLoading ? (
+            {onPlay ? (
+              <ArrowLeftRight className="w-5 h-5" />
+            ) : isThisLoading ? (
               <Loader2 className="w-5 h-5 motion-safe:animate-spin" />
             ) : isThisPlaying ? (
               <Pause className="w-5 h-5 fill-current" />

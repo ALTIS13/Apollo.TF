@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useRef, useEffect, useCallback, ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { getGetTrackStreamQueryOptions } from "@workspace/api-client-react";
 import type { TrackResult, TrackSource, TrackType } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
@@ -37,6 +38,10 @@ interface PlayerContextType {
   queueIndex: number;
   repeatMode: RepeatMode;
   shuffleEnabled: boolean;
+  recordingReplacement: { token: string; track: TrackResult } | null;
+  isRecordingReplacementCurrent: (token: string) => boolean;
+  replaceFailedRecording: (token: string, candidate: TrackResult) => Promise<boolean>;
+  cancelRecordingReplacement: (token?: string) => void;
   cycleRepeatMode: () => void;
   toggleShuffle: () => void;
   playTrack: (track: TrackResult) => Promise<void>;
@@ -53,6 +58,22 @@ interface PlayerContextType {
   seekTo: (percentage: number) => void;
   seekBy: (seconds: number) => void;
   setVolume: (v: number) => void;
+}
+
+interface RecordingReplacement {
+  token: string;
+  track: TrackResult;
+  occurrenceId: number;
+  recordingId: string;
+  source: TrackSource;
+  load: number;
+  security: number;
+}
+interface PendingRecordingReplacement {
+  token: string;
+  occurrenceId: number;
+  active: boolean;
+  load: number;
 }
 
 interface PlayerSyncState {
@@ -109,6 +130,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [repeatMode, setRepeatMode] = useState<RepeatMode>("off");
   const [shuffleEnabled, setShuffleEnabled] = useState(false);
   const [queueHydrated, setQueueHydrated] = useState(false);
+  const [recordingReplacement, setRecordingReplacement] = useState<PlayerContextType["recordingReplacement"]>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const loadGeneration = useRef(0);
@@ -133,6 +155,41 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const shuffleEnabledRef = useRef(false);
   const hydratedIdentityRef = useRef<string | null>(null);
   const restoredAwaitingPlaybackRef = useRef(false);
+  const recordingReplacementRef = useRef<RecordingReplacement | null>(null);
+  const pendingRecordingReplacementRef = useRef<PendingRecordingReplacement | null>(null);
+
+  const cancelRecordingReplacement = useCallback((token?: string) => {
+    if (token === undefined || recordingReplacementRef.current?.token === token) {
+      recordingReplacementRef.current = null;
+      setRecordingReplacement(null);
+    }
+    const pending = pendingRecordingReplacementRef.current;
+    if (!pending || (token !== undefined && pending.token !== token)) return;
+    pending.active = false;
+    pendingRecordingReplacementRef.current = null;
+    if (pending.load !== loadGeneration.current) return;
+    loadGeneration.current += 1;
+    appliedLoadGeneration.current = null;
+    loadingRef.current = false;
+    currentTrackRef.current = null;
+    suspendedPosition.current = 0;
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ""; audioRef.current.load(); }
+    setCurrentTrack(null);
+    setIsPlaying(false);
+    setIsLoading(false);
+    setProgress(0);
+    setTfPlaybackActive(false);
+  }, []);
+
+  const isRecordingReplacementCurrent = useCallback((token: string) => {
+    const request = recordingReplacementRef.current;
+    if (!request || request.token !== token || !mountedRef.current ||
+      request.load !== loadGeneration.current || !isCurrentTfSecurityGeneration(request.security) ||
+      !canUseTfProtectedActivity()) return false;
+    const index = queueIdsRef.current.indexOf(request.occurrenceId);
+    return index >= 0 && queueRef.current[index]?.id === request.recordingId &&
+      queueRef.current[index]?.source === request.source;
+  }, []);
 
   const playTrackRef = useRef<(track: TrackResult, originLive?: () => boolean) => Promise<void>>(async () => {});
   const playNextRef = useRef<(reason: "ended" | "next") => Promise<void>>(async () => {});
@@ -195,6 +252,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const handlePause = () => { setTfPlaybackActive(false); setIsPlaying(false); };
     const handleError = () => markStreamFailureRef.current();
     const unsubscribe = subscribeTfActivitySuspension(() => {
+      cancelRecordingReplacement();
       loadGeneration.current += 1;
       appliedLoadGeneration.current = null;
       failedStreamRef.current = false;
@@ -211,6 +269,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     audio.addEventListener("error", handleError);
 
     return () => {
+      recordingReplacementRef.current = null;
+      if (pendingRecordingReplacementRef.current) pendingRecordingReplacementRef.current.active = false;
+      pendingRecordingReplacementRef.current = null;
       mountedRef.current = false; loadGeneration.current += 1; unsubscribe(); setTfPlaybackActive(false);
       audio.removeEventListener("timeupdate", handleTimeUpdate);
       audio.removeEventListener("durationchange", handleDurationChange);
@@ -269,6 +330,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const _loadTrack = useCallback(async (track: TrackResult, originLive?: () => boolean, refresh = false) => {
     if (!audioRef.current || !canUseTfProtectedActivity() || originLive?.() === false) return;
+    cancelRecordingReplacement();
     const load = ++loadGeneration.current, security = captureTfSecurityGeneration();
     appliedLoadGeneration.current = null;
     failedStreamRef.current = false;
@@ -323,16 +385,27 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
       setIsPlaying(false);
       const recoverableSource = isUnavailableTrackSource(err);
+      const index = queueIndexRef.current;
+      const occurrenceId = queueIdsRef.current[index];
+      const marker = recoverableSource && occurrenceId !== undefined &&
+        queueRef.current[index]?.id === track.id && queueRef.current[index]?.source === track.source
+        ? { token: crypto.randomUUID(), track, occurrenceId, recordingId: track.id, source: track.source, load, security }
+        : null;
+      if (marker) {
+        recordingReplacementRef.current = marker;
+        setRecordingReplacement({ token: marker.token, track });
+      }
       toast({
         title: "Ошибка воспроизведения",
         description: playbackErrorDescription(err),
         variant: "destructive",
-        ...(recoverableSource ? {
+        ...(marker ? {
           action: (
             <ToastAction altText="Найти другую запись" asChild>
-              <a href={`${import.meta.env.BASE_URL}?${new URLSearchParams({ artist: track.artist, title: track.title })}`}>
+              <Link href={`${import.meta.env.BASE_URL}?${new URLSearchParams({ artist: track.artist, title: track.title, replacement: marker.token })}`}
+                onClick={(event) => { if (!isRecordingReplacementCurrent(marker.token)) event.preventDefault(); }}>
                 Найти другую запись
-              </a>
+              </Link>
             </ToastAction>
           ),
         } : {}),
@@ -342,12 +415,45 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (mountedRef.current && load === loadGeneration.current) { loadingRef.current = false; setIsLoading(false); }
     }
     return undefined;
-  }, [queryClient, toast]);
+  }, [queryClient, toast, cancelRecordingReplacement, isRecordingReplacementCurrent]);
 
   const _loadTrackRef = useRef(_loadTrack);
   _loadTrackRef.current = _loadTrack;
 
   // ── Public API ────────────────────────────────────────────────────────────
+
+  const replaceFailedRecording = useCallback(async (token: string, candidate: TrackResult) => {
+    if (!isRecordingReplacementCurrent(token)) return false;
+    const request = recordingReplacementRef.current!;
+    if (candidate.id === request.recordingId && candidate.source === request.source) return false;
+    const index = queueIdsRef.current.indexOf(request.occurrenceId);
+    // Consume once before any async work; retain occurrence and original-order identities.
+    cancelRecordingReplacement(token);
+    const updated = [...queueRef.current];
+    updated[index] = candidate;
+    queueRef.current = updated;
+    queueIndexRef.current = index;
+    setQueue(updated);
+    setQueueIndex(index);
+    currentTrackRef.current = null;
+    suspendedPosition.current = 0;
+    const pending: PendingRecordingReplacement = { token, occurrenceId: request.occurrenceId, active: true, load: 0 };
+    const originLive = () => {
+      const currentIndex = queueIdsRef.current.indexOf(pending.occurrenceId);
+      return pending.active && currentIndex >= 0 && queueRef.current[currentIndex]?.id === candidate.id &&
+        queueRef.current[currentIndex]?.source === candidate.source;
+    };
+    // Register after the load's synchronous invalidation of the previous request.
+    const work = _loadTrackRef.current(candidate, originLive);
+    pending.load = loadGeneration.current;
+    pendingRecordingReplacementRef.current = pending;
+    try {
+      await work;
+      return originLive() && pending.load === loadGeneration.current;
+    } finally {
+      if (pendingRecordingReplacementRef.current === pending) pendingRecordingReplacementRef.current = null;
+    }
+  }, [isRecordingReplacementCurrent, cancelRecordingReplacement]);
 
   const playTrack = useCallback(async (track: TrackResult, originLive?: () => boolean) => {
     if (!audioRef.current || !canUseTfProtectedActivity() || originLive?.() === false) return;
@@ -494,6 +600,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     queueRef.current = updated;
     setQueue(updated);
 
+    const pending = pendingRecordingReplacementRef.current;
+    if (pending && pending.occurrenceId === removedId) {
+      cancelRecordingReplacement(pending.token);
+    }
+
     if (updated.length === 0) {
       // Queue fully emptied — stop playback
       queueIndexRef.current = 0;
@@ -516,7 +627,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setQueueIndex(newIdx);
     }
     // index > curIdx: no adjustment needed
-  }, []);
+  }, [cancelRecordingReplacement]);
 
   const clearQueue = useCallback(() => {
     const updated = clearUpcoming(queueRef.current, queueIndexRef.current, currentTrackRef.current !== null);
@@ -763,6 +874,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       value={{
         currentTrack, isPlaying, isLoading, progress, duration, volume,
         queue, queueIndex, repeatMode, shuffleEnabled, cycleRepeatMode, toggleShuffle,
+        recordingReplacement, isRecordingReplacementCurrent, replaceFailedRecording, cancelRecordingReplacement,
         playTrack, playCollection, playFromQueue, addToQueue, addNextToQueue, moveQueuedTrack, removeFromQueue, clearQueue,
         playNext, playPrev,
         togglePlayPause, seekTo, seekBy, setVolume,
