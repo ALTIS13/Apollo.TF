@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
@@ -12,6 +11,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+import { runFixtureBash } from "./test-support/noninteractive-bash.js";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const proofPath = resolve(
@@ -53,10 +53,6 @@ describe("native-Linux shared admin token proof", () => {
     const composeLog = join(root, "compose-input.log");
     const token = "synthetic-native-token-value-1234567890";
     const digest = `sha256:${"a".repeat(64)}`;
-    const executable =
-      process.platform === "win32"
-        ? "C:\\Program Files\\Git\\bin\\bash.exe"
-        : "bash";
     try {
       for (const directory of [bin, lockParent, secretDirectory]) {
         mkdirSync(directory);
@@ -90,8 +86,7 @@ esac
       chmodSync(join(bin, "stat"), 0o700);
       chmodSync(join(bin, "docker"), 0o700);
 
-      const run = spawnSync(
-        executable,
+      const run = runFixtureBash(
         [
           "-ceu",
           'PATH="$APOLLO_TEST_BIN:$PATH"; export PATH; exec "$1"',

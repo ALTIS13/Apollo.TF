@@ -539,6 +539,24 @@ describe("TF auth runtime configuration", () => {
     });
   });
 
+  it("uses the mounted auth Redis URL instead of requiring the inline input", async () => {
+    const fixture = await runtimeEnvironment();
+    const authRedisUrl = "redis://tf-auth:mounted-password@tf-redis:6379/1";
+    const authRedisPath = join(
+      temporaryDirectories.at(-1)!,
+      "tf_auth_redis_url",
+    );
+    await writeFile(authRedisPath, authRedisUrl, "utf8");
+    delete fixture.environment.APOLLO_TF_AUTH_REDIS_URL;
+    fixture.environment.APOLLO_TF_AUTH_REDIS_URL_FILE = authRedisPath;
+
+    await expect(
+      parseTfAuthRuntimeConfig(fixture.environment),
+    ).resolves.toMatchObject({
+      authRedisUrl,
+    });
+  });
+
   it("accepts exactly 512 client-secret characters and rejects 513 generically", async () => {
     const accepted = await runtimeEnvironment();
     await writeFile(accepted.secretPath, "s".repeat(512), "utf8");

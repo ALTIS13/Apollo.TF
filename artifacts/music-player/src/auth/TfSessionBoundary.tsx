@@ -23,7 +23,12 @@ function SessionState({
 }
 
 function SessionLoading() {
-  return <SessionState title="Подключение к Apollo" description="Проверяем доступ к вашей сессии." />;
+  return (
+    <SessionState
+      title="Подключение к Apollo"
+      description="Проверяем доступ к вашей сессии."
+    />
+  );
 }
 
 function SignInState({ onLogin }: { onLogin: () => void }) {
@@ -56,12 +61,34 @@ function ModuleLockedState() {
 }
 
 export function TfSessionBoundary({ children }: { children: ReactNode }) {
-  const { status, hasEntitlement, login, refresh } = useTfAuth();
+  const { status, session, error, hasEntitlement, login, refresh, logout } =
+    useTfAuth();
 
   if (status === "loading") return <SessionLoading />;
   if (status === "unauthenticated") return <SignInState onLogin={login} />;
-  if (status === "unavailable") return <UnavailableState onRetry={refresh} />;
-  if (!hasEntitlement("tf.search")) return <ModuleLockedState />;
+  if (status === "unavailable" && error?.kind === "forbidden")
+    return (
+      <SessionState
+        title="Модуль недоступен"
+        description="Доступ не подтверждён текущими правами Apollo."
+        action={<Button onClick={() => void logout()}>Выйти из TF</Button>}
+      />
+    );
+  if (status === "unavailable" && !session)
+    return <UnavailableState onRetry={refresh} />;
+  if (status === "authenticated" && !hasEntitlement("tf.search"))
+    return <ModuleLockedState />;
 
-  return <>{children}</>;
+  return (
+    <>
+      {status === "unavailable" && <UnavailableState onRetry={refresh} />}
+      <div
+        key={`${session?.accountId}:${session?.installationId}:${session?.entitlements.slice().sort().join(",")}`}
+        hidden={status !== "authenticated"}
+        style={status === "authenticated" ? { display: "contents" } : undefined}
+      >
+        {children}
+      </div>
+    </>
+  );
 }

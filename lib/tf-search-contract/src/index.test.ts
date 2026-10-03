@@ -3,6 +3,7 @@ import {
   tfSearchArtistDiscoveryCommandSchema,
   tfSearchArtistDiscoveryResponseSchema,
   tfSearchCommandSchema,
+  tfSearchFreeCommandSchema,
   tfSearchResponseSchema,
   tfSearchResultSourceSchema,
   tfSearchSourceSchema,
@@ -65,12 +66,28 @@ describe("tf search contract", () => {
 
   it("accepts a strict bounded search command", () => {
     expect(tfSearchCommandSchema.parse(command)).toEqual(command);
+    expect(tfSearchCommandSchema.safeParse({ ...command, accountId: requestId }).success).toBe(true);
     expect(tfSearchCommandSchema.safeParse({ ...command, accountId: "secret" }).success).toBe(false);
     expect(tfSearchCommandSchema.safeParse({ ...command, maxResults: 41 }).success).toBe(false);
     expect(tfSearchCommandSchema.safeParse({ ...command, sources: ["yt", "yt"] }).success).toBe(false);
     expect(tfSearchCommandSchema.safeParse({ ...command, artist: " Artist " }).success).toBe(true);
     expect(tfSearchCommandSchema.safeParse({ ...command, artist: " ".repeat(201) }).success).toBe(false);
     expect(tfSearchCommandSchema.safeParse({ ...command, title: " ".repeat(301) }).success).toBe(false);
+  });
+
+  it("accepts only bounded free-text search commands", () => {
+    const freeCommand = {
+      schemaVersion: 1,
+      requestId,
+      accountId: requestId,
+      query: "Artist Track",
+      mode: "auto",
+      sources: ["yt", "sc"],
+      maxResults: 20,
+    };
+    expect(tfSearchFreeCommandSchema.parse(freeCommand)).toEqual(freeCommand);
+    expect(tfSearchFreeCommandSchema.safeParse({ ...freeCommand, query: " " }).success).toBe(false);
+    expect(tfSearchFreeCommandSchema.safeParse({ ...freeCommand, artist: "Artist" }).success).toBe(false);
   });
 
   it("accepts a strict bounded response with internal source URLs", () => {
@@ -94,7 +111,7 @@ describe("tf search contract", () => {
   });
 
   it("accepts strict bounded suggestions DTOs", () => {
-    const suggestionsCommand = { schemaVersion: 1, requestId, query: "Artist", limit: 5 };
+    const suggestionsCommand = { schemaVersion: 1, requestId, accountId: requestId, query: "Artist", limit: 5 };
     const suggestionsResponse = {
       schemaVersion: 1,
       requestId,
@@ -102,6 +119,7 @@ describe("tf search contract", () => {
     };
 
     expect(tfSearchSuggestionsCommandSchema.parse(suggestionsCommand)).toEqual(suggestionsCommand);
+    expect(tfSearchSuggestionsCommandSchema.safeParse({ schemaVersion: 1, requestId, query: "Artist", limit: 5 }).success).toBe(true);
     expect(tfSearchSuggestionsCommandSchema.safeParse({ ...suggestionsCommand, query: "x" }).success).toBe(false);
     expect(tfSearchSuggestionsCommandSchema.safeParse({ ...suggestionsCommand, limit: 6 }).success).toBe(false);
     expect(tfSearchSuggestionsResponseSchema.parse(suggestionsResponse)).toEqual(suggestionsResponse);

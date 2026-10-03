@@ -214,6 +214,7 @@ export interface JobStatus {
   readonly progress: number;
   readonly position?: number;
   readonly fileSize?: number;
+  readonly failureCode?: "preview_rejected" | "duration_unverified";
 }
 export interface DownloadQueueCountReader {
   getWaitingCount(): Promise<number>;
@@ -403,11 +404,17 @@ function publicProgress(value: unknown): number {
 }
 function statusOf(job: Job, raw: string, position?: number): JobStatus {
   const result = downloadJobResultSchema.safeParse(job.returnvalue);
+  const failureCode = raw === "failed" &&
+    (job.failedReason === "preview_rejected" ||
+      job.failedReason === "duration_unverified")
+    ? job.failedReason
+    : undefined;
   return {
     status: mapState(raw, job.failedReason),
     progress: publicProgress(job.progress),
     ...(position === undefined ? {} : { position }),
     ...(result.success ? { fileSize: result.data.fileSize } : {}),
+    ...(failureCode === undefined ? {} : { failureCode }),
   };
 }
 export async function collectDownloadQueueTelemetry(

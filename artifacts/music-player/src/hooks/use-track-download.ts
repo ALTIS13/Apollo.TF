@@ -6,9 +6,11 @@ import {
   queueTrackDownloads,
   cancelDownloadJob,
   type DownloadJobCancelResponse,
+  type DownloadJobStatus,
   type TrackResult,
 } from "@workspace/api-client-react";
 import { apiUrl } from "@/lib/api-config";
+import { expectedDurationSeconds } from "@/lib/utils";
 import { reportTfAuthError, tfRequestInit } from "@/lib/tf-session-client";
 
 export type TrackDownloadState =
@@ -22,6 +24,7 @@ export type TrackDownloadState =
 export interface TrackDownloadController {
   readonly state: TrackDownloadState;
   readonly progress: number;
+  readonly failureCode?: DownloadJobStatus["failureCode"];
   readonly start: (
     track: TrackResult,
     quality?: DownloadQuality,
@@ -32,6 +35,7 @@ export interface TrackDownloadController {
 interface DownloadSnapshot {
   state: TrackDownloadState;
   progress: number;
+  failureCode?: DownloadJobStatus["failureCode"];
 }
 
 interface PendingQueueGeneration {
@@ -59,6 +63,17 @@ function shouldReportCancellationError(error: unknown): boolean {
   }
   const status = error.status;
   return status === 401 || status === 403 || status === 409;
+}
+
+function queueAdmissionFailureCode(error: unknown): DownloadJobStatus["failureCode"] {
+  if (typeof error !== "object" || error === null || Array.isArray(error)
+    || !("status" in error) || !("data" in error)) return undefined;
+  const data = error.data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)
+    || !("error" in data)) return undefined;
+  if (error.status === 503 && data.error === "duration_unverified") return "duration_unverified";
+  if (error.status === 422 && data.error === "preview_rejected") return "preview_rejected";
+  return undefined;
 }
 
 export function useTrackDownload(): TrackDownloadController {
@@ -141,7 +156,13 @@ export function useTrackDownload(): TrackDownloadController {
                 window.location.assign(fileNavigationUrl(jobId));
               }
             } else {
-              commit(generation, { state: status.status, progress });
+              commit(generation, {
+                state: status.status,
+                progress,
+                ...(status.status === "failed" && status.failureCode
+                  ? { failureCode: status.failureCode }
+                  : {}),
+              });
             }
           }
         } catch (error) {
@@ -253,6 +274,7 @@ export function useTrackDownload(): TrackDownloadController {
       commit(generation, { state: "waiting", progress: 0 });
 
       try {
+        const expectedDuration = expectedDurationSeconds(track.duration);
         const response = await queueTrackDownloads(
           {
             tracks: [
@@ -261,6 +283,9 @@ export function useTrackDownload(): TrackDownloadController {
                 artist: track.artist,
                 title: track.title,
                 quality,
+                ...(expectedDuration !== undefined
+                  ? { expectedDurationSeconds: expectedDuration }
+                  : {}),
               },
             ],
           },
@@ -329,7 +354,12 @@ export function useTrackDownload(): TrackDownloadController {
           return;
         }
         reportTfAuthError(error);
-        commit(generation, { state: "failed", progress: 0 });
+        const failureCode = queueAdmissionFailureCode(error);
+        commit(generation, {
+          state: "failed",
+          progress: 0,
+          ...(failureCode !== undefined ? { failureCode } : {}),
+        });
       } finally {
         if (pendingQueuesRef.current.get(generation) === pendingQueue) {
           pendingQueuesRef.current.delete(generation);

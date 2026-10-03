@@ -2,6 +2,13 @@ import type { PolicyIntrospectionResponse } from "@workspace/platform-contract";
 import type { Request, RequestHandler, Response } from "express";
 
 import type { PlatformAuthClient } from "./platform-auth-client.js";
+import {
+  familyCookies,
+  hasFamilyCookie,
+  clearFamilyCookies,
+} from "./tf-browser-session.js";
+import type { TfRenewalConsumer } from "./tf-renewal-consumer.js";
+import { TfRenewalError, unavailable } from "./tf-renewal-contract.js";
 import type {
   TfSession,
   TfSessionStore,
@@ -28,7 +35,7 @@ export interface TfPrincipal {
 }
 
 export interface TfRoutePolicy {
-  readonly method: "DELETE" | "GET" | "POST";
+  readonly method: "DELETE" | "GET" | "PATCH" | "POST" | "PUT";
   readonly path: string;
   readonly pattern: RegExp;
   readonly capability: TfCapability;
@@ -47,9 +54,24 @@ export interface TfPolicyDependencies {
     "observeSession" | "refreshSession" | "revokeSession"
   >;
   readonly now?: () => number;
+  readonly renewal?: TfRenewalConsumer;
 }
 
 export const TF_ROUTE_POLICIES: readonly TfRoutePolicy[] = Object.freeze([
+  {
+    method: "POST",
+    path: "/api/tracks/free-search",
+    pattern: /^\/api\/tracks\/free-search$/,
+    capability: "tf.search",
+    live: false,
+  },
+  {
+    method: "POST",
+    path: "/api/tracks/link-metadata",
+    pattern: /^\/api\/tracks\/link-metadata$/,
+    capability: "tf.search",
+    live: false,
+  },
   {
     method: "POST",
     path: "/api/tracks/search",
@@ -93,6 +115,13 @@ export const TF_ROUTE_POLICIES: readonly TfRoutePolicy[] = Object.freeze([
     live: false,
   },
   {
+    method: "POST",
+    path: "/api/tracks/lyrics/feedback",
+    pattern: /^\/api\/tracks\/lyrics\/feedback$/,
+    capability: "tf.search",
+    live: true,
+  },
+  {
     method: "GET",
     path: "/api/tracks/recent",
     pattern: /^\/api\/tracks\/recent$/,
@@ -110,6 +139,90 @@ export const TF_ROUTE_POLICIES: readonly TfRoutePolicy[] = Object.freeze([
     method: "GET",
     path: "/api/tracks/recommendations",
     pattern: /^\/api\/tracks\/recommendations$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "GET",
+    path: "/api/collections/liked",
+    pattern: /^\/api\/collections\/liked$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "POST",
+    path: "/api/collections/liked/lookup",
+    pattern: /^\/api\/collections\/liked\/lookup$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "PATCH",
+    path: "/api/collections/liked/order",
+    pattern: /^\/api\/collections\/liked\/order$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "PUT",
+    path: "/api/collections/liked/:trackId",
+    pattern: /^\/api\/collections\/liked\/[^/]+$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "DELETE",
+    path: "/api/collections/liked/:trackId",
+    pattern: /^\/api\/collections\/liked\/[^/]+$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "GET",
+    path: "/api/collections/playlists",
+    pattern: /^\/api\/collections\/playlists$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "POST",
+    path: "/api/collections/playlists",
+    pattern: /^\/api\/collections\/playlists$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "GET",
+    path: "/api/collections/playlists/:playlistId",
+    pattern: /^\/api\/collections\/playlists\/[^/]+$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "POST",
+    path: "/api/collections/playlists/:playlistId/tracks",
+    pattern: /^\/api\/collections\/playlists\/[^/]+\/tracks$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "PATCH",
+    path: "/api/collections/playlists/:playlistId/tracks/order",
+    pattern: /^\/api\/collections\/playlists\/[^/]+\/tracks\/order$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "DELETE",
+    path: "/api/collections/playlists/:playlistId/tracks/:trackId",
+    pattern: /^\/api\/collections\/playlists\/[^/]+\/tracks\/[^/]+$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "DELETE",
+    path: "/api/collections/playlists/:playlistId",
+    pattern: /^\/api\/collections\/playlists\/[^/]+$/,
     capability: "tf.collections",
     live: true,
   },
@@ -415,6 +528,41 @@ export function requireTfCapability(
     );
     if (policy === null) {
       sendPolicyUnavailable(response);
+      return;
+    }
+    if (hasFamilyCookie(request)) {
+      try {
+        if (!dependencies.renewal) throw unavailable();
+        const { handle, csrf } = familyCookies(request);
+        const mutation = !["GET", "HEAD", "OPTIONS"].includes(
+          request.method.toUpperCase(),
+        );
+        if (
+          !(await dependencies.renewal.validateCsrf(
+            handle,
+            csrf,
+            mutation ? (request.get("x-csrf-token") ?? "") : csrf,
+          ))
+        ) {
+          response.status(403).json({ error: "forbidden" });
+          return;
+        }
+        const session = await dependencies.renewal.authorize(handle);
+        if (!session.entitlements.includes(policy.capability)) {
+          response.status(403).json({ error: "module_access_denied" });
+          return;
+        }
+        request.tfPrincipal = principalFrom(session);
+        next();
+      } catch (error) {
+        if (error instanceof TfRenewalError && error.terminal)
+          clearFamilyCookies(response);
+        if (error instanceof TfRenewalError && error.status === 401)
+          sendUnauthorized(response);
+        else if (error instanceof TfRenewalError && error.status === 403)
+          response.status(403).json({ error: "module_access_denied" });
+        else sendPolicyUnavailable(response);
+      }
       return;
     }
     const handle = cookieValue(request);

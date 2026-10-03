@@ -66,6 +66,14 @@ export class ProviderError extends Error {
   }
 }
 
+// Internal classification only; provider bodies and descriptions never leave here.
+export class SpotifyRefreshInvalidGrantError extends ProviderError {
+  constructor() {
+    super("provider_rejected");
+    this.name = "SpotifyRefreshInvalidGrantError";
+  }
+}
+
 export interface SpotifyProviderOptions {
   readonly clientId: string;
   readonly clientSecret: string;
@@ -474,13 +482,15 @@ export class SpotifyProvider {
         headers: {
           Accept: "application/json",
           "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Basic ${Buffer.from(
+            `${this.#clientId}:${this.#clientSecret}`,
+            "utf8",
+          ).toString("base64")}`,
         },
         body: new URLSearchParams({
           grant_type: "authorization_code",
           code: input.code,
           redirect_uri: this.#callbackUri,
-          client_id: this.#clientId,
-          client_secret: this.#clientSecret,
         }),
       },
       input.signal,
@@ -528,12 +538,14 @@ export class SpotifyProvider {
         headers: {
           Accept: "application/json",
           "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Basic ${Buffer.from(
+            `${this.#clientId}:${this.#clientSecret}`,
+            "utf8",
+          ).toString("base64")}`,
         },
         body: new URLSearchParams({
           grant_type: "refresh_token",
           refresh_token: secret.refreshToken,
-          client_id: this.#clientId,
-          client_secret: this.#clientSecret,
         }),
       },
       context.signal,
@@ -687,7 +699,25 @@ export class SpotifyProvider {
       throw new ProviderError("provider_unavailable");
     }
     if (!response.ok) {
-      cancelProviderResponseBody(response);
+      if (operation === "oauth.refresh" && response.status === 400) {
+        let failure: unknown;
+        try {
+          failure = await readBoundedProviderJson(response, signal);
+        } catch (error) {
+          if (
+            error instanceof ProviderHttpFailure &&
+            error.kind === "aborted"
+          ) {
+            throw new ProviderError("provider_unavailable");
+          }
+        }
+        if (isObject(failure) && failure.error === "invalid_grant") {
+          this.#log("provider_rejected", operation);
+          throw new SpotifyRefreshInvalidGrantError();
+        }
+      } else {
+        cancelProviderResponseBody(response);
+      }
       const code =
         response.status >= 400 && response.status < 500
           ? "provider_rejected"

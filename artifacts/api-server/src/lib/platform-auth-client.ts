@@ -16,9 +16,19 @@ import {
   createRemoteJWKSet,
   customFetch,
   decodeProtectedHeader,
+  errors as joseErrors,
   jwtVerify,
 } from "jose";
 import { z } from "zod";
+import {
+  TfRenewalClient,
+  TfRenewalError,
+  parseRenewalJson,
+} from "./tf-renewal-contract.js";
+import {
+  resolveAuthRedisUrl,
+  type RedisUrlDependencies,
+} from "./redis-url-config.js";
 
 const AUTHORIZATION_PATH = "/v1/oauth/authorize";
 const TOKEN_PATH = "/v1/oauth/token";
@@ -266,6 +276,7 @@ function validConfidentialClientCredentials(
 }
 
 export class PlatformAuthClient {
+  readonly renewal: TfRenewalClient;
   private readonly issuer: string;
   private readonly apiOrigin: string;
   private readonly clientId: string;
@@ -333,6 +344,67 @@ export class PlatformAuthClient {
         });
       },
     });
+    this.renewal = new TfRenewalClient({
+      clientId: this.clientId,
+      request: async (path, body, headers, signal) => {
+        if (new URL(this.apiOrigin).protocol !== "https:")
+          throw new PlatformAuthUnavailableError();
+        return this.fetchImplementation(new URL(path, this.apiOrigin), {
+          method: "POST",
+          headers: { ...headers, Authorization: this.basicAuthorization() },
+          body,
+          redirect: "error",
+          signal: signal
+            ? AbortSignal.any([signal, AbortSignal.timeout(DEFAULT_TIMEOUT_MS)])
+            : AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+        });
+      },
+      read: readBoundedResponse,
+      verify: (assertion, nonce) => this.verifyTfAssertion(assertion, nonce),
+    });
+  }
+
+  private async verifyTfAssertion(
+    assertion: string,
+    nonce?: string,
+  ): Promise<PlatformAssertionClaims> {
+    const segments = assertion.split(".");
+    if (segments.length !== 3) throw new PlatformAuthUnavailableError();
+    parseRenewalJson(
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        Buffer.from(segments[0]!, "base64url"),
+      ),
+    );
+    platformAssertionClaimsSchema.parse(
+      parseRenewalJson(
+        new TextDecoder("utf-8", { fatal: true }).decode(
+          Buffer.from(segments[1]!, "base64url"),
+        ),
+      ),
+    );
+    const header = decodeProtectedHeader(assertion);
+    if (
+      header.alg !== "EdDSA" ||
+      typeof header.kid !== "string" ||
+      header.kid.length < 1 ||
+      header.kid.length > 128
+    )
+      throw new PlatformAuthUnavailableError();
+    const verified = await jwtVerify(assertion, this.jwks, {
+      issuer: this.issuer,
+      audience: ASSERTION_AUDIENCE,
+      algorithms: ["EdDSA"],
+      clockTolerance: 0,
+      maxTokenAge: 300,
+    }).catch((error) => {
+      if (error instanceof joseErrors.JWTExpired)
+        throw new TfRenewalError("ACCESS_EXPIRED");
+      throw error;
+    });
+    const claims = platformAssertionClaimsSchema.parse(verified.payload);
+    if (nonce !== undefined && !fixedLengthEqual(claims.nonce, nonce))
+      throw new PlatformAuthUnavailableError();
+    return claims;
   }
 
   createAuthorizationUrl(
@@ -489,7 +561,7 @@ interface SecretFileHandle {
   close(): Promise<void>;
 }
 
-export interface TfAuthRuntimeDependencies {
+export interface TfAuthRuntimeDependencies extends RedisUrlDependencies {
   readonly openSecretFile?: (
     path: string,
     flags: "r",
@@ -555,18 +627,6 @@ async function readClientSecret(
   }
 }
 
-function parseRedisUrl(value: string): string {
-  const url = new URL(value);
-  if (
-    !["redis:", "rediss:"].includes(url.protocol) ||
-    url.hostname.length === 0 ||
-    url.hash.length !== 0
-  ) {
-    throw new Error("invalid Redis URL");
-  }
-  return value;
-}
-
 export async function parseTfAuthRuntimeConfig(
   environment: NodeJS.ProcessEnv,
   dependencies: TfAuthRuntimeDependencies = {},
@@ -606,9 +666,7 @@ export async function parseTfAuthRuntimeConfig(
     if (!/^[A-Za-z0-9._~-]{1,128}$/.test(clientId)) {
       throw new Error("invalid client");
     }
-    const authRedisUrl = parseRedisUrl(
-      requiredEnvironment(environment, "APOLLO_TF_AUTH_REDIS_URL"),
-    );
+    const authRedisUrl = await resolveAuthRedisUrl(environment, dependencies);
     const clientSecret = await readClientSecret(
       requiredEnvironment(environment, "APOLLO_TF_CLIENT_SECRET_FILE"),
       dependencies.openSecretFile ?? open,

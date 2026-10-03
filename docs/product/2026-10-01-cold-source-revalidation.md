@@ -1,0 +1,32 @@
+# Cold source-reference admission
+
+Owner: Apollo.TF. Source stage based on `33f3f89`, branch `codex/tf-listener-experience`. [Plan](2026-10-01-cold-source-revalidation-plan.md). No runtime deployment or ownership refactor.
+
+## Behavior
+
+- A saved source no longer needs a preceding search to regain catalog duration comparison after restart, expiry, eviction or another replica's cold registry. The server inspects the selected source and requests fresh catalog metadata. Existing conservative recording keys normalize YouTube Topic/VEVO/presentation, but preserve clean/live/remix/remaster/version distinctions.
+- Cold `known` requires independent matching catalog evidence. A source's own reported length cannot promote itself to a full-recording reference. Catalog conflicts remain `ambiguous`; unsupported sources, missing identity and unmatched recordings remain `unknown` under the accepted legacy admission behavior. Unknown is not proof of complete audio; browser hints remain an extra untrusted quality guard only.
+- Warm known/ambiguous records keep the accepted five-minute expiry; reads do not refresh it or trigger inspection. New cold evidence is source-bound and expires five minutes after successful comparison. Already admitted queue commands retain their frozen strict-v1 numeric snapshot through the existing trusted API/Redis writer boundary, not cryptographic provenance.
+- Runtime cold inspection supports single YouTube videos, public SoundCloud slug tracks and Bandcamp track URLs. It does not invent SoundCloud numeric-to-slug aliases, inspect albums/playlists, or turn Deezer CDN previews into full audio. Deezer legacy fallback remains the previously implemented separately authorized source selection.
+- Exact canonical result/source correlation, bounded metadata validation, explicit live/playlist rejection, no caller performer/title authority. Full titles stay intact. Optional JSON null metadata means absence, following [pinned yt-dlp JSON serialization](https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.07.04/yt_dlp/YoutubeDL.py); required URL/type and malformed non-null values stay strict.
+- Existing explicit preview/title markers fail closed for cold saved sources. Catalog-backed short recordings are not rejected just for being short. The unchanged private v1 path currently gives generic `duration_unverified` 503 for such cold revalidation failures; 422 `preview_rejected` still comes from the existing source-duration probe when a known full-recording reference proves a length mismatch.
+- Same canonical source shares one active revalidation, with caller-specific request correlation. Eight active keys, 18-second total deadline, eight-second inspection and catalog limits, bounded 256-entry cooldowns (unknown15s/failure2s). Failures are sanitized, not unknown successful fallback; late work cannot install reference authority. Shared catalog fetch may finish its bounded normal cache update after a caller aborts, but cannot publish a cancelled registry reference.
+- Source-reference gateway deadline is independently 20 seconds by default (optional override 1..30,000 ms); ordinary search timeout stays unchanged. No retries, redirects, credentials, signed-body correlation, response freshness or byte-limit relaxations.
+
+## Evidence
+
+Current focused source/local evidence, not provider or deployment acceptance:
+
+- Inspector: 42 unique evidenced real local Node-subprocess fixture cases, observed RED/GREEN including nullable compatibility and the reviewed missing-performer marker bypass. Final fix reran only ten affected cases; 32 unchanged lifecycle/validation cases reuse prior valid evidence. Real pipes, environment, exit/kill/abort/byte limits, but launch substitutes Node for yt-dlp.
+- Fresh catalog: 19 selected affected cases GREEN, including eight new fresh/abort regressions, fixed HTTPS host/deadline, successful cache/in-flight bounds, version preservation and no fresh stale fallback.
+- Private gateway: 45 selected affected cases GREEN, including 11 new deadline regressions; one obsolete shared-deadline check replaced, not duplicated.
+- Search boundaries: 40 selected cases GREEN (17 cold,10 accepted warm,7 signed handler,5 runtime fixture,1 production bundle startup). Bundle startup is a compiled invalid-config/load check, not initialized service/provider proof.
+- Actual signed local HTTP search service -> HttpTfSearchClient -> API -> strict v1 queue harness: two warm/cold cases GREEN. Cold mode has no prior search. Probe30 vs catalog210 returns 422 despite browser hint1; queue keeps server metadata/210. A second-source extraction error returns 503 before probe/enqueue and does not affect the existing admitted job. Catalog/inspection/probe/queue seams are controlled; HMAC is local only.
+- API/search TypeScript, API ESM build and compiled search load checks GREEN. Validation/review bookkeeping is in the single [resume](tf-listener-resume.md), not a new authority registry.
+- Aggregate: 148 unique selected cases with changed-input checks repeated only as needed; counts do not sum repeated runs. Independent review found one P2 marker bypass, corrected by the inspector owner with two RED/GREEN regressions. Scoped re-review: ADDRESSED, spec and quality APPROVED_SOURCE_ONLY, no new findings. Compiled search load after the new helper import GREEN; no activation/deployment acceptance is inferred.
+
+## Boundaries
+
+Public/private v1 DTOs, Platform identity/policy/capabilities, strict download jobs, worker probes, DB/migrations, dependency lockfile and frozen release/publisher inputs are unchanged. No push, publication, HomeNode, Coolify, Caddy, UFW, Remnawave, device or paid design plugin changes. No live audio/provider, authenticated Platform, production Redis ACL or A063 acceptance is claimed.
+
+Next source slice: bound batch queue preflight now that a cold reference may require network work. The unchanged queue preflight resolves tracks sequentially, so a large cold batch can accumulate per-source deadlines; preserve all-before-enqueue and closed-response safety while improving this path. Then touch-friendly long download/quality failure details and source replacement without losing queue state. Before deployment, refresh immutable source-matched release inputs and isolated target prestate/rollback, and establish current Platform auth/client/provider/audio acceptance. Do not mistake this source checkpoint for the frozen release candidate or rebuild accepted listener/search/UI work.

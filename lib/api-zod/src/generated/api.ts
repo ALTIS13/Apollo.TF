@@ -16,6 +16,128 @@ export const HealthCheckResponse = zod.object({
 });
 
 /**
+ * @summary Suggest artist and title pairs for a search query
+ */
+export const getTrackSuggestionsQueryQMin = 2;
+export const getTrackSuggestionsQueryQMax = 200;
+
+export const GetTrackSuggestionsQueryParams = zod.object({
+  q: zod.coerce
+    .string()
+    .min(getTrackSuggestionsQueryQMin)
+    .max(getTrackSuggestionsQueryQMax),
+});
+
+export const getTrackSuggestionsResponseSuggestionsMax = 5;
+
+export const GetTrackSuggestionsResponse = zod.object({
+  suggestions: zod
+    .array(
+      zod.object({
+        artist: zod.string(),
+        title: zod.string(),
+      }),
+    )
+    .max(getTrackSuggestionsResponseSuggestionsMax),
+});
+
+/**
+ * @summary Search open sources by free text
+ */
+export const freeSearchTracksBodyQueryMin = 2;
+export const freeSearchTracksBodyQueryMax = 500;
+
+export const freeSearchTracksBodySourcesMax = 4;
+
+export const freeSearchTracksBodyMaxResultsMax = 40;
+
+export const FreeSearchTracksBody = zod.object({
+  query: zod
+    .string()
+    .min(freeSearchTracksBodyQueryMin)
+    .max(freeSearchTracksBodyQueryMax),
+  mode: zod.enum(["auto", "manual"]).optional(),
+  sources: zod
+    .array(zod.enum(["yt", "sc", "bc", "dz"]))
+    .min(1)
+    .max(freeSearchTracksBodySourcesMax)
+    .optional(),
+  maxResults: zod
+    .number()
+    .min(1)
+    .max(freeSearchTracksBodyMaxResultsMax)
+    .optional(),
+});
+
+export const freeSearchTracksResponseSourcesMax = 4;
+
+export const FreeSearchTracksResponse = zod.object({
+  query: zod.string().describe("The normalized search query used"),
+  results: zod.array(
+    zod.object({
+      id: zod
+        .string()
+        .describe(
+          "Unique track ID. Format: yt_<base64url(https:\/\/www.youtube.com\/watch?v=ID)> for YouTube or sc_<base64url(permalink_url)> for SoundCloud. Pass this ID to \/stream or \/download endpoints.",
+        ),
+      title: zod.string(),
+      artist: zod.string(),
+      type: zod.enum(["original", "remix", "live", "cover"]),
+      duration: zod.number().describe("Duration in seconds"),
+      source: zod.enum(["youtube", "soundcloud", "bandcamp", "deezer"]),
+      thumbnailUrl: zod.string().nullish(),
+      quality: zod
+        .array(zod.string())
+        .describe('Available quality options (e.g. [\"128\", \"320\"])'),
+      viewCount: zod.number().nullish(),
+      score: zod.number().describe("Ranking score (higher is better match)"),
+    }),
+  ),
+  cached: zod.boolean().describe("Whether results came from cache"),
+  sources: zod
+    .array(zod.enum(["yt", "sc", "bc", "dz"]))
+    .min(1)
+    .max(freeSearchTracksResponseSourcesMax),
+  fallbackAvailable: zod
+    .boolean()
+    .describe(
+      "Whether broadening a manual source selection may return results",
+    ),
+});
+
+/**
+ * Returns metadata only. The link is not admitted as playable media; clients must search and select a separately verified candidate.
+ * @summary Read metadata from a supported public track link
+ */
+export const resolveTrackLinkMetadataBodyUrlMax = 500;
+
+export const ResolveTrackLinkMetadataBody = zod.object({
+  url: zod.string().min(1).max(resolveTrackLinkMetadataBodyUrlMax),
+});
+
+export const resolveTrackLinkMetadataResponseTitleMax = 300;
+
+export const resolveTrackLinkMetadataResponseArtistMax = 200;
+
+export const resolveTrackLinkMetadataResponseDurationSecondsMax = 86400;
+
+export const ResolveTrackLinkMetadataResponse = zod.object({
+  schemaVersion: zod.literal(1),
+  source: zod.enum(["youtube", "soundcloud", "bandcamp", "deezer"]),
+  title: zod.string().min(1).max(resolveTrackLinkMetadataResponseTitleMax),
+  artist: zod
+    .string()
+    .min(1)
+    .max(resolveTrackLinkMetadataResponseArtistMax)
+    .optional(),
+  durationSeconds: zod
+    .number()
+    .min(1)
+    .max(resolveTrackLinkMetadataResponseDurationSecondsMax)
+    .optional(),
+});
+
+/**
  * Searches enabled open media sources for variants of a track. Returns all found variants (original, remix, live, cover) without auto-selecting.
  * @summary Search for track variants
  */
@@ -105,6 +227,37 @@ export const GetTrackStreamParams = zod.object({
     ),
 });
 
+export const getTrackStreamQueryArtistMax = 300;
+
+export const getTrackStreamQueryTitleMax = 500;
+
+export const getTrackStreamQueryExpectedDurationSecondsMax = 86400;
+
+export const GetTrackStreamQueryParams = zod.object({
+  artist: zod.coerce
+    .string()
+    .max(getTrackStreamQueryArtistMax)
+    .optional()
+    .describe("Artist metadata required for a Deezer fallback."),
+  title: zod.coerce
+    .string()
+    .max(getTrackStreamQueryTitleMax)
+    .optional()
+    .describe("Track metadata required for a Deezer fallback."),
+  expectedDurationSeconds: zod.coerce
+    .number()
+    .min(1)
+    .max(getTrackStreamQueryExpectedDurationSecondsMax)
+    .optional()
+    .describe("Full recording duration from the selected result, when known."),
+  refresh: zod
+    .literal(1)
+    .optional()
+    .describe(
+      "Bypass the cached stream URL and resolve a new one for non-Deezer tracks. The value must be 1; source-duration admission still applies.",
+    ),
+});
+
 export const GetTrackStreamResponse = zod.object({
   id: zod.string(),
   streamUrl: zod.string(),
@@ -112,8 +265,9 @@ export const GetTrackStreamResponse = zod.object({
 });
 
 /**
- * Returns a direct download URL for the best quality audio. URL may expire.
- * @summary Get download URL for a track
+ * Streams encoded audio for older clients. New clients should use the queued download API. A known full-track duration enables preview admission before streaming.
+ * @deprecated
+ * @summary Download a track through the legacy binary route
  */
 export const GetTrackDownloadParams = zod.object({
   id: zod.coerce
@@ -123,10 +277,30 @@ export const GetTrackDownloadParams = zod.object({
     ),
 });
 
-export const GetTrackDownloadResponse = zod.object({
-  id: zod.string(),
-  downloadUrl: zod.string(),
-  filename: zod.string().nullish(),
+export const getTrackDownloadQueryQualityDefault = `256`;
+export const getTrackDownloadQueryExpectedDurationSecondsMax = 86400;
+
+export const GetTrackDownloadQueryParams = zod.object({
+  artist: zod.coerce
+    .string()
+    .optional()
+    .describe("Artist metadata for a Deezer fallback."),
+  title: zod.coerce
+    .string()
+    .optional()
+    .describe("Track metadata for a Deezer fallback."),
+  quality: zod.coerce
+    .string()
+    .default(getTrackDownloadQueryQualityDefault)
+    .describe(
+      "One of 128, 192, 256, 320 or flac. Unknown values fall back to 256.",
+    ),
+  expectedDurationSeconds: zod.coerce
+    .number()
+    .min(1)
+    .max(getTrackDownloadQueryExpectedDurationSecondsMax)
+    .optional()
+    .describe("Full recording duration from the selected result, when known."),
 });
 
 /**
@@ -137,6 +311,8 @@ export const queueTrackDownloadsBodyTracksItemTrackIdMax = 4096;
 export const queueTrackDownloadsBodyTracksItemArtistMax = 300;
 
 export const queueTrackDownloadsBodyTracksItemTitleMax = 500;
+
+export const queueTrackDownloadsBodyTracksItemExpectedDurationSecondsMax = 86400;
 
 export const queueTrackDownloadsBodyTracksMax = 50;
 
@@ -157,6 +333,14 @@ export const QueueTrackDownloadsBody = zod.object({
           .min(1)
           .max(queueTrackDownloadsBodyTracksItemTitleMax),
         quality: zod.enum(["128", "192", "256", "320", "flac"]),
+        expectedDurationSeconds: zod
+          .number()
+          .min(1)
+          .max(queueTrackDownloadsBodyTracksItemExpectedDurationSecondsMax)
+          .optional()
+          .describe(
+            "Expected full recording duration from the selected candidate, when known.",
+          ),
       }),
     )
     .min(1)
@@ -237,6 +421,9 @@ export const ListDownloadJobsResponse = zod.object({
           .min(1)
           .max(listDownloadJobsResponseJobsItemFileSizeMax)
           .optional(),
+        failureCode: zod
+          .enum(["preview_rejected", "duration_unverified"])
+          .optional(),
       }),
     )
     .max(listDownloadJobsResponseJobsMax),
@@ -276,6 +463,7 @@ export const GetDownloadJobStatusResponse = zod.object({
     .min(1)
     .max(getDownloadJobStatusResponseFileSizeMax)
     .optional(),
+  failureCode: zod.enum(["preview_rejected", "duration_unverified"]).optional(),
 });
 
 /**
@@ -316,3 +504,659 @@ export const CancelDownloadJobResponse = zod.object({
   jobId: zod.string().uuid(),
   status: zod.enum(["waiting", "active", "completed", "failed", "canceled"]),
 });
+
+/**
+ * @summary List tracks saved by the current account
+ */
+export const listLikedTracksQueryLimitDefault = 50;
+export const listLikedTracksQueryLimitMax = 100;
+
+export const listLikedTracksQueryCursorMax = 64;
+
+export const listLikedTracksQueryCursorRegExp = new RegExp("^[A-Za-z0-9_-]+$");
+
+export const ListLikedTracksQueryParams = zod
+  .object({
+    limit: zod.coerce
+      .number().int()
+      .min(1)
+      .max(listLikedTracksQueryLimitMax)
+      .default(listLikedTracksQueryLimitDefault),
+    cursor: zod.coerce
+      .string()
+      .min(1)
+      .max(listLikedTracksQueryCursorMax)
+      .regex(listLikedTracksQueryCursorRegExp)
+      .optional(),
+    sort: zod
+      .enum(["manual"])
+      .optional()
+      .describe(
+        "Omit for the legacy newest-first order; manual uses the account's saved order.",
+      ),
+  })
+  .strict();
+
+export const listLikedTracksResponseItemsItemTrackIdMin = 4;
+export const listLikedTracksResponseItemsItemTrackIdMax = 4096;
+
+export const listLikedTracksResponseItemsItemTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const listLikedTracksResponseItemsItemArtistMax = 300;
+
+export const listLikedTracksResponseItemsItemTitleMax = 500;
+
+export const listLikedTracksResponseItemsItemThumbnailUrlMax = 2048;
+
+export const listLikedTracksResponseItemsItemDurationSecondsMax = 86400;
+
+export const listLikedTracksResponseItemsMax = 100;
+
+export const listLikedTracksResponseNextCursorMax = 64;
+
+export const listLikedTracksResponseNextCursorRegExp = new RegExp(
+  "^[A-Za-z0-9_-]+$",
+);
+export const listLikedTracksResponseRevisionRegExp = new RegExp(
+  "^(0|[1-9][0-9]\*)$",
+);
+
+export const ListLikedTracksResponse = zod
+  .object({
+    items: zod
+      .array(
+        zod
+          .object({
+            trackId: zod
+              .string()
+              .min(listLikedTracksResponseItemsItemTrackIdMin)
+              .max(listLikedTracksResponseItemsItemTrackIdMax)
+              .regex(listLikedTracksResponseItemsItemTrackIdRegExp),
+            artist: zod
+              .string()
+              .max(listLikedTracksResponseItemsItemArtistMax)
+              .nullable(),
+            title: zod
+              .string()
+              .max(listLikedTracksResponseItemsItemTitleMax)
+              .nullable(),
+            thumbnailUrl: zod
+              .string()
+              .url()
+              .max(listLikedTracksResponseItemsItemThumbnailUrlMax)
+              .nullable(),
+            durationSeconds: zod
+              .number().int()
+              .min(1)
+              .max(listLikedTracksResponseItemsItemDurationSecondsMax)
+              .nullable(),
+            likedAt: zod.string().datetime({}),
+          })
+          .strict(),
+      )
+      .max(listLikedTracksResponseItemsMax),
+    nextCursor: zod
+      .string()
+      .max(listLikedTracksResponseNextCursorMax)
+      .regex(listLikedTracksResponseNextCursorRegExp)
+      .nullable(),
+    revision: zod
+      .string()
+      .regex(listLikedTracksResponseRevisionRegExp)
+      .optional()
+      .describe("Present only when sort=manual."),
+  })
+  .strict();
+
+/**
+ * @summary Move one liked track before another in the current account order
+ */
+export const moveLikedTrackBodyTrackIdMin = 4;
+export const moveLikedTrackBodyTrackIdMax = 4096;
+
+export const moveLikedTrackBodyTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const moveLikedTrackBodyBeforeTrackIdMin = 4;
+export const moveLikedTrackBodyBeforeTrackIdMax = 4096;
+
+export const moveLikedTrackBodyBeforeTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const moveLikedTrackBodyExpectedRevisionMax = 20;
+
+export const moveLikedTrackBodyExpectedRevisionRegExp = new RegExp(
+  "^(0|[1-9][0-9]\*)$",
+);
+
+export const MoveLikedTrackBody = zod
+  .object({
+    trackId: zod
+      .string()
+      .min(moveLikedTrackBodyTrackIdMin)
+      .max(moveLikedTrackBodyTrackIdMax)
+      .regex(moveLikedTrackBodyTrackIdRegExp),
+    beforeTrackId: zod
+      .string()
+      .min(moveLikedTrackBodyBeforeTrackIdMin)
+      .max(moveLikedTrackBodyBeforeTrackIdMax)
+      .regex(moveLikedTrackBodyBeforeTrackIdRegExp)
+      .nullable(),
+    expectedRevision: zod
+      .string()
+      .max(moveLikedTrackBodyExpectedRevisionMax)
+      .regex(moveLikedTrackBodyExpectedRevisionRegExp),
+  })
+  .strict();
+
+export const moveLikedTrackResponseRevisionRegExp = new RegExp(
+  "^(0|[1-9][0-9]\*)$",
+);
+
+export const MoveLikedTrackResponse = zod
+  .object({
+    revision: zod.string().regex(moveLikedTrackResponseRevisionRegExp),
+  })
+  .strict();
+
+/**
+ * @summary Check which requested tracks are saved by the current account
+ */
+export const lookupLikedTracksBodyTrackIdsItemMin = 4;
+export const lookupLikedTracksBodyTrackIdsItemMax = 4096;
+
+export const lookupLikedTracksBodyTrackIdsItemRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const lookupLikedTracksBodyTrackIdsMax = 40;
+
+export const LookupLikedTracksBody = zod
+  .object({
+    trackIds: zod
+      .array(
+        zod
+          .string()
+          .min(lookupLikedTracksBodyTrackIdsItemMin)
+          .max(lookupLikedTracksBodyTrackIdsItemMax)
+          .regex(lookupLikedTracksBodyTrackIdsItemRegExp),
+      )
+      .min(1)
+      .max(lookupLikedTracksBodyTrackIdsMax),
+  })
+  .strict();
+
+export const lookupLikedTracksResponseLikedTrackIdsItemMin = 4;
+export const lookupLikedTracksResponseLikedTrackIdsItemMax = 4096;
+
+export const lookupLikedTracksResponseLikedTrackIdsItemRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const lookupLikedTracksResponseLikedTrackIdsMax = 40;
+
+export const LookupLikedTracksResponse = zod
+  .object({
+    likedTrackIds: zod
+      .array(
+        zod
+          .string()
+          .min(lookupLikedTracksResponseLikedTrackIdsItemMin)
+          .max(lookupLikedTracksResponseLikedTrackIdsItemMax)
+          .regex(lookupLikedTracksResponseLikedTrackIdsItemRegExp),
+      )
+      .max(lookupLikedTracksResponseLikedTrackIdsMax),
+  })
+  .strict();
+
+/**
+ * @summary Save or update one track for the current account
+ */
+export const saveLikedTrackPathTrackIdMin = 4;
+export const saveLikedTrackPathTrackIdMax = 4096;
+
+export const saveLikedTrackPathTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+
+export const SaveLikedTrackParams = zod
+  .object({
+    trackId: zod
+      .string()
+      .min(saveLikedTrackPathTrackIdMin)
+      .max(saveLikedTrackPathTrackIdMax)
+      .regex(saveLikedTrackPathTrackIdRegExp),
+  })
+  .strict();
+
+export const saveLikedTrackBodyArtistMax = 300;
+
+export const saveLikedTrackBodyTitleMax = 500;
+
+export const saveLikedTrackBodyThumbnailUrlMax = 2048;
+
+export const saveLikedTrackBodyDurationSecondsMax = 86400;
+
+export const SaveLikedTrackBody = zod
+  .object({
+    artist: zod.string().trim().min(1).max(saveLikedTrackBodyArtistMax),
+    title: zod.string().trim().min(1).max(saveLikedTrackBodyTitleMax),
+    thumbnailUrl: zod
+      .string()
+      .url()
+      .max(saveLikedTrackBodyThumbnailUrlMax)
+      .nullish(),
+    durationSeconds: zod
+      .number().int()
+      .min(1)
+      .max(saveLikedTrackBodyDurationSecondsMax)
+      .nullish(),
+  })
+  .strict();
+
+export const saveLikedTrackResponseItemTrackIdMin = 4;
+export const saveLikedTrackResponseItemTrackIdMax = 4096;
+
+export const saveLikedTrackResponseItemTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const saveLikedTrackResponseItemArtistMax = 300;
+
+export const saveLikedTrackResponseItemTitleMax = 500;
+
+export const saveLikedTrackResponseItemThumbnailUrlMax = 2048;
+
+export const saveLikedTrackResponseItemDurationSecondsMax = 86400;
+
+export const SaveLikedTrackResponse = zod
+  .object({
+    item: zod
+      .object({
+        trackId: zod
+          .string()
+          .min(saveLikedTrackResponseItemTrackIdMin)
+          .max(saveLikedTrackResponseItemTrackIdMax)
+          .regex(saveLikedTrackResponseItemTrackIdRegExp),
+        artist: zod
+          .string()
+          .max(saveLikedTrackResponseItemArtistMax)
+          .nullable(),
+        title: zod.string().max(saveLikedTrackResponseItemTitleMax).nullable(),
+        thumbnailUrl: zod
+          .string()
+          .url()
+          .max(saveLikedTrackResponseItemThumbnailUrlMax)
+          .nullable(),
+        durationSeconds: zod
+          .number().int()
+          .min(1)
+          .max(saveLikedTrackResponseItemDurationSecondsMax)
+          .nullable(),
+        likedAt: zod.string().datetime({}),
+      })
+      .strict(),
+  })
+  .strict();
+
+/**
+ * @summary Remove one track from the current account collection
+ */
+export const removeLikedTrackPathTrackIdMin = 4;
+export const removeLikedTrackPathTrackIdMax = 4096;
+
+export const removeLikedTrackPathTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+
+export const RemoveLikedTrackParams = zod
+  .object({
+    trackId: zod
+      .string()
+      .min(removeLikedTrackPathTrackIdMin)
+      .max(removeLikedTrackPathTrackIdMax)
+      .regex(removeLikedTrackPathTrackIdRegExp),
+  })
+  .strict();
+
+/**
+ * @summary List playlists owned by the current TF account
+ */
+
+export const listPlaylistsResponsePlaylistsItemNameMax = 200;
+
+export const listPlaylistsResponsePlaylistsItemTrackCountMin = 0;
+
+export const ListPlaylistsResponse = zod
+  .object({
+    playlists: zod.array(
+      zod
+        .object({
+          id: zod.number().min(1),
+          name: zod
+            .string()
+            .min(1)
+            .max(listPlaylistsResponsePlaylistsItemNameMax),
+          description: zod.string().nullable(),
+          trackCount: zod
+            .number()
+            .min(listPlaylistsResponsePlaylistsItemTrackCountMin),
+          createdAt: zod.string().datetime({}),
+          updatedAt: zod.string().datetime({}),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+/**
+ * @summary Create a playlist for the current TF account
+ */
+export const createPlaylistBodyNameMax = 200;
+
+export const CreatePlaylistBody = zod
+  .object({
+    name: zod.string().min(1).max(createPlaylistBodyNameMax),
+  })
+  .strict();
+
+/**
+ * @summary Get an owned playlist and its ordered tracks
+ */
+export const getPlaylistPathPlaylistIdMax = 2147483647;
+
+export const GetPlaylistParams = zod
+  .object({
+    playlistId: zod.number().min(1).max(getPlaylistPathPlaylistIdMax),
+  })
+  .strict();
+
+export const getPlaylistResponsePlaylistNameMax = 200;
+
+export const getPlaylistResponsePlaylistTrackCountMin = 0;
+
+export const getPlaylistResponseTracksItemTrackIdMin = 4;
+export const getPlaylistResponseTracksItemTrackIdMax = 4096;
+
+export const getPlaylistResponseTracksItemTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const getPlaylistResponseTracksItemThumbnailUrlMax = 2048;
+
+export const getPlaylistResponseTracksItemThumbnailUrlRegExp = new RegExp(
+  "^https?:[\/][\/]",
+);
+export const getPlaylistResponseTracksItemDurationSecondsMax = 86400;
+
+export const getPlaylistResponseTracksItemPositionMin = 0;
+
+export const GetPlaylistResponse = zod
+  .object({
+    playlist: zod
+      .object({
+        id: zod.number().min(1),
+        name: zod.string().min(1).max(getPlaylistResponsePlaylistNameMax),
+        description: zod.string().nullable(),
+        trackCount: zod.number().min(getPlaylistResponsePlaylistTrackCountMin),
+        createdAt: zod.string().datetime({}),
+        updatedAt: zod.string().datetime({}),
+      })
+      .strict(),
+    tracks: zod.array(
+      zod
+        .object({
+          trackId: zod
+            .string()
+            .min(getPlaylistResponseTracksItemTrackIdMin)
+            .max(getPlaylistResponseTracksItemTrackIdMax)
+            .regex(getPlaylistResponseTracksItemTrackIdRegExp),
+          artist: zod.string(),
+          title: zod.string(),
+          thumbnailUrl: zod
+            .string()
+            .url()
+            .max(getPlaylistResponseTracksItemThumbnailUrlMax)
+            .regex(getPlaylistResponseTracksItemThumbnailUrlRegExp)
+            .nullable(),
+          durationSeconds: zod
+            .number()
+            .min(1)
+            .max(getPlaylistResponseTracksItemDurationSecondsMax)
+            .nullable(),
+          position: zod.number().min(getPlaylistResponseTracksItemPositionMin),
+          addedAt: zod.string().datetime({}),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+/**
+ * @summary Delete an owned playlist and its tracks
+ */
+export const removePlaylistPathPlaylistIdMax = 2147483647;
+
+export const RemovePlaylistParams = zod
+  .object({
+    playlistId: zod.number().min(1).max(removePlaylistPathPlaylistIdMax),
+  })
+  .strict();
+
+/**
+ * @summary Add a TF track once to an owned playlist
+ */
+export const addPlaylistTrackPathPlaylistIdMax = 2147483647;
+
+export const AddPlaylistTrackParams = zod
+  .object({
+    playlistId: zod.number().min(1).max(addPlaylistTrackPathPlaylistIdMax),
+  })
+  .strict();
+
+export const addPlaylistTrackBodyTrackIdMin = 4;
+export const addPlaylistTrackBodyTrackIdMax = 4096;
+
+export const addPlaylistTrackBodyTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const addPlaylistTrackBodyArtistMax = 300;
+
+export const addPlaylistTrackBodyTitleMax = 500;
+
+export const addPlaylistTrackBodyThumbnailUrlMax = 2048;
+
+export const addPlaylistTrackBodyThumbnailUrlRegExp = new RegExp(
+  "^https?:[\/][\/]",
+);
+export const addPlaylistTrackBodyDurationSecondsMax = 86400;
+
+export const AddPlaylistTrackBody = zod
+  .object({
+    trackId: zod
+      .string()
+      .min(addPlaylistTrackBodyTrackIdMin)
+      .max(addPlaylistTrackBodyTrackIdMax)
+      .regex(addPlaylistTrackBodyTrackIdRegExp),
+    artist: zod.string().min(1).max(addPlaylistTrackBodyArtistMax),
+    title: zod.string().min(1).max(addPlaylistTrackBodyTitleMax),
+    thumbnailUrl: zod
+      .string()
+      .url()
+      .max(addPlaylistTrackBodyThumbnailUrlMax)
+      .regex(addPlaylistTrackBodyThumbnailUrlRegExp)
+      .nullish(),
+    durationSeconds: zod
+      .number()
+      .min(1)
+      .max(addPlaylistTrackBodyDurationSecondsMax)
+      .nullish(),
+  })
+  .strict();
+
+export const addPlaylistTrackResponseTrackTrackIdMin = 4;
+export const addPlaylistTrackResponseTrackTrackIdMax = 4096;
+
+export const addPlaylistTrackResponseTrackTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const addPlaylistTrackResponseTrackThumbnailUrlMax = 2048;
+
+export const addPlaylistTrackResponseTrackThumbnailUrlRegExp = new RegExp(
+  "^https?:[\/][\/]",
+);
+export const addPlaylistTrackResponseTrackDurationSecondsMax = 86400;
+
+export const addPlaylistTrackResponseTrackPositionMin = 0;
+
+export const AddPlaylistTrackResponse = zod
+  .object({
+    track: zod
+      .object({
+        trackId: zod
+          .string()
+          .min(addPlaylistTrackResponseTrackTrackIdMin)
+          .max(addPlaylistTrackResponseTrackTrackIdMax)
+          .regex(addPlaylistTrackResponseTrackTrackIdRegExp),
+        artist: zod.string(),
+        title: zod.string(),
+        thumbnailUrl: zod
+          .string()
+          .url()
+          .max(addPlaylistTrackResponseTrackThumbnailUrlMax)
+          .regex(addPlaylistTrackResponseTrackThumbnailUrlRegExp)
+          .nullable(),
+        durationSeconds: zod
+          .number()
+          .min(1)
+          .max(addPlaylistTrackResponseTrackDurationSecondsMax)
+          .nullable(),
+        position: zod.number().min(addPlaylistTrackResponseTrackPositionMin),
+        addedAt: zod.string().datetime({}),
+      })
+      .strict(),
+    added: zod.boolean(),
+  })
+  .strict();
+
+/**
+ * @summary Reorder all tracks in an owned playlist
+ */
+export const reorderPlaylistTracksPathPlaylistIdMax = 2147483647;
+
+export const ReorderPlaylistTracksParams = zod
+  .object({
+    playlistId: zod.number().min(1).max(reorderPlaylistTracksPathPlaylistIdMax),
+  })
+  .strict();
+
+export const reorderPlaylistTracksBodyTrackIdsItemMin = 4;
+export const reorderPlaylistTracksBodyTrackIdsItemMax = 4096;
+
+export const reorderPlaylistTracksBodyTrackIdsItemRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const reorderPlaylistTracksBodyTrackIdsMax = 500;
+
+export const ReorderPlaylistTracksBody = zod
+  .object({
+    trackIds: zod
+      .array(
+        zod
+          .string()
+          .min(reorderPlaylistTracksBodyTrackIdsItemMin)
+          .max(reorderPlaylistTracksBodyTrackIdsItemMax)
+          .regex(reorderPlaylistTracksBodyTrackIdsItemRegExp),
+      )
+      .max(reorderPlaylistTracksBodyTrackIdsMax)
+      .describe(
+        "Exact playlist membership in final order; cumulative ID length at most 50000 characters",
+      ),
+  })
+  .strict();
+
+export const reorderPlaylistTracksResponsePlaylistNameMax = 200;
+
+export const reorderPlaylistTracksResponsePlaylistTrackCountMin = 0;
+
+export const reorderPlaylistTracksResponseTracksItemTrackIdMin = 4;
+export const reorderPlaylistTracksResponseTracksItemTrackIdMax = 4096;
+
+export const reorderPlaylistTracksResponseTracksItemTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+export const reorderPlaylistTracksResponseTracksItemThumbnailUrlMax = 2048;
+
+export const reorderPlaylistTracksResponseTracksItemThumbnailUrlRegExp =
+  new RegExp("^https?:[\/][\/]");
+export const reorderPlaylistTracksResponseTracksItemDurationSecondsMax = 86400;
+
+export const reorderPlaylistTracksResponseTracksItemPositionMin = 0;
+
+export const ReorderPlaylistTracksResponse = zod
+  .object({
+    playlist: zod
+      .object({
+        id: zod.number().min(1),
+        name: zod
+          .string()
+          .min(1)
+          .max(reorderPlaylistTracksResponsePlaylistNameMax),
+        description: zod.string().nullable(),
+        trackCount: zod
+          .number()
+          .min(reorderPlaylistTracksResponsePlaylistTrackCountMin),
+        createdAt: zod.string().datetime({}),
+        updatedAt: zod.string().datetime({}),
+      })
+      .strict(),
+    tracks: zod.array(
+      zod
+        .object({
+          trackId: zod
+            .string()
+            .min(reorderPlaylistTracksResponseTracksItemTrackIdMin)
+            .max(reorderPlaylistTracksResponseTracksItemTrackIdMax)
+            .regex(reorderPlaylistTracksResponseTracksItemTrackIdRegExp),
+          artist: zod.string(),
+          title: zod.string(),
+          thumbnailUrl: zod
+            .string()
+            .url()
+            .max(reorderPlaylistTracksResponseTracksItemThumbnailUrlMax)
+            .regex(reorderPlaylistTracksResponseTracksItemThumbnailUrlRegExp)
+            .nullable(),
+          durationSeconds: zod
+            .number()
+            .min(1)
+            .max(reorderPlaylistTracksResponseTracksItemDurationSecondsMax)
+            .nullable(),
+          position: zod
+            .number()
+            .min(reorderPlaylistTracksResponseTracksItemPositionMin),
+          addedAt: zod.string().datetime({}),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+/**
+ * @summary Remove a TF track from an owned playlist
+ */
+export const removePlaylistTrackPathPlaylistIdMax = 2147483647;
+
+export const removePlaylistTrackPathTrackIdMin = 4;
+export const removePlaylistTrackPathTrackIdMax = 4096;
+
+export const removePlaylistTrackPathTrackIdRegExp = new RegExp(
+  "^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$",
+);
+
+export const RemovePlaylistTrackParams = zod
+  .object({
+    playlistId: zod.number().min(1).max(removePlaylistTrackPathPlaylistIdMax),
+    trackId: zod
+      .string()
+      .min(removePlaylistTrackPathTrackIdMin)
+      .max(removePlaylistTrackPathTrackIdMax)
+      .regex(removePlaylistTrackPathTrackIdRegExp),
+  })
+  .strict();

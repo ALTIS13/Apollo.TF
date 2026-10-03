@@ -1,13 +1,13 @@
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Response } from "express";
 import { z } from "zod";
 import {
   getStreamUrl,
   spawnAudioDownload,
   type AudioQuality,
 } from "../lib/ytdlp.js";
-import { SearchTracksBody } from "@workspace/api-zod";
+import { FreeSearchTracksBody, SearchTracksBody } from "@workspace/api-zod";
 import { getCachedStreamUrl, setCachedStreamUrl } from "../lib/stream-cache.js";
 import {
   cancelDownloadJob,
@@ -16,7 +16,7 @@ import {
   listSessionDownloadJobs,
 } from "../lib/background-queue.js";
 import { db } from "@workspace/db";
-import { playHistoryTable } from "@workspace/db/schema";
+import { likedTracksTable, playHistoryTable } from "@workspace/db/schema";
 import { eq, sql } from "drizzle-orm";
 import {
   TfSearchUnavailableError,
@@ -32,9 +32,26 @@ import {
   parseAllowedDownloadSourceUrl,
 } from "@workspace/tf-download-contract";
 import {
+  isPreviewLength,
+  probeSourceDuration,
+} from "@workspace/tf-download-contract/duration-probe";
+import {
   TfDownloadWorkerError,
   type TfDownloadWorkerGateway,
 } from "../lib/tf-download-worker-client.js";
+import {
+  recordLyricsFeedback,
+  type LyricsFeedbackInput,
+} from "../lib/lyrics-feedback-store.js";
+import {
+  MediaLinkResolutionError,
+  resolvePastedMediaLink,
+} from "../lib/media-link.js";
+import {
+  admitMediaLink,
+  MediaLinkAdmissionError,
+  type AdmitMediaLink,
+} from "../lib/media-link-admission.js";
 
 interface RecentTrack {
   readonly trackId: string;
@@ -51,12 +68,20 @@ interface RecordPlayInput {
 
 export interface TrackRouteDependencies {
   readonly searchGateway: TfSearchGateway;
+  readonly admitMediaLink: AdmitMediaLink;
+  readonly resolveMediaLink: typeof resolvePastedMediaLink;
   readonly loadRecentTracks: (
     accountId: string,
     limit: number,
   ) => Promise<readonly RecentTrack[]>;
   readonly recordPlay: (input: RecordPlayInput) => Promise<void>;
+  readonly recordLyricsFeedback: (
+    input: LyricsFeedbackInput,
+  ) => Promise<"recorded" | "already_reported">;
   readonly loadTopArtists: (
+    accountId: string,
+  ) => Promise<readonly (string | null)[]>;
+  readonly loadLikedArtists: (
     accountId: string,
   ) => Promise<readonly (string | null)[]>;
   readonly enqueueDownload: typeof enqueueDownload;
@@ -67,6 +92,113 @@ export interface TrackRouteDependencies {
 }
 
 const ALL_SEARCH_SOURCES: readonly TfSearchSource[] = ["yt", "sc", "bc", "dz"];
+const mediaLinkBodySchema = z.object({
+  url: z.string().trim().min(1).max(500),
+}).strict();
+const expectedDurationQuerySchema = z.string()
+  .regex(/^[1-9]\d*$/)
+  .transform(Number)
+  .pipe(z.number().int().min(1).max(86_400))
+  .optional();
+const refreshStreamQuerySchema = z.literal("1").optional();
+
+interface ResolvedSourceDuration {
+  readonly expectedDurationSeconds?: number;
+  readonly recording?: { readonly artist: string; readonly title: string };
+}
+
+async function lookupSourceDuration(
+  gateway: TfSearchGateway,
+  accountId: string,
+  sourceUrl: string,
+  clientHint: number | undefined,
+  options?: { readonly signal?: AbortSignal },
+): Promise<ResolvedSourceDuration> {
+  if (!gateway.sourceReference) throw new TfSearchUnavailableError();
+  const input = { accountId, sourceUrl };
+  const assessment = await (options === undefined
+    ? gateway.sourceReference(input)
+    : gateway.sourceReference(input, options));
+  if (assessment.status === "known" && assessment.reference) {
+    return {
+      expectedDurationSeconds: assessment.reference.expectedDurationSeconds,
+      recording: { artist: assessment.reference.artist, title: assessment.reference.title },
+    };
+  }
+  // A miss retains only the legacy quality guard; ambiguous metadata cannot be overridden.
+  if (assessment.status === "unknown") return { expectedDurationSeconds: clientHint };
+  if (assessment.status === "ambiguous") return {};
+  throw new TfSearchUnavailableError();
+}
+
+async function resolveSourceDuration(
+  gateway: TfSearchGateway,
+  accountId: string,
+  sourceUrl: string,
+  clientHint: number | undefined,
+  response: Response,
+): Promise<ResolvedSourceDuration | null> {
+  try {
+    const resolved = await lookupSourceDuration(gateway, accountId, sourceUrl, clientHint);
+    if (response.destroyed || response.writableEnded) return null;
+    return resolved;
+  } catch {
+    if (!response.headersSent && !response.destroyed) {
+      response.status(503).json({ error: "duration_unverified" });
+    }
+    return null;
+  }
+}
+
+async function streamDurationError(
+  sourceUrl: string,
+  expectedDurationSeconds: number | undefined,
+  response: Response,
+): Promise<"preview_rejected" | "duration_unverified" | null> {
+  if (expectedDurationSeconds === undefined || expectedDurationSeconds < 90) return null;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  response.once("close", abort);
+  try {
+    const actual = await probeSourceDuration({
+      executable: "yt-dlp",
+      sourceUrl,
+      signal: controller.signal,
+    });
+    if (!Number.isFinite(actual) || actual <= 0) return "duration_unverified";
+    return isPreviewLength(actual, expectedDurationSeconds)
+      ? "preview_rejected"
+      : null;
+  } catch {
+    return "duration_unverified";
+  } finally {
+    response.off("close", abort);
+  }
+}
+
+async function admitSourceDuration(
+  sourceUrl: string,
+  clientHint: number | undefined,
+  response: Response,
+  gateway: TfSearchGateway,
+  accountId: string,
+): Promise<boolean> {
+  const resolved = await resolveSourceDuration(
+    gateway, accountId, sourceUrl, clientHint, response,
+  );
+  if (resolved === null) return false;
+  const error = await streamDurationError(
+    sourceUrl,
+    resolved.expectedDurationSeconds,
+    response,
+  );
+  if (error === null) return true;
+  if (!response.headersSent && !response.destroyed) {
+    response.status(error === "preview_rejected" ? 422 : 503).json({ error });
+  }
+  return false;
+}
+
 const downloadQueueRequestSchema = z
   .object({
     tracks: z
@@ -77,6 +209,7 @@ const downloadQueueRequestSchema = z
             artist: z.string().trim().min(1).max(300),
             title: z.string().trim().min(1).max(500),
             quality: downloadQualitySchema,
+            expectedDurationSeconds: z.number().int().min(1).max(86_400).optional(),
           })
           .strict(),
       )
@@ -84,8 +217,27 @@ const downloadQueueRequestSchema = z
       .max(50),
   })
   .strict();
+const QUEUE_PREFLIGHT_CONCURRENCY = 4;
+const QUEUE_PREFLIGHT_TIMEOUT_MS = 30_000;
+
+class DownloadPreflightError extends Error {
+  constructor(
+    readonly status: 400 | 503,
+    readonly code: "bad_request" | "download_queue_unavailable" | "duration_unverified",
+  ) {
+    super(code);
+  }
+}
 const CANONICAL_JOB_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const lyricsFeedbackBody = z.object({
+  trackId: z.string().trim().min(1).max(4096),
+  artist: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(300),
+  durationSeconds: z.number().int().min(0).max(86_400),
+  lyricsSource: z.enum(["lrclib", "lyrics.ovh", "none"]),
+  reason: z.enum(["wrong_track", "out_of_sync", "incomplete", "missing"]),
+}).strict().refine((body) => (body.lyricsSource === "none") === (body.reason === "missing"));
 
 function unavailableGateway(): TfSearchGateway {
   const unavailable = async (): Promise<never> => {
@@ -93,6 +245,7 @@ function unavailableGateway(): TfSearchGateway {
   };
   return {
     search: unavailable,
+    freeSearch: unavailable,
     discoverArtist: unavailable,
     suggestions: unavailable,
   };
@@ -117,21 +270,12 @@ function preferredSourceUrl(
   results: readonly TfSearchResult[],
   sources: readonly TfSearchResult["source"][],
 ): string | null {
-  for (const source of sources) {
-    const match = results.find((result) => result.source === source);
-    if (match !== undefined) return match.sourceUrl;
-  }
-  return null;
-}
-
-function trustedFallbackSourceUrl(
-  results: readonly TfSearchResult[],
-): string | null {
   const allowedHosts = {
     youtube: "youtube.com",
     soundcloud: "soundcloud.com",
   } as const;
-  for (const source of ["youtube", "soundcloud"] as const) {
+  for (const source of sources) {
+    if (source !== "youtube" && source !== "soundcloud") continue;
     for (const result of results) {
       if (result.source !== source) continue;
       const parsed = parseAllowedDownloadSourceUrl(result.sourceUrl);
@@ -139,14 +283,19 @@ function trustedFallbackSourceUrl(
       if (
         parsed !== null &&
         parsed.href === result.sourceUrl &&
-        (parsed.hostname === allowedHost ||
-          parsed.hostname.endsWith(`.${allowedHost}`))
+        (parsed.hostname === allowedHost || parsed.hostname.endsWith(`.${allowedHost}`))
       ) {
         return result.sourceUrl;
       }
     }
   }
   return null;
+}
+
+function trustedFallbackSourceUrl(
+  results: readonly TfSearchResult[],
+): string | null {
+  return preferredSourceUrl(results, ["youtube", "soundcloud"]);
 }
 
 function hasTfSearchAccess(entitlements: readonly string[]): boolean {
@@ -228,6 +377,8 @@ function decodeTrackUrl(id: string): { source: string; url: string } | null {
 
 const defaultTrackRouteDependencies: TrackRouteDependencies = {
   searchGateway: unavailableGateway(),
+  admitMediaLink,
+  resolveMediaLink: resolvePastedMediaLink,
   async loadRecentTracks(accountId, limit) {
     const result = await db.execute(sql`
       SELECT t.track_id, t.artist, t.title
@@ -260,6 +411,7 @@ const defaultTrackRouteDependencies: TrackRouteDependencies = {
       title: input.title,
     });
   },
+  recordLyricsFeedback,
   async loadTopArtists(accountId) {
     const rows = await db
       .select({
@@ -270,6 +422,16 @@ const defaultTrackRouteDependencies: TrackRouteDependencies = {
       .where(eq(playHistoryTable.sessionId, accountId))
       .groupBy(playHistoryTable.artist)
       .orderBy(sql`count(*) desc`)
+      .limit(10);
+    return rows.map((row) => row.artist);
+  },
+  async loadLikedArtists(accountId) {
+    const rows = await db
+      .select({ artist: likedTracksTable.artist })
+      .from(likedTracksTable)
+      .where(eq(likedTracksTable.sessionId, accountId))
+      .groupBy(likedTracksTable.artist)
+      .orderBy(sql`count(*) desc`, sql`max(${likedTracksTable.likedAt}) desc`)
       .limit(10);
     return rows.map((row) => row.artist);
   },
@@ -312,6 +474,7 @@ export function createTracksRouter(
       const response = await routeDependencies.searchGateway.search({
         artist,
         title,
+        accountId: req.tfPrincipal!.accountId,
         mode: mode ?? "auto",
         sources: enabledSources,
         maxResults,
@@ -325,6 +488,71 @@ export function createTracksRouter(
       });
     } catch {
       res.status(503).json({ error: "search_unavailable" });
+    }
+  });
+
+  router.post("/tracks/free-search", async (req, res) => {
+    const parsed = FreeSearchTracksBody.safeParse(req.body);
+    const query = parsed.success ? parsed.data.query.trim() : "";
+    if (!parsed.success || query.length < 2 || hasLegacyInvalidSearchOptions(req.body)) {
+      res.status(400).json({ error: "bad_request", message: "invalid search query or options" });
+      return;
+    }
+    const { mode, sources } = parsed.data;
+    const enabledSources: TfSearchSource[] =
+      mode === "manual" && sources && sources.length > 0
+        ? sources
+        : [...ALL_SEARCH_SOURCES];
+    try {
+      const response = await routeDependencies.searchGateway.freeSearch({
+        accountId: req.tfPrincipal!.accountId,
+        query,
+        mode: mode ?? "auto",
+        sources: enabledSources,
+        maxResults: parsed.data.maxResults ?? 20,
+      });
+      res.json({
+        query: response.query,
+        results: response.results.map(publicSearchResult),
+        cached: response.cached,
+        sources: response.sources,
+        fallbackAvailable: response.fallbackAvailable,
+      });
+    } catch {
+      res.status(503).json({ error: "search_unavailable" });
+    }
+  });
+
+  router.post("/tracks/link-metadata", async (req, res) => {
+    const parsed = mediaLinkBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
+    try {
+      const metadata = await routeDependencies.admitMediaLink(
+        req.tfPrincipal!.accountId,
+        parsed.data.url,
+        () => routeDependencies.resolveMediaLink(parsed.data.url),
+      );
+      res.json({
+        schemaVersion: 1,
+        source: metadata.source,
+        title: metadata.title,
+        ...(metadata.artist ? { artist: metadata.artist } : {}),
+        ...(metadata.durationSeconds ? { durationSeconds: metadata.durationSeconds } : {}),
+      });
+    } catch (error) {
+      if (error instanceof MediaLinkAdmissionError) {
+        res.setHeader("Retry-After", String(error.retryAfterSeconds));
+        res.status(error.code === "media_link_rate_limited" ? 429 : 503)
+          .json({ error: error.code });
+        return;
+      }
+      const code = error instanceof MediaLinkResolutionError
+        ? error.code
+        : "media_link_unavailable";
+      res.status(code === "unsupported_media_link" ? 422 : 503).json({ error: code });
     }
   });
 
@@ -422,8 +650,52 @@ export function createTracksRouter(
       return;
     }
 
+    const expected = expectedDurationQuerySchema.safeParse(
+      req.query["expectedDurationSeconds"],
+    );
+    const refresh = refreshStreamQuerySchema.safeParse(req.query["refresh"]);
+    if (!expected.success || !refresh.success) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
+
     try {
-      const cached = await getCachedStreamUrl(id);
+      if (decoded.source === "dz") {
+        // Legacy Deezer URLs may be previews; neither they nor opaque cache hits prove a full source.
+        const dzArtist = String(req.query["artist"] ?? "").trim();
+        const dzTitle = String(req.query["title"] ?? "").trim();
+        if (!dzArtist || !dzTitle) {
+          throw new Error("Deezer full-source metadata is required");
+        }
+        if (!hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
+          res.status(403).json({ error: "module_access_denied" });
+          return;
+        }
+        const candidates = await routeDependencies.searchGateway.search({
+          artist: dzArtist,
+          title: dzTitle,
+          mode: "manual",
+          sources: ["yt"],
+          maxResults: 3,
+        });
+        const sourceUrl = preferredSourceUrl(candidates.results, ["youtube"]);
+        if (sourceUrl === null) {
+          throw new Error("Deezer full-source candidate is unavailable");
+        }
+        if (!(await admitSourceDuration(
+          sourceUrl, expected.data, res,
+          routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+        ))) return;
+        const { url, mimeType } = await getStreamUrl(sourceUrl);
+        res.json({ id, streamUrl: url, mimeType: mimeType ?? "audio/mpeg" });
+        return;
+      }
+
+      if (!(await admitSourceDuration(
+        decoded.url, expected.data, res,
+        routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+      ))) return;
+      const cached = refresh.data === "1" ? null : await getCachedStreamUrl(id);
       if (cached) {
         res.json({
           id,
@@ -434,44 +706,6 @@ export function createTracksRouter(
         return;
       }
 
-      if (decoded.source === "dz") {
-        const dzArtist = String(req.query["artist"] ?? "").trim();
-        const dzTitle = String(req.query["title"] ?? "").trim();
-
-        if (dzArtist && dzTitle) {
-          try {
-            if (!hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
-              res.status(403).json({ error: "module_access_denied" });
-              return;
-            }
-            const candidates = await routeDependencies.searchGateway.search({
-              artist: dzArtist,
-              title: dzTitle,
-              mode: "manual",
-              sources: ["yt"],
-              maxResults: 3,
-            });
-            const sourceUrl = preferredSourceUrl(candidates.results, [
-              "youtube",
-            ]);
-            if (sourceUrl !== null) {
-              const { url, mimeType } = await getStreamUrl(sourceUrl);
-              await setCachedStreamUrl(id, url, mimeType ?? "audio/mpeg");
-              res.json({
-                id,
-                streamUrl: url,
-                mimeType: mimeType ?? "audio/mpeg",
-              });
-              return;
-            }
-          } catch {
-            req.log?.warn("Deezer stream fallback unavailable; using preview");
-          }
-        }
-
-        res.json({ id, streamUrl: decoded.url, mimeType: "audio/mpeg" });
-        return;
-      }
       const { url, mimeType } = await getStreamUrl(decoded.url);
       await setCachedStreamUrl(id, url, mimeType ?? "audio/mpeg");
       res.json({ id, streamUrl: url, mimeType: mimeType ?? null });
@@ -500,6 +734,14 @@ export function createTracksRouter(
       return;
     }
 
+    const expected = expectedDurationQuerySchema.safeParse(
+      req.query["expectedDurationSeconds"],
+    );
+    if (!expected.success) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
+
     const rawQuality = String(req.query["quality"] ?? "256");
     const quality: AudioQuality = (
       ["128", "192", "256", "320", "flac"] as const
@@ -511,10 +753,6 @@ export function createTracksRouter(
 
     try {
       const filename = `track_${id.slice(0, 16)}.${ext}`;
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="${filename}"`,
-      );
 
       if (decoded.source === "dz") {
         const dzArtist = String(req.query["artist"] ?? "").trim();
@@ -525,6 +763,10 @@ export function createTracksRouter(
           req.log?.info(
             { id, artist: dzArtist, title: dzTitle },
             `Deezer→${label} download fallback`,
+          );
+          res.setHeader(
+            "Content-Disposition",
+            `attachment; filename="${filename}"`,
           );
           res.setHeader("Content-Type", mimeType);
           const proc = spawnAudioDownload(sourceUrl, quality);
@@ -563,6 +805,12 @@ export function createTracksRouter(
               "soundcloud",
             ]);
             if (sourceUrl !== null) {
+              if (!(await admitSourceDuration(
+                sourceUrl, expected.data, res,
+                routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+              ))) {
+                return;
+              }
               const source = candidates.results.find(
                 (candidate) => candidate.sourceUrl === sourceUrl,
               )?.source;
@@ -586,6 +834,14 @@ export function createTracksRouter(
         return;
       }
 
+      if (!(await admitSourceDuration(
+        decoded.url, expected.data, res,
+        routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+      ))) return;
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`,
+      );
       res.setHeader("Content-Type", mimeType);
 
       const proc = spawnAudioDownload(decoded.url, quality);
@@ -637,11 +893,18 @@ export function createTracksRouter(
       return;
     }
 
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Content-Disposition", "inline");
-    res.setHeader("Cache-Control", "no-cache");
+    const expected = expectedDurationQuerySchema.safeParse(
+      req.query["expectedDurationSeconds"],
+    );
+    if (!expected.success) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
 
     const pipeProc = (sourceUrl: string) => {
+      res.setHeader("Content-Type", "audio/mpeg");
+      res.setHeader("Content-Disposition", "inline");
+      res.setHeader("Cache-Control", "no-cache");
       const proc = spawnAudioDownload(sourceUrl, "128");
       proc.stdout.pipe(res);
       proc.stderr.on("data", () => {});
@@ -680,6 +943,12 @@ export function createTracksRouter(
               "soundcloud",
             ]);
             if (sourceUrl !== null) {
+              if (!(await admitSourceDuration(
+                sourceUrl, expected.data, res,
+                routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+              ))) {
+                return;
+              }
               req.log?.info(
                 { id, artist: dzArtist, title: dzTitle },
                 "Deezer audio-stream fallback",
@@ -699,6 +968,10 @@ export function createTracksRouter(
         return;
       }
 
+      if (!(await admitSourceDuration(
+        decoded.url, expected.data, res,
+        routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+      ))) return;
       pipeProc(decoded.url);
     } catch (err) {
       req.log.error({ err, id }, "Failed to start audio stream");
@@ -711,14 +984,44 @@ export function createTracksRouter(
     }
   });
 
+  type LyricsResult = {
+    plainLyrics: string | null;
+    syncedLyrics: string | null;
+    source: "lrclib" | "lyrics.ovh";
+    match: "metadata" | "unverified";
+  };
+
+  function matchingLrclibLyrics(
+    record: {
+      trackName?: unknown;
+      artistName?: unknown;
+      duration?: unknown;
+      plainLyrics?: unknown;
+      syncedLyrics?: unknown;
+    },
+    artist: string,
+    title: string,
+    duration: number,
+  ): LyricsResult | null {
+    const normalize = (value: string) => value.normalize("NFKC").toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, " ").trim().replace(/\s+/g, " ");
+    if (typeof record.artistName !== "string" || typeof record.trackName !== "string" ||
+        normalize(record.artistName) !== normalize(artist) || normalize(record.trackName) !== normalize(title)) return null;
+    if (Number.isFinite(duration) && duration > 0 &&
+        (typeof record.duration !== "number" || !Number.isFinite(record.duration) ||
+          Math.abs(record.duration - duration) > Math.max(5, duration * 0.03))) return null;
+    const plainLyrics = typeof record.plainLyrics === "string" ? record.plainLyrics.trim() || null : null;
+    const syncedLyrics = typeof record.syncedLyrics === "string" ? record.syncedLyrics.trim() || null : null;
+    return plainLyrics || syncedLyrics
+      ? { plainLyrics, syncedLyrics, source: "lrclib", match: "metadata" }
+      : null;
+  }
+
   async function fetchLrclib(
     artist: string,
     title: string,
     duration: number,
-  ): Promise<{
-    plainLyrics: string | null;
-    syncedLyrics: string | null;
-  } | null> {
+  ): Promise<LyricsResult | null> {
     try {
       const params = new URLSearchParams({
         artist_name: artist,
@@ -729,16 +1032,12 @@ export function createTracksRouter(
         headers: { "Lrclib-Client": "Apollo TrackFinder/1.0" },
         signal: AbortSignal.timeout(7000),
       });
-      if (r.status === 404) return { plainLyrics: null, syncedLyrics: null };
+      if (r.status === 404) return null;
       if (!r.ok) return null;
-      const d = (await r.json()) as {
-        plainLyrics?: string | null;
-        syncedLyrics?: string | null;
-      };
-      const plain = d.plainLyrics?.trim() ?? null;
-      const synced = d.syncedLyrics?.trim() ?? null;
-      if (!plain && !synced) return null;
-      return { plainLyrics: plain, syncedLyrics: synced };
+      const record = await r.json();
+      return record && typeof record === "object"
+        ? matchingLrclibLyrics(record, artist, title, duration)
+        : null;
     } catch {
       return null;
     }
@@ -747,10 +1046,8 @@ export function createTracksRouter(
   async function fetchLrcLibSearch(
     artist: string,
     title: string,
-  ): Promise<{
-    plainLyrics: string | null;
-    syncedLyrics: string | null;
-  } | null> {
+    duration: number,
+  ): Promise<LyricsResult | null> {
     try {
       const params = new URLSearchParams({
         artist_name: artist,
@@ -762,15 +1059,12 @@ export function createTracksRouter(
         signal: AbortSignal.timeout(7000),
       });
       if (!r.ok) return null;
-      const results = (await r.json()) as Array<{
-        plainLyrics?: string | null;
-        syncedLyrics?: string | null;
-      }>;
+      const results = await r.json();
+      if (!Array.isArray(results)) return null;
       for (const item of results) {
-        const plain = item.plainLyrics?.trim() ?? null;
-        const synced = item.syncedLyrics?.trim() ?? null;
-        if (plain || synced)
-          return { plainLyrics: plain, syncedLyrics: synced };
+        if (!item || typeof item !== "object") continue;
+        const lyrics = matchingLrclibLyrics(item, artist, title, duration);
+        if (lyrics) return lyrics;
       }
       return null;
     } catch {
@@ -781,14 +1075,14 @@ export function createTracksRouter(
   async function fetchLyricsOvh(
     artist: string,
     title: string,
-  ): Promise<{ plainLyrics: string | null; syncedLyrics: null } | null> {
+  ): Promise<LyricsResult | null> {
     try {
       const url = `https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`;
       const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
       if (!r.ok) return null;
       const d = (await r.json()) as { lyrics?: string; error?: string };
       if (d.error || !d.lyrics?.trim()) return null;
-      return { plainLyrics: d.lyrics.trim(), syncedLyrics: null };
+      return { plainLyrics: d.lyrics.trim(), syncedLyrics: null, source: "lyrics.ovh", match: "unverified" };
     } catch {
       return null;
     }
@@ -849,12 +1143,35 @@ export function createTracksRouter(
 
   router.get("/tracks/recommendations", async (req, res) => {
     try {
-      const artists = (
-        await routeDependencies.loadTopArtists(req.tfPrincipal!.accountId)
-      ).filter((artist): artist is string => !!artist);
+      const accountId = req.tfPrincipal!.accountId;
+      const [likedResult, historyResult] = await Promise.allSettled([
+        routeDependencies.loadLikedArtists(accountId),
+        routeDependencies.loadTopArtists(accountId),
+      ]);
+      if (likedResult.status === "rejected") {
+        req.log?.warn({ source: "liked_tracks" }, "Recommendation signal unavailable");
+      }
+      if (historyResult.status === "rejected") {
+        req.log?.warn({ source: "listening_history" }, "Recommendation signal unavailable");
+      }
+      const seeds: { artist: string; basis: "liked_tracks" | "listening_history" }[] = [];
+      const seenArtists = new Set<string>();
+      for (const [artists, basis] of [
+        [likedResult.status === "fulfilled" ? likedResult.value : [], "liked_tracks"],
+        [historyResult.status === "fulfilled" ? historyResult.value : [], "listening_history"],
+      ] as const) {
+        for (const candidate of artists) {
+          const artist = candidate?.trim();
+          if (!artist || artist.length > 300 || seenArtists.has(artist.toLowerCase())) continue;
+          seenArtists.add(artist.toLowerCase());
+          seeds.push({ artist, basis });
+          if (seeds.length === 10) break;
+        }
+        if (seeds.length === 10) break;
+      }
 
-      if (artists.length === 0) {
-        res.json({ results: [] });
+      if (seeds.length === 0) {
+        res.json({ results: [], basis: "none" });
         return;
       }
       if (!hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
@@ -862,7 +1179,7 @@ export function createTracksRouter(
         return;
       }
 
-      const discoveryPromises = artists.map((artist) =>
+      const discoveryPromises = seeds.map(({ artist }) =>
         routeDependencies.searchGateway
           .discoverArtist({
             artist,
@@ -873,23 +1190,31 @@ export function createTracksRouter(
       );
 
       const settled = await Promise.allSettled(discoveryPromises);
-      const allResults = settled.flatMap((outcome) =>
-        outcome.status === "fulfilled" ? outcome.value : [],
-      );
-
       const seen = new Set<string>();
-      const deduped = allResults.filter((r) => {
-        if (seen.has(r.id)) return false;
-        seen.add(r.id);
-        return true;
-      });
-
-      const limited = deduped.slice(0, 20).map(publicSearchResult);
-
-      res.json({ results: limited });
+      const contributed = new Set<"liked_tracks" | "listening_history">();
+      const results: ReturnType<typeof publicSearchResult>[] = [];
+      for (const [index, outcome] of settled.entries()) {
+        if (outcome.status !== "fulfilled") continue;
+        for (const candidate of outcome.value) {
+          if (seen.has(candidate.id)) continue;
+          seen.add(candidate.id);
+          results.push(publicSearchResult(candidate));
+          contributed.add(seeds[index]!.basis);
+          if (results.length === 20) break;
+        }
+        if (results.length === 20) break;
+      }
+      const basis = contributed.size === 2
+        ? "mixed"
+        : contributed.has("liked_tracks")
+          ? "liked_tracks"
+          : contributed.has("listening_history")
+            ? "listening_history"
+            : "none";
+      res.json({ results, basis });
     } catch {
       req.log?.warn("Failed to generate recommendations");
-      res.json({ results: [] });
+      res.json({ results: [], basis: "none" });
     }
   });
 
@@ -901,12 +1226,42 @@ export function createTracksRouter(
       res.json({ suggestions: [] });
       return;
     }
+    if (q.length > 200) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
 
     try {
-      const response = await routeDependencies.searchGateway.suggestions(q, 5);
+      const response = await routeDependencies.searchGateway.suggestions(
+        req.tfPrincipal!.accountId,
+        q,
+        5,
+      );
       res.json({ suggestions: response.suggestions });
     } catch {
       res.status(503).json({ error: "search_unavailable" });
+    }
+  });
+
+  router.post("/tracks/lyrics/feedback", async (req, res) => {
+    const parsed = lyricsFeedbackBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
+
+    try {
+      const state = await routeDependencies.recordLyricsFeedback({
+        ...parsed.data,
+        accountId: req.tfPrincipal!.accountId,
+      });
+      res.status(state === "recorded" ? 201 : 200).json({ state });
+    } catch (error) {
+      req.log?.warn(
+        { errorType: error instanceof Error ? error.name : "UnknownError" },
+        "Lyrics feedback unavailable",
+      );
+      res.status(503).json({ error: "lyrics_feedback_unavailable" });
     }
   });
 
@@ -933,7 +1288,7 @@ export function createTracksRouter(
         return;
       }
 
-      const lrclibSearch = await fetchLrcLibSearch(artist, title);
+      const lrclibSearch = await fetchLrcLibSearch(artist, title, duration);
       if (lrclibSearch) {
         res.json(lrclibSearch);
         return;
@@ -945,10 +1300,10 @@ export function createTracksRouter(
         return;
       }
 
-      res.json({ plainLyrics: null, syncedLyrics: null });
+      res.json({ plainLyrics: null, syncedLyrics: null, source: null, match: null });
     } catch (err) {
       req.log.warn({ err }, "Lyrics fetch failed");
-      res.json({ plainLyrics: null, syncedLyrics: null });
+      res.json({ plainLyrics: null, syncedLyrics: null, source: null, match: null });
     }
   });
 
@@ -961,12 +1316,10 @@ export function createTracksRouter(
       return;
     }
 
-    const resolved = [] as Array<{
-      readonly trackId: string;
-      readonly artist: string;
-      readonly title: string;
-      readonly quality: AudioQuality;
-      readonly sourceUrl: string;
+    // Validate the entire batch before spending any provider/network work.
+    const prepared = [] as Array<{
+      readonly track: z.infer<typeof downloadQueueRequestSchema>["tracks"][number];
+      readonly decoded: NonNullable<ReturnType<typeof decodeTrackUrl>>;
     }>;
     for (const track of parsedBody.data.tracks) {
       const decoded = decodeTrackUrl(track.trackId);
@@ -974,36 +1327,104 @@ export function createTracksRouter(
         res.status(400).json({ error: "bad_request" });
         return;
       }
-
-      let sourceUrl = decoded.url;
-      if (decoded.source === "dz") {
-        if (!hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
-          res.status(403).json({ error: "module_access_denied" });
-          return;
-        }
-        try {
-          const fallback = await routeDependencies.searchGateway.search({
-            artist: track.artist,
-            title: track.title,
-            mode: "manual",
-            sources: ["yt", "sc"],
-            maxResults: 6,
-          });
-          sourceUrl = trustedFallbackSourceUrl(fallback.results) ?? "";
-        } catch {
-          res.status(503).json({ error: "download_queue_unavailable" });
-          return;
-        }
-        if (sourceUrl === "") {
-          res.status(400).json({ error: "bad_request" });
-          return;
-        }
+      if (decoded.source === "dz" && !hasTfSearchAccess(req.tfPrincipal!.entitlements)) {
+        res.status(403).json({ error: "module_access_denied" });
+        return;
       }
-      resolved.push({ ...track, sourceUrl });
+      prepared.push({ track, decoded });
+    }
+
+    const resolved = new Array<{
+      readonly trackId: string;
+      readonly artist: string;
+      readonly title: string;
+      readonly quality: AudioQuality;
+      readonly expectedDurationSeconds?: number;
+      readonly sourceUrl: string;
+    }>(prepared.length);
+    const controller = new AbortController();
+    const options = { signal: controller.signal };
+    const unavailable = () => new DownloadPreflightError(503, "duration_unverified");
+    const abort = () => controller.abort(unavailable());
+    const deadline = performance.now() + QUEUE_PREFLIGHT_TIMEOUT_MS;
+    const timeout = setTimeout(abort, QUEUE_PREFLIGHT_TIMEOUT_MS);
+    res.once("close", abort);
+    const assertActive = () => {
+      if (res.destroyed || res.writableEnded || performance.now() >= deadline) abort();
+      controller.signal.throwIfAborted();
+    };
+    let next = 0;
+    const worker = async () => {
+      try {
+        while (next < prepared.length) {
+          assertActive();
+          const index = next++;
+          const { track, decoded } = prepared[index]!;
+          let sourceUrl = decoded.url;
+          if (decoded.source === "dz") {
+            try {
+              const fallback = await routeDependencies.searchGateway.search({
+                artist: track.artist,
+                title: track.title,
+                mode: "manual",
+                sources: ["yt", "sc"],
+                maxResults: 6,
+              }, options);
+              assertActive();
+              sourceUrl = trustedFallbackSourceUrl(fallback.results) ?? "";
+            } catch (error) {
+              if (controller.signal.aborted) throw error;
+              throw new DownloadPreflightError(503, "download_queue_unavailable");
+            }
+            if (sourceUrl === "") throw new DownloadPreflightError(400, "bad_request");
+          }
+          const reference = await lookupSourceDuration(
+            routeDependencies.searchGateway, req.tfPrincipal!.accountId,
+            sourceUrl, track.expectedDurationSeconds, options,
+          );
+          assertActive();
+          resolved[index] = {
+            trackId: track.trackId,
+            artist: reference.recording?.artist ?? track.artist,
+            title: reference.recording?.title ?? track.title,
+            quality: track.quality,
+            sourceUrl,
+            expectedDurationSeconds: reference.expectedDurationSeconds,
+          };
+        }
+      } catch (error) {
+        const failure = error instanceof DownloadPreflightError ? error : unavailable();
+        controller.abort(failure);
+        throw failure;
+      }
+    };
+    let rejectCanceled!: () => void;
+    const canceled = new Promise<never>((_resolve, reject) => {
+      rejectCanceled = () => reject(controller.signal.reason);
+      controller.signal.addEventListener("abort", rejectCanceled, { once: true });
+    });
+    try {
+      // Race also bounds legacy/test dependencies that ignore the abort signal.
+      await Promise.race([
+        Promise.all(Array.from({ length: Math.min(QUEUE_PREFLIGHT_CONCURRENCY, prepared.length) }, worker)),
+        canceled,
+      ]);
+      assertActive();
+    } catch (error) {
+      const failure = error instanceof DownloadPreflightError ? error : unavailable();
+      if (!res.destroyed && !res.writableEnded && !res.headersSent) {
+        res.status(failure.status).json({ error: failure.code });
+      }
+      return;
+    } finally {
+      clearTimeout(timeout);
+      res.off("close", abort);
+      controller.signal.removeEventListener("abort", rejectCanceled);
     }
 
     const outcomes = await Promise.allSettled(
       resolved.map(async (track) => {
+        if (res.destroyed || res.writableEnded) throw unavailable();
         const { jobId, position } = await routeDependencies.enqueueDownload({
           ...track,
           schemaVersion: 1,
@@ -1013,6 +1434,7 @@ export function createTracksRouter(
         return { trackId: track.trackId, jobId, position };
       }),
     );
+    if (res.destroyed || res.writableEnded) return;
     if (outcomes.every((outcome) => outcome.status === "rejected")) {
       res.status(503).json({ error: "download_queue_unavailable" });
       return;

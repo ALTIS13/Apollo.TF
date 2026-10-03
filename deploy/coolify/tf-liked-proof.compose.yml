@@ -1,0 +1,77 @@
+name: tf-liked-proof-${TF_TEST_RUN_ID:?Unique proof run ID required}
+
+x-run: &run
+  TF_TEST_RUN_ID: ${TF_TEST_RUN_ID:?Unique proof run ID required}
+  TF_PROOF_EXECUTE: ${TF_PROOF_EXECUTE:?Root execution gate required}
+  TF_PROOF_SOURCE_REVISION: ${TF_PROOF_SOURCE_REVISION:?Exact reviewed source SHA required}
+  TF_PROOF_SOURCE_DIGEST: ${TF_PROOF_SOURCE_DIGEST:?Verified source content digest required}
+
+x-node: &node
+  build:
+    context: ../..
+    dockerfile: artifacts/api-server/proofs/coolify/application.Dockerfile
+    args:
+      TF_PROOF_SOURCE_REVISION: ${TF_PROOF_SOURCE_REVISION:?Exact reviewed source SHA required}
+      TF_PROOF_SOURCE_DIGEST: ${TF_PROOF_SOURCE_DIGEST:?Verified source content digest required}
+  restart: "no"
+  read_only: true
+  user: "1000:1000"
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m,uid=1000,gid=1000,mode=0700
+    - /app/artifacts/api-server/node_modules/.vite:rw,noexec,nosuid,size=32m,uid=1000,gid=1000,mode=0700
+  networks: [proof]
+  mem_limit: 1g
+  cpus: 1
+
+services:
+  proof-db:
+    build:
+      context: ../..
+      dockerfile: artifacts/api-server/proofs/coolify/postgres.Dockerfile
+      args:
+        TF_PROOF_POSTGRES_IMAGE: ${TF_PROOF_POSTGRES_IMAGE:?Pinned postgres 17-bookworm digest required}
+    environment:
+      <<: *run
+      POSTGRES_USER: tf_proof_bootstrap
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${TF_PROOF_ADMIN_PASSWORD:?Private random hex password required}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TF_PROOF_MIGRATOR_PASSWORD: ${TF_PROOF_MIGRATOR_PASSWORD:?Private random hex password required}
+      TF_PROOF_RUNTIME_PASSWORD: ${TF_PROOF_RUNTIME_PASSWORD:?Private random hex password required}
+    restart: "no"
+    tmpfs:
+      - /var/lib/postgresql/data:rw,nosuid,size=512m
+    networks: [proof]
+    mem_limit: 768m
+    cpus: 1
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, tf_proof_bootstrap, -d, postgres]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+  migrate:
+    <<: *node
+    environment:
+      <<: *run
+      TF_PROOF_MIGRATOR_PASSWORD: ${TF_PROOF_MIGRATOR_PASSWORD:?Private random hex password required}
+    command: [node, artifacts/api-server/proofs/coolify/execute.mjs, migrate]
+    depends_on:
+      proof-db:
+        condition: service_healthy
+  proof:
+    <<: *node
+    environment:
+      <<: *run
+      TF_PROOF_RUNTIME_PASSWORD: ${TF_PROOF_RUNTIME_PASSWORD:?Private random hex password required}
+    command: [node, artifacts/api-server/proofs/coolify/execute.mjs, proof]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+networks:
+  proof:
+    internal: true

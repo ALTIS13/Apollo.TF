@@ -236,6 +236,7 @@ export interface DownloadJobData {
   readonly artist: string;
   readonly title: string;
   readonly quality: DownloadQuality;
+  readonly expectedDurationSeconds?: number;
   readonly sourceUrl: string;
   readonly createdAt: string;
 }
@@ -320,6 +321,7 @@ const downloadJobDataObjectSchema = z
     artist: boundedTrimmedStringSchema(MAX_ARTIST_LENGTH),
     title: boundedTrimmedStringSchema(MAX_TITLE_LENGTH),
     quality: downloadQualitySchema,
+    expectedDurationSeconds: z.number().int().min(1).max(86_400).optional(),
     sourceUrl: sourceUrlSchema,
     createdAt: timestampSchema,
   })

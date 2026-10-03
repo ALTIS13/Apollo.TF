@@ -288,6 +288,31 @@ function ledger(
 }
 
 describe("download queue ownership, states, and cancellation", () => {
+  it.each([
+    ["preview_rejected", "preview_rejected"],
+    ["duration_unverified", "duration_unverified"],
+    ["secret source URL in failure", undefined],
+  ])("exposes only a safe failure code for %s", async (reason, expected) => {
+    const failed = job(VALID_JOB_ID, JOB_DATA, "failed", reason);
+    const { adapter } = createAdapter(new Map([[failed.id, failed]]), {
+      waiting: [],
+      failed: [failed],
+    });
+    await adapter.init();
+
+    await expect(adapter.status(failed.id, ACCOUNT_ID)).resolves.toEqual({
+      status: "failed",
+      progress: 42,
+      ...(expected ? { failureCode: expected } : {}),
+    });
+    await expect(adapter.list(ACCOUNT_ID)).resolves.toEqual([{
+      jobId: VALID_JOB_ID,
+      status: "failed",
+      progress: 42,
+      ...(expected ? { failureCode: expected } : {}),
+    }]);
+  });
+
   it("hides foreign and malformed owners from status and list", async () => {
     const foreign = job(
       "foreign",
