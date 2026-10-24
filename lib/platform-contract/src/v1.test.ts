@@ -18,7 +18,7 @@ import {
   platformProblemV1Schema,
   releaseAdmissionV1Schema,
   sessionContextV1Schema,
-} from "./index";
+} from "./v1";
 
 const accountSubject = "11111111-1111-4111-8111-111111111111";
 const installationId = "22222222-2222-4222-8222-222222222222";
