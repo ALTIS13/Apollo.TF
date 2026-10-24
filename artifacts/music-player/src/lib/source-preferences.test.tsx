@@ -11,6 +11,15 @@ import { TfAuthProvider, useTfAuth } from "@/auth/tf-auth";
 import { clearTfSessionSecurityState } from "@/lib/tf-session-client";
 import Home from "@/pages/Home";
 
+vi.mock("@/hooks/use-player", () => ({
+  usePlayer: () => ({
+    recordingReplacement: null,
+    isRecordingReplacementCurrent: false,
+    replaceFailedRecording: vi.fn(),
+    cancelRecordingReplacement: vi.fn(),
+  }),
+}));
+
 const defaultSources = { yt: true, sc: true, bc: true, dz: true };
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), {

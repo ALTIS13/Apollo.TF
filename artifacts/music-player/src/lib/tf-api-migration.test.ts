@@ -31,6 +31,15 @@ vi.mock("@/components/LikedCollection", () => ({
   SaveLikedTrackButton: () => null,
 }));
 
+vi.mock("@/hooks/use-player", () => ({
+  usePlayer: () => ({
+    recordingReplacement: null,
+    isRecordingReplacementCurrent: false,
+    replaceFailedRecording: vi.fn(),
+    cancelRecordingReplacement: vi.fn(),
+  }),
+}));
+
 const CSRF_TOKEN = "c".repeat(42) + "A";
 const session = {
   accountId: "10000000-0000-4000-8000-000000000001",
