@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export * from "./v1";
+
 export const registrationModeSchema = z.enum([
   "closed",
   "invite_only",

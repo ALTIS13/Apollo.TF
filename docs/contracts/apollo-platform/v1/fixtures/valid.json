@@ -1,0 +1,263 @@
+[
+  {
+    "contract": "SessionContextV1",
+    "payload": {
+      "schema_version": 1,
+      "revision": "17",
+      "account_subject": "11111111-1111-4111-8111-111111111111",
+      "session_id": "33333333-3333-4333-8333-333333333333",
+      "account_state": "ACTIVE",
+      "display_profile": {
+        "display_name": "Apollo Operator",
+        "avatar_uri": null
+      },
+      "authentication_level": "AAL2",
+      "authenticated_at": "2026-09-04T12:00:00.000Z",
+      "session_expires_at": "2026-09-04T13:00:00.000Z",
+      "entitlement_snapshot_revision": "41",
+      "issued_at": "2026-09-04T12:00:01.000Z",
+      "request_id": "44444444-4444-4444-8444-444444444444",
+      "audit_correlation_id": "55555555-5555-4555-8555-555555555555",
+      "future_transport_hint": "preserved"
+    }
+  },
+  {
+    "contract": "InstallationRegistrationRequestV1",
+    "payload": {
+      "schema_version": 1,
+      "registration_idempotency_key": "88888888-8888-4888-8888-888888888888",
+      "application_code": "APOLLO_QUASAR_WINDOWS",
+      "platform_code": "WINDOWS",
+      "architecture": "X86_64",
+      "app_version": "1.4.0",
+      "client_nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "signing_algorithm": "EdDSA",
+      "signing_public_jwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "alg": "EdDSA",
+        "kid": "install-signing-1"
+      },
+      "signing_public_key_thumbprint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "supported_capabilities": [
+        {
+          "capability_code": "windows.quasar.module_host.v1",
+          "contract_version": 1
+        }
+      ],
+      "request_id": "44444444-4444-4444-8444-444444444444",
+      "audit_correlation_id": "55555555-5555-4555-8555-555555555555"
+    }
+  },
+  {
+    "contract": "InstallationRegistrationResponseV1",
+    "payload": {
+      "schema_version": 1,
+      "installation_id": "22222222-2222-4222-8222-222222222222",
+      "account_subject": "11111111-1111-4111-8111-111111111111",
+      "installation_state": "ACTIVE",
+      "key_generation": 1,
+      "revision": "1",
+      "registered_at": "2026-09-04T12:00:00.000Z",
+      "server_nonce": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "registration_receipt": "opaque.platform.registration.receipt",
+      "request_id": "44444444-4444-4444-8444-444444444444",
+      "audit_correlation_id": "55555555-5555-4555-8555-555555555555"
+    }
+  },
+  {
+    "contract": "ModuleEntitlementSnapshotV1",
+    "payload": {
+      "schema_version": 1,
+      "account_subject": "11111111-1111-4111-8111-111111111111",
+      "installation_id": "22222222-2222-4222-8222-222222222222",
+      "account_state": "ACTIVE",
+      "modules": [
+        {
+          "module_code": "FUTURE_MODULE",
+          "state": "ACTIVE",
+          "capabilities": ["future.runtime.v1"],
+          "valid_from": "2026-09-04T12:00:00.000Z",
+          "entitlement_expires_at": null,
+          "grace_expires_at": null,
+          "policy_revision": "9",
+          "reason_code": null,
+          "future_module_field": "preserved"
+        }
+      ],
+      "snapshot_revision": "41",
+      "policy_revision": "9",
+      "issued_at": "2026-09-04T12:00:00.000Z",
+      "refresh_after": "2026-09-04T12:05:00.000Z",
+      "expires_at": "2026-09-04T13:00:00.000Z",
+      "request_id": "44444444-4444-4444-8444-444444444444",
+      "audit_correlation_id": "55555555-5555-4555-8555-555555555555",
+      "future_snapshot_field": "preserved"
+    }
+  },
+  {
+    "contract": "ModuleLaunchAdmissionV1",
+    "payload": {
+      "schema_version": 1,
+      "launch_id": "99999999-9999-4999-8999-999999999999",
+      "account_subject": "11111111-1111-4111-8111-111111111111",
+      "installation_id": "22222222-2222-4222-8222-222222222222",
+      "module_code": "AI",
+      "decision": "ALLOW",
+      "reason_code": null,
+      "target_kind": "WEB",
+      "target_uri": "https://ai.apollot.ru/launch",
+      "opaque_state": "bounded-one-time-state",
+      "issued_at": "2026-09-04T12:00:00.000Z",
+      "expires_at": "2026-09-04T12:05:00.000Z",
+      "one_time": true,
+      "entitlement_snapshot_revision": "41",
+      "policy_revision": "9",
+      "request_id": "44444444-4444-4444-8444-444444444444",
+      "audit_correlation_id": "55555555-5555-4555-8555-555555555555"
+    }
+  },
+  {
+    "contract": "ClientReleaseMetadataV1",
+    "payload": {
+      "schema_version": 1,
+      "application_code": "APOLLO_QUASAR_WINDOWS",
+      "platform_code": "WINDOWS",
+      "architecture": "X86_64",
+      "release_channel": "STABLE",
+      "release_id": "66666666-6666-4666-8666-666666666666",
+      "artifact_id": "77777777-7777-4777-8777-777777777777",
+      "version": "1.4.0",
+      "minimum_source_version": "1.3.0",
+      "publication_state": "PUBLISHED",
+      "published_at": "2026-09-04T12:00:00.000Z",
+      "size_bytes": 1024,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "updater_manifest_uri": "https://quasar.apollot.ru/releases/66666666-6666-4666-8666-666666666666/manifest.json",
+      "updater_manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_revision": "7",
+      "request_id": "44444444-4444-4444-8444-444444444444",
+      "audit_correlation_id": "55555555-5555-4555-8555-555555555555"
+    }
+  },
+  {
+    "contract": "ReleaseAdmissionV1",
+    "payload": {
+      "schema_version": 1,
+      "admission_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "account_subject": "11111111-1111-4111-8111-111111111111",
+      "installation_id": "22222222-2222-4222-8222-222222222222",
+      "application_code": "APOLLO_QUASAR_WINDOWS",
+      "module_code": "QUASAR",
+      "release_id": "66666666-6666-4666-8666-666666666666",
+      "artifact_id": "77777777-7777-4777-8777-777777777777",
+      "platform_code": "WINDOWS",
+      "architecture": "X86_64",
+      "release_channel": "STABLE",
+      "decision": "ALLOW",
+      "reason_code": null,
+      "update_policy": "OPTIONAL",
+      "entitlement_snapshot_revision": "41",
+      "policy_revision": "9",
+      "release_revision": "7",
+      "rollout_cohort": null,
+      "issued_at": "2026-09-04T12:00:00.000Z",
+      "expires_at": "2026-09-04T12:05:00.000Z",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size_bytes": 1024,
+      "download_grant": {
+        "token": "opaque-one-time-download-grant",
+        "expires_at": "2026-09-04T12:05:00.000Z",
+        "one_time": true
+      },
+      "request_id": "44444444-4444-4444-8444-444444444444",
+      "audit_correlation_id": "55555555-5555-4555-8555-555555555555"
+    }
+  },
+  {
+    "contract": "NetworkAdmissionAssertionClaimsV1",
+    "payload": {
+      "schema_version": 1,
+      "iss": "https://api.apollot.ru",
+      "aud": "apollo-gap",
+      "sub": "11111111-1111-4111-8111-111111111111",
+      "account_subject": "11111111-1111-4111-8111-111111111111",
+      "installation_id": "22222222-2222-4222-8222-222222222222",
+      "installation_signing_key_id": "install-signing-1",
+      "installation_signing_key_thumbprint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "allowed_modules": ["AWG", "OLC"],
+      "allowed_capabilities": ["network.awg.outbound.v1"],
+      "purpose": "ENROLL",
+      "entitlement_snapshot_revision": "41",
+      "policy_revision": "9",
+      "jti": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "replay_nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "iat": 1788523200,
+      "nbf": 1788523200,
+      "exp": 1788523500,
+      "request_id": "44444444-4444-4444-8444-444444444444",
+      "audit_correlation_id": "55555555-5555-4555-8555-555555555555"
+    }
+  },
+  {
+    "contract": "GapNetworkAdmissionEnvelopeV1",
+    "payload": {
+      "schema_version": 1,
+      "assertion_format": "JWT",
+      "assertion": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy.zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "expires_at": "2026-09-04T12:05:00.000Z",
+      "request_id": "44444444-4444-4444-8444-444444444444",
+      "audit_correlation_id": "55555555-5555-4555-8555-555555555555"
+    }
+  },
+  {
+    "contract": "AiRuntimeGrantClaimsV1",
+    "payload": {
+      "schema_version": 1,
+      "iss": "https://api.apollot.ru",
+      "aud": "apollo.ai",
+      "sub": "11111111-1111-4111-8111-111111111111",
+      "installation_id": "22222222-2222-4222-8222-222222222222",
+      "capability_codes": ["ai.runtime.launch.v1"],
+      "entitlement_snapshot_revision": "41",
+      "policy_revision": "9",
+      "session_id": "33333333-3333-4333-8333-333333333333",
+      "jti": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "iat": 1788523200,
+      "nbf": 1788523200,
+      "exp": 1788523500,
+      "request_id": "44444444-4444-4444-8444-444444444444",
+      "audit_correlation_id": "55555555-5555-4555-8555-555555555555"
+    }
+  },
+  {
+    "contract": "AiModuleStatusV1",
+    "payload": {
+      "schema_version": 1,
+      "module_code": "AI",
+      "availability": "AVAILABLE",
+      "launch_state": "ENABLED",
+      "public_version": "1.8.0",
+      "api_contract_version": "v1",
+      "runtime_compatibility": "COMPATIBLE",
+      "updated_at": "2026-09-04T12:00:00.000Z",
+      "stale_after_seconds": 60,
+      "revision": "12",
+      "request_id": "44444444-4444-4444-8444-444444444444",
+      "audit_correlation_id": "55555555-5555-4555-8555-555555555555"
+    }
+  },
+  {
+    "contract": "PlatformProblemV1",
+    "payload": {
+      "schema_version": 1,
+      "code": "installation_revoked",
+      "message": "The installation is no longer active.",
+      "retryable": false,
+      "details": { "field": "installation_id" },
+      "request_id": "44444444-4444-4444-8444-444444444444",
+      "audit_correlation_id": "55555555-5555-4555-8555-555555555555"
+    }
+  }
+]

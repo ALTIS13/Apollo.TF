@@ -29,6 +29,8 @@ const authorizationCodeDigest = "5".repeat(64);
 const stateDigest = "6".repeat(64);
 const missingDigest = "f".repeat(64);
 const expiresAt = new Date("2030-07-16T10:00:00.000Z");
+const identityIssuer = "http://127.0.0.1:18300/auth/v1";
+const identitySubject = "59700edc-d8d6-4e68-95a1-2844d9f84216";
 
 describePostgres("PostgresPlatformRepository forced-RLS bootstrap", () => {
   let migrator: Pool;
@@ -99,6 +101,59 @@ describePostgres("PostgresPlatformRepository forced-RLS bootstrap", () => {
       });
       expect(hidden).toEqual({ found: null, rowCount: 0 });
     }
+  });
+
+  test("exact identity tuple lookup exposes only the linked account", async () => {
+    await withPlatformTransaction(migrator, async (client) => {
+      await setAccountContext(client, firstAccount.id);
+      await client.query(
+        `
+          insert into apollo_platform.account_identity_subjects
+            (account_id, provider_code, identity_issuer, identity_subject)
+          values ($1, 'supabase', $2, $3)
+        `,
+        [firstAccount.id, identityIssuer, identitySubject],
+      );
+    });
+
+    const exact = await withPlatformTransaction(runtime, async (client) => {
+      const found = await repository.findAccountByIdentitySubject(client, {
+        providerCode: "supabase",
+        identityIssuer,
+        identitySubject,
+      });
+      const visible = await client.query<{ account_id: string }>(
+        "select account_id from apollo_platform.account_identity_subjects",
+      );
+      return {
+        found,
+        visible: visible.rows.map(({ account_id }) => account_id),
+      };
+    });
+
+    expect(exact.found).toMatchObject({
+      accountId: firstAccount.id,
+      providerCode: "supabase",
+      identityIssuer,
+      identitySubject,
+      state: "active",
+      revision: 1,
+    });
+    expect(exact.visible).toEqual([firstAccount.id]);
+
+    await expect(
+      withPlatformTransaction(runtime, async (client) => {
+        const found = await repository.findAccountByIdentitySubject(client, {
+          providerCode: "supabase",
+          identityIssuer,
+          identitySubject: "5345f153-4089-4d97-b142-e6c46979dbe3",
+        });
+        const visible = await client.query(
+          "select id from apollo_platform.account_identity_subjects",
+        );
+        return { found, rowCount: visible.rowCount };
+      }),
+    ).resolves.toEqual({ found: null, rowCount: 0 });
   });
 
   test("verification locking exposes only the exact digest", async () => {

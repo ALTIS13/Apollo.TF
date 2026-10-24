@@ -20,6 +20,7 @@ const describePostgres =
     : describe.skip;
 
 const APPROVED_TABLES = [
+  "account_identity_subjects",
   "account_module_entitlements",
   "accounts",
   "audit_events",
@@ -40,6 +41,7 @@ const APPROVED_TABLES = [
 ] as const;
 
 const ACCOUNT_OWNED_TABLES = [
+  "account_identity_subjects",
   "account_module_entitlements",
   "accounts",
   "auth_sessions",
@@ -704,6 +706,168 @@ describePostgres("apollo_platform PostgreSQL migration", () => {
     ).rejects.toBeDefined();
   });
 
+  test("resolves only the exact identity tuple without email authority", async () => {
+    const identityAccountId = "5e11a65a-48fb-4b86-a722-1d75debbd660";
+    const identitySubject = "c60ca6f7-3b30-43ab-9cf2-515b507e4518";
+    const issuer = "http://127.0.0.1:18300/auth/v1";
+
+    await withPlatformTransaction(migrator, async (client) => {
+      await setAccountContext(client, identityAccountId);
+      await client.query(
+        `
+          insert into apollo_platform.accounts (id, email, display_name)
+          values ($1, 'identity-link@example.test', 'Identity Link')
+        `,
+        [identityAccountId],
+      );
+      await client.query(
+        `
+          insert into apollo_platform.account_identity_subjects
+            (account_id, provider_code, identity_issuer, identity_subject)
+          values ($1, 'supabase', $2, $3)
+        `,
+        [identityAccountId, issuer, identitySubject],
+      );
+    });
+
+    await expect(
+      scalar(
+        runtime,
+        "select count(*)::text as value from apollo_platform.account_identity_subjects",
+      ),
+    ).resolves.toBe("0");
+
+    await expect(
+      withPlatformTransaction(runtime, async (client) => {
+        await client.query(
+          "select set_config('app.identity_provider_code', $1, true)",
+          ["supabase"],
+        );
+        await client.query(
+          "select set_config('app.identity_issuer', $1, true)",
+          [issuer],
+        );
+        await client.query(
+          "select set_config('app.identity_subject', $1, true)",
+          [identitySubject],
+        );
+        const result = await client.query<{
+          account_id: string;
+          state: string;
+        }>(
+          `
+            select account_id, state
+            from apollo_platform.account_identity_subjects
+            where provider_code = $1
+              and identity_issuer = $2
+              and identity_subject = $3
+          `,
+          ["supabase", issuer, identitySubject],
+        );
+        return result.rows;
+      }),
+    ).resolves.toEqual([{ account_id: identityAccountId, state: "active" }]);
+
+    await expect(
+      withPlatformTransaction(runtime, async (client) => {
+        await client.query(
+          "select set_config('app.identity_provider_code', $1, true)",
+          ["supabase"],
+        );
+        await client.query(
+          "select set_config('app.identity_issuer', $1, true)",
+          [issuer],
+        );
+        await client.query(
+          "select set_config('app.identity_subject', $1, true)",
+          ["57be1aaa-fe05-48f4-a336-89565b642057"],
+        );
+        const result = await client.query(
+          "select id from apollo_platform.account_identity_subjects",
+        );
+        return result.rowCount;
+      }),
+    ).resolves.toBe(0);
+
+    await expect(
+      withPlatformTransaction(migrator, async (client) => {
+        await setAccountContext(client, identityAccountId);
+        await client.query(
+          `
+            insert into apollo_platform.account_identity_subjects
+              (account_id, provider_code, identity_issuer, identity_subject)
+            values ($1, 'supabase', $2, $3)
+          `,
+          [identityAccountId, issuer, identitySubject],
+        );
+      }),
+    ).rejects.toMatchObject({ code: "23505" });
+
+    await withPlatformTransaction(migrator, async (client) => {
+      await setAccountContext(client, identityAccountId);
+      await client.query(
+        `
+          update apollo_platform.account_identity_subjects
+          set state = 'revoked', revoked_at = now(), revision = revision + 1
+          where provider_code = 'supabase'
+            and identity_issuer = $1
+            and identity_subject = $2
+        `,
+        [issuer, identitySubject],
+      );
+    });
+    await expect(
+      withPlatformTransaction(runtime, async (client) => {
+        await client.query(
+          "select set_config('app.identity_provider_code', $1, true)",
+          ["supabase"],
+        );
+        await client.query(
+          "select set_config('app.identity_issuer', $1, true)",
+          [issuer],
+        );
+        await client.query(
+          "select set_config('app.identity_subject', $1, true)",
+          [identitySubject],
+        );
+        const result = await client.query<{
+          revision: string;
+          state: string;
+        }>(
+          "select revision, state from apollo_platform.account_identity_subjects",
+        );
+        return result.rows;
+      }),
+    ).resolves.toEqual([{ revision: "2", state: "revoked" }]);
+
+    await expect(
+      withPlatformTransaction(runtime, async (client) => {
+        await setAccountContext(client, identityAccountId);
+        await client.query(
+          `
+            insert into apollo_platform.account_identity_subjects
+              (account_id, provider_code, identity_issuer, identity_subject)
+            values ($1, 'supabase', $2, $3)
+          `,
+          [identityAccountId, issuer, "57be1aaa-fe05-48f4-a336-89565b642057"],
+        );
+      }),
+    ).rejects.toMatchObject({ code: "42501" });
+
+    await expect(
+      scalar(
+        migrator,
+        `
+          select count(*)::text as value
+          from information_schema.columns
+          where table_schema = 'apollo_platform'
+            and table_name = 'account_identity_subjects'
+            and column_name = 'email'
+        `,
+      ),
+    ).resolves.toBe("0");
+  });
+
   test("blocks runtime cross-account inserts with RLS WITH CHECK", async () => {
     await expect(
       withPlatformTransaction(runtime, async (client) => {
@@ -945,6 +1109,8 @@ describePostgres("apollo_platform PostgreSQL migration", () => {
         applied: [
           "0004_authorization_code_binding.sql",
           "0005_authorization_code_digest_read.sql",
+          "0006_admin_account_overview.sql",
+          "0007_account_identity_subjects.sql",
         ],
         alreadyApplied: [
           "0001_platform_identity.sql",

@@ -9,6 +9,7 @@ import type {
   AdminAccountOverviewRepository,
   AdminAccountOverview,
   AdminAccountOverviewAccount,
+  AccountIdentitySubject,
   AccountEntitlement,
   AddInvitationGrantsInput,
   AuthorizationBindingRepository,
@@ -26,7 +27,9 @@ import type {
   CreateSessionInput,
   CreateVerificationTokenInput,
   Credential,
+  FindAccountByIdentitySubjectInput,
   IncrementInvitationUseInput,
+  IdentitySubjectRepository,
   InsertOperatorCapabilitiesInput,
   InsertAuditEventInput,
   Invitation,
@@ -111,6 +114,27 @@ async function setPreAuthEmailContext(
   );
 }
 
+async function setIdentitySubjectContext(
+  client: PoolClient,
+  input: FindAccountByIdentitySubjectInput,
+): Promise<void> {
+  await execute<QueryResultRow>(
+    client,
+    "select set_config('app.identity_provider_code', $1, true)",
+    [input.providerCode],
+  );
+  await execute<QueryResultRow>(
+    client,
+    "select set_config('app.identity_issuer', $1, true)",
+    [input.identityIssuer],
+  );
+  await execute<QueryResultRow>(
+    client,
+    "select set_config('app.identity_subject', $1, true)",
+    [input.identitySubject],
+  );
+}
+
 async function setVerificationDigestContext(
   client: PoolClient,
   tokenDigest: string,
@@ -187,6 +211,19 @@ interface AdminAccountOverviewRow extends QueryResultRow {
   readonly latest_activity_at: Date | null;
   readonly active_session_count: string | number | null;
   readonly module_keys: readonly string[] | null;
+}
+
+interface AccountIdentitySubjectRow extends QueryResultRow {
+  readonly id: string;
+  readonly account_id: string;
+  readonly provider_code: string;
+  readonly identity_issuer: string;
+  readonly identity_subject: string;
+  readonly state: "active" | "revoked";
+  readonly linked_at: Date;
+  readonly last_seen_at: Date;
+  readonly revoked_at: Date | null;
+  readonly revision: string | number;
 }
 
 interface CredentialRow extends QueryResultRow {
@@ -370,6 +407,24 @@ function mapAdminAccount(
   };
 }
 
+function mapAccountIdentitySubject(
+  row: AccountIdentitySubjectRow,
+): AccountIdentitySubject {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    providerCode: row.provider_code,
+    identityIssuer: row.identity_issuer,
+    identitySubject: row.identity_subject,
+    state: row.state,
+    linkedAt: requireTimestamp(row.linked_at),
+    lastSeenAt: requireTimestamp(row.last_seen_at),
+    revokedAt:
+      row.revoked_at === null ? null : requireTimestamp(row.revoked_at),
+    revision: Number(row.revision),
+  };
+}
+
 function mapCredential(row: CredentialRow): Credential {
   return {
     accountId: row.account_id,
@@ -515,8 +570,28 @@ export class PostgresPlatformRepository
   implements
     PlatformRepository,
     AuthorizationBindingRepository,
-    AdminAccountOverviewRepository
+    AdminAccountOverviewRepository,
+    IdentitySubjectRepository
 {
+  async findAccountByIdentitySubject(
+    client: PoolClient,
+    input: FindAccountByIdentitySubjectInput,
+  ): Promise<AccountIdentitySubject | null> {
+    await setIdentitySubjectContext(client, input);
+    const result = await execute<AccountIdentitySubjectRow>(
+      client,
+      `select id, account_id, provider_code, identity_issuer, identity_subject,
+              state, linked_at, last_seen_at, revoked_at, revision
+       from apollo_platform.account_identity_subjects
+       where provider_code = $1
+         and identity_issuer = $2
+         and identity_subject = $3`,
+      [input.providerCode, input.identityIssuer, input.identitySubject],
+    );
+    const row = result.rows[0];
+    return row === undefined ? null : mapAccountIdentitySubject(row);
+  }
+
   async getRegistrationSettings(
     client: PoolClient,
   ): Promise<RegistrationSettings | null> {

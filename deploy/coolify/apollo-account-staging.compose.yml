@@ -1,0 +1,275 @@
+name: ${APOLLO_ACCOUNT_RESOURCE_NAME:?required}
+
+x-runtime: &runtime
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 20s
+  pids_limit: 128
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=32m
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
+services:
+  account-db:
+    image: ${APOLLO_ACCOUNT_POSTGRES_IMAGE:?required}
+    labels:
+      io.apollo.account.component: account-db
+      io.apollo.account.resource: ${APOLLO_ACCOUNT_RESOURCE_NAME:?required}
+      io.apollo.account.source-commit: ${APOLLO_ACCOUNT_SOURCE_COMMIT:?required}
+      io.apollo.account.stack: staging
+    restart: unless-stopped
+    stop_grace_period: 30s
+    pids_limit: 256
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/account_postgres_password
+    configs:
+      - source: account_auth_roles
+        target: /docker-entrypoint-initdb.d/init-scripts/99-account-auth-roles.sql
+        mode: "0444"
+    secrets:
+      - source: account_auth_db_password
+        target: account_auth_db_password
+      - source: account_postgres_password
+        target: account_postgres_password
+    volumes:
+      - type: volume
+        source: account-postgres-data
+        target: /var/lib/postgresql/data
+      - type: volume
+        source: account-db-config
+        target: /etc/postgresql-custom
+    networks:
+      - account-data
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /var/run/postgresql:rw,nosuid,size=16m
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+          pids: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  account-mail:
+    <<: *runtime
+    image: ${APOLLO_ACCOUNT_MAIL_IMAGE:?required}
+    labels:
+      io.apollo.account.component: account-mail
+      io.apollo.account.resource: ${APOLLO_ACCOUNT_RESOURCE_NAME:?required}
+      io.apollo.account.source-commit: ${APOLLO_ACCOUNT_SOURCE_COMMIT:?required}
+      io.apollo.account.stack: staging
+    user: "1000:1000"
+    pids_limit: 64
+    environment:
+      MP_ALLOW_INTERNAL_HTTP_REQUESTS: "false"
+      MP_DATABASE: /tmp/mailpit.db
+      MP_DISABLE_VERSION_CHECK: "true"
+      MP_MAX_MESSAGES: "500"
+      MP_SMTP_BIND_ADDR: 0.0.0.0:1025
+      MP_UI_BIND_ADDR: 0.0.0.0:8025
+    ports:
+      - host_ip: 127.0.0.1
+        published: ${APOLLO_ACCOUNT_MAIL_UI_PORT:?required}
+        target: 8025
+        protocol: tcp
+    networks:
+      - account-data
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+          pids: 64
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+  account-auth:
+    <<: *runtime
+    image: ${APOLLO_ACCOUNT_AUTH_IMAGE:?required}
+    labels:
+      io.apollo.account.component: account-auth
+      io.apollo.account.resource: ${APOLLO_ACCOUNT_RESOURCE_NAME:?required}
+      io.apollo.account.source-commit: ${APOLLO_ACCOUNT_SOURCE_COMMIT:?required}
+      io.apollo.account.stack: staging
+    user: "1000:1000"
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - >-
+        export GOTRUE_DB_DATABASE_URL="postgres://supabase_auth_admin:$$(cat /run/secrets/account_auth_db_password)@account-db:5432/postgres"
+        GOTRUE_JWT_SECRET="$$(cat /run/secrets/account_legacy_jwt_secret)"
+        GOTRUE_JWT_KEYS="$$(cat /run/secrets/account_jwt_keys)";
+        exec auth
+    environment:
+      API_EXTERNAL_URL: ${APOLLO_ACCOUNT_API_EXTERNAL_URL:?required}
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: "9999"
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DISABLE_SIGNUP: "true"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: "3600"
+      GOTRUE_JWT_ISSUER: ${APOLLO_ACCOUNT_API_EXTERNAL_URL:?required}
+      GOTRUE_LOG_LEVEL: warn
+      GOTRUE_MAILER_AUTOCONFIRM: "false"
+      GOTRUE_MAILER_URLPATHS_CONFIRMATION: /verify
+      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: /verify
+      GOTRUE_MAILER_URLPATHS_INVITE: /verify
+      GOTRUE_MAILER_URLPATHS_RECOVERY: /verify
+      GOTRUE_SITE_URL: ${APOLLO_ACCOUNT_SITE_URL:?required}
+      GOTRUE_SMTP_ADMIN_EMAIL: no-reply@staging.invalid
+      GOTRUE_SMTP_HOST: account-mail
+      GOTRUE_SMTP_PASS: ""
+      GOTRUE_SMTP_PORT: "1025"
+      GOTRUE_SMTP_SENDER_NAME: Apollo Account Staging
+      GOTRUE_SMTP_USER: ""
+      GOTRUE_URI_ALLOW_LIST: ${APOLLO_ACCOUNT_SITE_URL:?required}
+    secrets:
+      - source: account_auth_db_password
+        target: account_auth_db_password
+      - source: account_legacy_jwt_secret
+        target: account_legacy_jwt_secret
+      - source: account_jwt_keys
+        target: account_jwt_keys
+    networks:
+      - account-data
+      - account-ingress
+    depends_on:
+      account-db:
+        condition: service_healthy
+      account-mail:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+          pids: 128
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:9999/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  account-gateway:
+    <<: *runtime
+    image: ${APOLLO_ACCOUNT_GATEWAY_IMAGE:?required}
+    labels:
+      io.apollo.account.component: account-gateway
+      io.apollo.account.resource: ${APOLLO_ACCOUNT_RESOURCE_NAME:?required}
+      io.apollo.account.source-commit: ${APOLLO_ACCOUNT_SOURCE_COMMIT:?required}
+      io.apollo.account.stack: staging
+    user: "101:101"
+    entrypoint: ["/bin/sh", "/etc/apollo-account/envoy-entrypoint.sh"]
+    configs:
+      - source: account_envoy_template
+        target: /etc/apollo-account/envoy.template.yaml
+        mode: "0444"
+      - source: account_envoy_entrypoint
+        target: /etc/apollo-account/envoy-entrypoint.sh
+        mode: "0555"
+    secrets:
+      - source: account_publishable_key
+        target: account_publishable_key
+    ports:
+      - host_ip: 127.0.0.1
+        published: ${APOLLO_ACCOUNT_GATEWAY_PORT:?required}
+        target: 8000
+        protocol: tcp
+    networks:
+      - account-ingress
+    depends_on:
+      account-auth:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+          pids: 128
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          status="$$(timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/8000;
+          printf "GET /auth/v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3;
+          head -n 1 <&3')";
+          printf '%s\n' "$$status" | grep -Eq '^HTTP/1\.[01] 200([[:space:]]|$$)'
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+configs:
+  account_auth_roles:
+    file: ../supabase/account/roles.sql
+  account_envoy_entrypoint:
+    file: ../supabase/account/envoy-entrypoint.sh
+  account_envoy_template:
+    file: ../supabase/account/envoy.template.yaml
+
+secrets:
+  account_auth_db_password:
+    file: ${APOLLO_ACCOUNT_SECRET_DIRECTORY:?required}/account_auth_db_password
+  account_jwt_keys:
+    file: ${APOLLO_ACCOUNT_SECRET_DIRECTORY:?required}/account_jwt_keys
+  account_legacy_jwt_secret:
+    file: ${APOLLO_ACCOUNT_SECRET_DIRECTORY:?required}/account_legacy_jwt_secret
+  account_postgres_password:
+    file: ${APOLLO_ACCOUNT_SECRET_DIRECTORY:?required}/account_postgres_password
+  account_publishable_key:
+    file: ${APOLLO_ACCOUNT_SECRET_DIRECTORY:?required}/account_publishable_key
+
+volumes:
+  account-db-config:
+    name: ${APOLLO_ACCOUNT_RESOURCE_NAME:?required}-db-config-v1
+  account-postgres-data:
+    name: ${APOLLO_ACCOUNT_RESOURCE_NAME:?required}-postgres-v1
+
+networks:
+  account-data:
+    name: ${APOLLO_ACCOUNT_RESOURCE_NAME:?required}-data-v1
+    internal: true
+  account-ingress:
+    name: ${APOLLO_ACCOUNT_RESOURCE_NAME:?required}-ingress-v1
+    internal: true

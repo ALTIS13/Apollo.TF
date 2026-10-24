@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM_MIGRATION_MANIFEST } from "./index.js";
 
 describe("PLATFORM_MIGRATION_MANIFEST", () => {
-  it("includes the immutable authorization code digest-read migration", () => {
+  it("includes every approved immutable platform migration in order", () => {
     expect(PLATFORM_MIGRATION_MANIFEST.map(({ name }) => name)).toEqual([
       "0001_platform_identity.sql",
       "0002_operator_bootstrap_guard.sql",
@@ -14,6 +14,7 @@ describe("PLATFORM_MIGRATION_MANIFEST", () => {
       "0004_authorization_code_binding.sql",
       "0005_authorization_code_digest_read.sql",
       "0006_admin_account_overview.sql",
+      "0007_account_identity_subjects.sql",
     ]);
   });
 

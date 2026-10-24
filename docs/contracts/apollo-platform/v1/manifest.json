@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "contract_revision": "2026-09-04.f1.1",
+  "contract_family": "apollo-platform",
+  "wire_naming": "snake_case",
+  "external_object_policy": "additive_passthrough",
+  "compact_jws_max_ascii_bytes": 16384,
+  "jose_key_id_location": "protected_header_only",
+  "canonical_validator_package": "@workspace/platform-contract",
+  "canonical_validator_source": "lib/platform-contract/src/v1.ts",
+  "contracts": [
+    {
+      "name": "SessionContextV1",
+      "validator_export": "sessionContextV1Schema"
+    },
+    {
+      "name": "InstallationRegistrationRequestV1",
+      "validator_export": "installationRegistrationRequestV1Schema"
+    },
+    {
+      "name": "InstallationRegistrationResponseV1",
+      "validator_export": "installationRegistrationResponseV1Schema"
+    },
+    {
+      "name": "ModuleEntitlementSnapshotV1",
+      "validator_export": "moduleEntitlementSnapshotV1Schema"
+    },
+    {
+      "name": "ModuleLaunchAdmissionV1",
+      "validator_export": "moduleLaunchAdmissionV1Schema"
+    },
+    {
+      "name": "ClientReleaseMetadataV1",
+      "validator_export": "clientReleaseMetadataV1Schema"
+    },
+    {
+      "name": "ReleaseAdmissionV1",
+      "validator_export": "releaseAdmissionV1Schema"
+    },
+    {
+      "name": "NetworkAdmissionAssertionClaimsV1",
+      "validator_export": "networkAdmissionAssertionClaimsV1Schema"
+    },
+    {
+      "name": "GapNetworkAdmissionEnvelopeV1",
+      "validator_export": "gapNetworkAdmissionEnvelopeV1Schema"
+    },
+    {
+      "name": "AiRuntimeGrantClaimsV1",
+      "validator_export": "aiRuntimeGrantClaimsV1Schema"
+    },
+    {
+      "name": "AiModuleStatusV1",
+      "validator_export": "aiModuleStatusV1Schema"
+    },
+    {
+      "name": "PlatformProblemV1",
+      "validator_export": "platformProblemV1Schema"
+    }
+  ]
+}

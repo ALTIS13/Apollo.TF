@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import type {
   AuthorizationBindingRepository,
+  IdentitySubjectRepository,
   PlatformRepository,
 } from "./repository.js";
 import {
@@ -73,6 +74,20 @@ const accountRow = {
   deleted_at: null,
   created_at: now,
   updated_at: now,
+};
+
+const identitySubjectRow = {
+  id: "10000000-0000-4000-8000-000000000013",
+  account_id: accountId,
+  provider_code: "supabase",
+  identity_issuer: "http://127.0.0.1:18300/auth/v1",
+  identity_subject: "10000000-0000-4000-8000-000000000014",
+  state: "active",
+  linked_at: now,
+  last_seen_at: later,
+  revoked_at: null,
+  revision: "3",
+  email: "must-not-drive-identity@example.test",
 };
 
 const verificationTokenRow = {
@@ -202,6 +217,59 @@ function expectQuery(
 }
 
 describe("PostgresPlatformRepository", () => {
+  it("resolves an account only through the exact provider issuer subject tuple", async () => {
+    const client = new RecordingClient([[], [], [], [identitySubjectRow]]);
+    const repository = new PostgresPlatformRepository();
+
+    await expect(
+      repository.findAccountByIdentitySubject(asPoolClient(client), {
+        providerCode: "supabase",
+        identityIssuer: "http://127.0.0.1:18300/auth/v1",
+        identitySubject: "10000000-0000-4000-8000-000000000014",
+      }),
+    ).resolves.toEqual({
+      id: "10000000-0000-4000-8000-000000000013",
+      accountId,
+      providerCode: "supabase",
+      identityIssuer: "http://127.0.0.1:18300/auth/v1",
+      identitySubject: "10000000-0000-4000-8000-000000000014",
+      state: "active",
+      linkedAt: now,
+      lastSeenAt: later,
+      revokedAt: null,
+      revision: 3,
+    });
+
+    expectQuery(
+      client,
+      0,
+      /set_config\('app\.identity_provider_code', \$1, true\)/i,
+      ["supabase"],
+    );
+    expectQuery(client, 1, /set_config\('app\.identity_issuer', \$1, true\)/i, [
+      "http://127.0.0.1:18300/auth/v1",
+    ]);
+    expectQuery(
+      client,
+      2,
+      /set_config\('app\.identity_subject', \$1, true\)/i,
+      ["10000000-0000-4000-8000-000000000014"],
+    );
+    expectQuery(
+      client,
+      3,
+      /from apollo_platform\.account_identity_subjects[\s\S]*provider_code = \$1[\s\S]*identity_issuer = \$2[\s\S]*identity_subject = \$3/i,
+      [
+        "supabase",
+        "http://127.0.0.1:18300/auth/v1",
+        "10000000-0000-4000-8000-000000000014",
+      ],
+    );
+    expect(client.queries.map(({ text }) => text).join("\n")).not.toContain(
+      "must-not-drive-identity@example.test",
+    );
+  });
+
   it("projects module state with every entitlement read and mutation", async () => {
     const client = new RecordingClient([[entitlementRow]]);
     const repository = new PostgresPlatformRepository();
@@ -220,7 +288,8 @@ describe("PostgresPlatformRepository", () => {
   });
 
   it("implements the complete transaction-scoped repository boundary", () => {
-    const repository: PlatformRepository = new PostgresPlatformRepository();
+    const repository = new PostgresPlatformRepository();
+    const platformRepository: PlatformRepository = repository;
     const methodNames: readonly (keyof PlatformRepository)[] = [
       "getRegistrationSettings",
       "lockRegistrationSettings",
@@ -260,8 +329,12 @@ describe("PostgresPlatformRepository", () => {
     ];
 
     for (const methodName of methodNames) {
-      expect(repository[methodName], methodName).toBeTypeOf("function");
+      expect(platformRepository[methodName], methodName).toBeTypeOf("function");
     }
+    const identityRepository: IdentitySubjectRepository = repository;
+    expect(identityRepository.findAccountByIdentitySubject).toBeTypeOf(
+      "function",
+    );
   });
 
   it("implements the authorization binding repository boundary", () => {
