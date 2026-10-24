@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "module_code_policy": "open_validated_string",
+  "module_code_pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*(?:\\.[A-Za-z0-9][A-Za-z0-9_-]*)*$",
+  "module_code_max_length": 64,
+  "known_module_codes": ["QUASAR", "TF", "OLC", "AWG", "AI"],
+  "known_application_codes": ["APOLLO_QUASAR_WINDOWS", "APOLLO_MOBILE_ANDROID"],
+  "known_platform_codes": ["WINDOWS", "ANDROID", "LINUX", "MACOS", "IOS"],
+  "known_account_states": ["PENDING", "ACTIVE", "SUSPENDED", "DELETED"],
+  "known_entitlement_states": [
+    "UNKNOWN",
+    "NOT_ENTITLED",
+    "ACTIVE",
+    "OFFLINE_GRACE",
+    "EXPIRED",
+    "REVOKED"
+  ],
+  "reason_code_policy": "open_validated_string",
+  "reason_code_pattern": "^[a-z0-9][a-z0-9_]*$",
+  "reason_code_max_length": 64,
+  "known_reason_codes": [
+    "account_inactive",
+    "installation_revoked",
+    "module_unavailable",
+    "not_entitled",
+    "policy_denied",
+    "release_unavailable",
+    "step_up_required"
+  ]
+}
