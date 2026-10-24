@@ -1,0 +1,4 @@
+# Immutable source bytes and literal command examples are stable on every OS.
+*.sql text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
