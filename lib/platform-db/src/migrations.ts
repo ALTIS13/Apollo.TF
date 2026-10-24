@@ -52,6 +52,11 @@ export const PLATFORM_MIGRATION_MANIFEST: readonly MigrationManifestEntry[] =
       checksum:
         "ac2c1405f96d5dc1f03141c1b54254bdc6eb7aca4bdbc257ce468a2f600a61ba",
     },
+    {
+      name: "0006_account_identity_subjects.sql",
+      checksum:
+        "491fdfe967a9a9fc29c330a049806ea22a01b864f699c770a404d3c4171f9fb8",
+    },
   ]);
 
 function migrationContractError(

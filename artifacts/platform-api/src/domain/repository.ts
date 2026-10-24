@@ -37,6 +37,34 @@ export interface CreateAccountInput {
   readonly displayName: string;
 }
 
+export type IdentitySubjectState = "active" | "revoked";
+
+export interface AccountIdentitySubject {
+  readonly id: string;
+  readonly accountId: string;
+  readonly providerCode: string;
+  readonly identityIssuer: string;
+  readonly identitySubject: string;
+  readonly state: IdentitySubjectState;
+  readonly linkedAt: Date;
+  readonly lastSeenAt: Date;
+  readonly revokedAt: Date | null;
+  readonly revision: number;
+}
+
+export interface FindAccountByIdentitySubjectInput {
+  readonly providerCode: string;
+  readonly identityIssuer: string;
+  readonly identitySubject: string;
+}
+
+export interface IdentitySubjectRepository {
+  findAccountByIdentitySubject(
+    client: PoolClient,
+    input: FindAccountByIdentitySubjectInput,
+  ): Promise<AccountIdentitySubject | null>;
+}
+
 export interface UpdateAccountStatusInput {
   readonly accountId: string;
   readonly status: AccountStatus;
