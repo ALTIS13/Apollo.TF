@@ -32,7 +32,10 @@ beforeEach(async () => {
   fixture.spawn.mockReset();
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
   fixture.spawn.mockImplementation((_command: string, _args: readonly string[], options: SpawnOptions) => {
-    const child = actual.spawn(process.execPath, ["-e", fixture.script], options);
+    const child = actual.spawn(process.execPath, ["-e", fixture.script], {
+      ...options,
+      env: { ...options.env, ELECTRON_RUN_AS_NODE: "1" },
+    });
     const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
     fixture.children.push({ child, closed });
     return child;
