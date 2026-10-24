@@ -11,7 +11,9 @@ export interface DownloadLogEvent {
     | "output_too_large"
     | "deadline_exceeded"
     | "storage_quota_exceeded"
-    | "storage_unavailable";
+    | "storage_unavailable"
+    | "preview_rejected"
+    | "duration_unverified";
   readonly durationMs?: number;
   readonly size?: number;
 }

@@ -17,7 +17,22 @@ import {
   PlatformAuthUnavailableError,
   type PlatformAuthClient,
 } from "../lib/platform-auth-client.js";
-import { AUTH_COOKIE_NAMES } from "../lib/tf-browser-session.js";
+import {
+  AUTH_COOKIE_NAMES,
+  hasFamilyCookie,
+  familyCookies,
+  clearFamilyCookies,
+  clearLegacyCookies,
+  sendRenewalError,
+} from "../lib/tf-browser-session.js";
+import type { TfRenewalConsumer } from "../lib/tf-renewal-consumer.js";
+import {
+  TfRenewalError,
+  unavailable,
+  renewalVersion,
+  opaqueSchema,
+} from "../lib/tf-renewal-contract.js";
+import type { FamilyObservation } from "../lib/tf-family-store.js";
 import {
   TfSessionStoreUnavailableError,
   type TfSessionStore,
@@ -54,6 +69,7 @@ export interface AuthRouteDependencies {
   readonly webOrigin: string;
   readonly secureCookies: boolean;
   readonly pkceVerifier?: () => string;
+  readonly renewal?: TfRenewalConsumer;
 }
 
 class AuthRequestError extends Error {
@@ -189,9 +205,35 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
   const router = Router();
   const httpOnlyCookie = baseCookieOptions(dependencies.secureCookies, true);
   const csrfCookie = baseCookieOptions(dependencies.secureCookies, false);
+  async function retireLegacy(request: Request) {
+    const handle = cookieValue(request, AUTH_COOKIE_NAMES.session);
+    if (handle && OPAQUE_PATTERN.test(handle))
+      await dependencies.sessionStore.revokeSession(handle);
+  }
+  function setFamily(
+    handle: string,
+    observation: FamilyObservation,
+    response: Response,
+  ) {
+    const r = observation.record;
+    if (r.phase === "CLOSED") throw new TfRenewalError("INVALID_REFERENCE");
+    const expires = new Date(r.expiresAt);
+    setHostCookie(response, AUTH_COOKIE_NAMES.family, handle, {
+      ...httpOnlyCookie,
+      secure: true,
+      expires,
+    });
+    setHostCookie(response, AUTH_COOKIE_NAMES.familyCsrf, r.csrf, {
+      ...csrfCookie,
+      secure: true,
+      expires,
+    });
+  }
 
   router.use((_request, response, next) => {
     response.setHeader("Cache-Control", "no-store");
+    response.setHeader("Pragma", "no-cache");
+    response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("X-Content-Type-Options", "nosniff");
     next();
   });
@@ -213,6 +255,57 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
       if (!/^[A-Za-z0-9._~-]{43,128}$/.test(codeVerifier)) {
         throw new AuthRequestError(503);
       }
+      let familyHandle: string | undefined;
+      if (dependencies.renewal) {
+        const suppliedBinder = cookieValue(request, AUTH_COOKIE_NAMES.browser);
+        let binder = opaqueSchema.safeParse(suppliedBinder).success
+          ? suppliedBinder!
+          : opaqueValue();
+        let previous: ReturnType<typeof familyCookies> | undefined;
+        if (hasFamilyCookie(request)) {
+          previous = familyCookies(request);
+          const current = await dependencies.renewal.store.read(
+            previous.handle,
+          );
+          if (current && current.record.phase !== "CLOSED") {
+            if (
+              !(await dependencies.renewal.validateCsrf(
+                previous.handle,
+                previous.csrf,
+                previous.csrf,
+              )) ||
+              (opaqueSchema.safeParse(suppliedBinder).success &&
+                suppliedBinder !== current.record.lineageId)
+            )
+              throw new AuthRequestError(403);
+            binder = current.record.lineageId;
+          }
+        }
+        const { requiresReplacement, ...observed } =
+          await dependencies.renewal.store.activeForBrowser(binder);
+        const authorized =
+          !requiresReplacement ||
+          (observed.active !== null &&
+            previous?.handle === observed.active &&
+            request.get("origin") === dependencies.webOrigin &&
+            (await dependencies.renewal.validateCsrf(
+              observed.active,
+              previous.csrf,
+              request.get("x-csrf-token") ?? "",
+            )));
+        familyHandle = (
+          await dependencies.renewal.createLogin(binder, {
+            ...observed,
+            authorized,
+          })
+        ).handle;
+        // Non-authorizing browser custody, independent of the public installation hint.
+        setHostCookie(response, AUTH_COOKIE_NAMES.browser, binder, {
+          ...httpOnlyCookie,
+          secure: true,
+          maxAge: INSTALLATION_MAX_AGE_MS,
+        });
+      } else if (hasFamilyCookie(request)) throw unavailable();
       const transactionHandle =
         await dependencies.sessionStore.createTransaction({
           state,
@@ -220,6 +313,7 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
           codeVerifier,
           installationId,
           installationLabel: INSTALLATION_LABEL,
+          ...(familyHandle ? { familyHandle } : {}),
         });
       const codeChallenge = createHash("sha256")
         .update(codeVerifier, "ascii")
@@ -247,11 +341,17 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
       );
       response.redirect(303, location);
     } catch (error) {
-      sendAuthenticationError(response, statusFor(error));
+      sendAuthenticationError(
+        response,
+        error instanceof AuthRequestError && error.status === 403
+          ? 403
+          : statusFor(error),
+      );
     }
   });
 
   router.get("/callback", async (request, response) => {
+    let successorHandle: string | undefined;
     try {
       const transactionHandle = cookieValue(
         request,
@@ -268,6 +368,7 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
       if (transaction === null) {
         throw new AuthRequestError(400);
       }
+      successorHandle = transaction.familyHandle;
       const query = exactQuery(request, ["code", "state"]);
       const code = query.code!;
       const state = query.state!;
@@ -283,6 +384,60 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
         codeVerifier: transaction.codeVerifier,
         expectedNonce: transaction.nonce,
       });
+      if (
+        transaction.familyHandle !== undefined ||
+        dependencies.renewal !== undefined ||
+        hasFamilyCookie(request)
+      ) {
+        if (!dependencies.renewal || !transaction.familyHandle)
+          throw unavailable();
+        if (
+          !(await dependencies.renewal.store.loginAuthorized(
+            transaction.familyHandle,
+          ))
+        )
+          throw new AuthRequestError(403);
+        await dependencies.renewal.store.beginEnrollment(
+          transaction.familyHandle,
+          {
+            ...renewalVersion,
+            account_id: exchange.claims.sub,
+            session_id: exchange.claims.sid,
+            installation_id: exchange.claims.installation_id,
+            client_id: dependencies.renewal.clientId,
+            audience: "apollo-tf",
+          },
+          exchange.assertion,
+        );
+        await retireLegacy(request);
+        let retainedBrowserContext:
+          | ReturnType<typeof familyCookies>
+          | undefined;
+        if (hasFamilyCookie(request)) {
+          try {
+            retainedBrowserContext = familyCookies(request);
+          } catch {
+            /* Malformed cookies provide no predecessor-retention custody. */
+          }
+        }
+        await dependencies.renewal.renew(
+          transaction.familyHandle,
+          retainedBrowserContext,
+        );
+        const current = await dependencies.renewal.store.read(
+          transaction.familyHandle,
+        );
+        if (!current || current.record.phase !== "ACTIVE") throw unavailable();
+        setFamily(transaction.familyHandle, current, response);
+        clearHostCookie(
+          response,
+          AUTH_COOKIE_NAMES.transaction,
+          httpOnlyCookie,
+        );
+        clearLegacyCookies(response, dependencies.secureCookies);
+        response.redirect(303, dependencies.webOrigin);
+        return;
+      }
       const introspection = await dependencies.platform.introspect({
         accountId: exchange.claims.sub,
         sessionId: exchange.claims.sid,
@@ -310,12 +465,78 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
       });
       response.redirect(303, dependencies.webOrigin);
     } catch (error) {
-      clearHostCookie(response, AUTH_COOKIE_NAMES.transaction, httpOnlyCookie);
-      sendAuthenticationError(response, statusFor(error));
+      if (dependencies.renewal || successorHandle) {
+        // Only the still-selected pending/successful login may publish cookies.
+        // A stale callback must not even clear the newer transaction/family cookies.
+        if (successorHandle && dependencies.renewal) {
+          try {
+            const current =
+              await dependencies.renewal.store.read(successorHandle);
+            if (
+              current &&
+              (current.record.phase === "ENROLLING" ||
+                current.record.phase === "ACTIVE")
+            ) {
+              setFamily(successorHandle, current, response);
+              clearLegacyCookies(response, dependencies.secureCookies);
+              clearHostCookie(
+                response,
+                AUTH_COOKIE_NAMES.transaction,
+                httpOnlyCookie,
+              );
+            }
+          } catch {
+            /* Unavailable lineage never publishes a callback identity. */
+          }
+        }
+      } else
+        clearHostCookie(
+          response,
+          AUTH_COOKIE_NAMES.transaction,
+          httpOnlyCookie,
+        );
+      sendAuthenticationError(
+        response,
+        error instanceof AuthRequestError && error.status === 403
+          ? 403
+          : statusFor(error),
+      );
     }
   });
 
   router.get("/me", async (request, response) => {
+    // Non-authorizing browser negotiation only; frozen success/error JSON stays unchanged.
+    response.setHeader(
+      "Apollo-TF-Session-Profile",
+      hasFamilyCookie(request) ? "renewal-v1" : "legacy-v1",
+    );
+    if (hasFamilyCookie(request)) {
+      try {
+        if (!dependencies.renewal) throw unavailable();
+        const { handle, csrf } = familyCookies(request);
+        if (!(await dependencies.renewal.validateCsrf(handle, csrf, csrf)))
+          throw new TfRenewalError("INVALID_REFERENCE");
+        const session = await dependencies.renewal.authorize(handle);
+        response.json({
+          accountId: session.accountId,
+          installationId: session.installationId,
+          entitlements: session.entitlements,
+          expiresAt: session.expiresAt,
+          csrfToken: csrf,
+        });
+      } catch (error) {
+        if (error instanceof TfRenewalError && error.terminal)
+          clearFamilyCookies(response, dependencies.secureCookies);
+        sendAuthenticationError(
+          response,
+          error instanceof TfRenewalError &&
+            (error.status === 401 || error.status === 403)
+            ? error.status
+            : 503,
+        );
+      }
+      return;
+    }
     const handle = cookieValue(request, AUTH_COOKIE_NAMES.session);
     const csrf = cookieValue(request, AUTH_COOKIE_NAMES.csrf);
     if (
@@ -346,6 +567,35 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
   });
 
   router.post("/logout", async (request, response) => {
+    if (hasFamilyCookie(request)) {
+      try {
+        requireEmptyRenewalBody(request);
+        if (!dependencies.renewal) throw unavailable();
+        const { handle, csrf } = familyCookies(request);
+        if (
+          !(await dependencies.renewal.validateCsrf(
+            handle,
+            csrf,
+            request.get("x-csrf-token") ?? "",
+          ))
+        ) {
+          response
+            .status(403)
+            .json({ code: "TF_RENEWAL_CSRF_REJECTED", retryable: false });
+          return;
+        }
+        clearFamilyCookies(response, dependencies.secureCookies);
+        try {
+          await dependencies.renewal.logout(handle);
+        } finally {
+          await retireLegacy(request);
+        }
+        response.status(204).end();
+      } catch (error) {
+        sendLocalRenewalError(response, error);
+      }
+      return;
+    }
     const handle = cookieValue(request, AUTH_COOKIE_NAMES.session);
     if (handle === null || !OPAQUE_PATTERN.test(handle)) {
       sendAuthenticationError(response, 403);
@@ -368,5 +618,56 @@ export function createAuthRouter(dependencies: AuthRouteDependencies): Router {
     response.status(204).end();
   });
 
+  function requireEmptyRenewalBody(request: Request) {
+    if (
+      request.originalUrl.includes("?") ||
+      !request.body ||
+      Array.isArray(request.body) ||
+      typeof request.body !== "object" ||
+      Object.keys(request.body).length !== 0
+    )
+      throw new AuthRequestError(400);
+  }
+  function sendLocalRenewalError(response: Response, error: unknown) {
+    if (error instanceof AuthRequestError && error.status === 400) {
+      response
+        .status(400)
+        .json({ code: "TF_RENEWAL_INVALID_REQUEST", retryable: false });
+      return;
+    }
+    sendRenewalError(response, error, dependencies.secureCookies);
+  }
+  for (const route of ["/renew-context", "/renew"] as const) {
+    router.post(route, async (request, response) => {
+      try {
+        requireEmptyRenewalBody(request);
+        if (!dependencies.renewal) throw unavailable();
+        const { handle, csrf } = familyCookies(request);
+        if (route === "/renew-context") {
+          response.json({
+            csrf_token: await dependencies.renewal.context(handle, csrf),
+          });
+          return;
+        }
+        if (
+          !(await dependencies.renewal.validateCsrf(
+            handle,
+            csrf,
+            request.get("x-csrf-token") ?? "",
+          ))
+        ) {
+          response
+            .status(403)
+            .json({ code: "TF_RENEWAL_CSRF_REJECTED", retryable: false });
+          return;
+        }
+        const renewed = await dependencies.renewal.renew(handle);
+        setFamily(handle, renewed, response);
+        response.status(204).end();
+      } catch (error) {
+        sendLocalRenewalError(response, error);
+      }
+    });
+  }
   return router;
 }

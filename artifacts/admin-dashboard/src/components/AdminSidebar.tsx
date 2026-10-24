@@ -1,10 +1,13 @@
 import {
   AudioLines,
+  Flag,
   Gauge,
   Network,
   RadioTower,
   Rocket,
+  ScanSearch,
   TriangleAlert,
+  Users,
 } from "lucide-react";
 
 interface AdminSidebarProps {
@@ -16,6 +19,9 @@ const navigationItems = [
   { href: "#topology", label: "Топология", icon: Network },
   { href: "#incidents", label: "Инциденты", icon: TriangleAlert },
   { href: "#deployments", label: "Деплойменты", icon: Rocket },
+  { href: "#parsers", label: "Парсеры", icon: ScanSearch },
+  { href: "#lyrics-feedback", label: "Тексты", icon: Flag },
+  { href: "#accounts", label: "Пользователи", icon: Users },
   { href: "#providers", label: "Провайдеры", icon: RadioTower },
 ] as const;
 

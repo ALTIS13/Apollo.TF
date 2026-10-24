@@ -26,3 +26,4 @@ artifacts/trackfinder-mobile
 artifacts/mockup-sandbox
 
 scripts
+artifacts/api-server/proofs/coolify/migrate.mjs

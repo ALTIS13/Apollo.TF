@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { createServer, request, type Server } from "node:http";
 import { createConnection, type AddressInfo, type Socket } from "node:net";
 import { Writable } from "node:stream";
@@ -116,7 +116,7 @@ function dependencies(initialTickets: readonly ReturnType<typeof ticket>[]) {
   return { sessionStore, platform, sessions };
 }
 
-class ManualScheduler implements WebSocketTimerScheduler {
+class ManualScheduler extends EventEmitter implements WebSocketTimerScheduler {
   private nextId = 1;
   private readonly callbacks = new Map<number, () => void>();
 
@@ -129,6 +129,7 @@ class ManualScheduler implements WebSocketTimerScheduler {
 
   clearInterval(handle: unknown): void {
     this.callbacks.delete(handle as number);
+    this.emit("cleared", handle);
   }
 
   runAll(): void {
@@ -806,6 +807,7 @@ describe("connected WebSocket lifecycle", () => {
     const { origin } = await startWs(current, { scheduler });
     const ws = await connectOpen(`${origin}/api/ws?ticket=${oneTime.value}`);
     const closed = closeCode(ws);
+    const serverTimerCleared = once(scheduler, "cleared");
     if (result instanceof Error) {
       current.sessionStore.observeSession.mockRejectedValue(result);
     } else {
@@ -817,6 +819,8 @@ describe("connected WebSocket lifecycle", () => {
     scheduler.runAll();
 
     await expect(closed).resolves.toBe(code);
+    await serverTimerCleared;
+    expect(ws.readyState).toBe(WebSocket.CLOSED);
     expect(scheduler.size).toBe(0);
   });
 
@@ -892,11 +896,14 @@ describe("connected WebSocket lifecycle", () => {
       `${origin}/api/ws?ticket=${healthyTicket.value}`,
     );
     const revokedClose = closeCode(revokedSocket);
+    const serverTimerCleared = once(scheduler, "cleared");
     current.sessions.delete(revokedTicket.sessionHandle);
 
     scheduler.runAll();
 
     await expect(revokedClose).resolves.toBe(4403);
+    await serverTimerCleared;
+    expect(revokedSocket.readyState).toBe(WebSocket.CLOSED);
     expect(healthySocket.readyState).toBe(WebSocket.OPEN);
     expect(scheduler.size).toBe(1);
   });
@@ -1010,7 +1017,6 @@ describe("API startup WebSocket orchestration", () => {
     const closeQueues = vi.fn(async () => {});
     let cleanupSnapshot:
       | {
-          readonly activeReadyState: number;
           readonly allServerSocketsDestroyed: boolean;
           readonly serverSocketCount: number;
           readonly timerCount: number;
@@ -1018,13 +1024,13 @@ describe("API startup WebSocket orchestration", () => {
         }
       | undefined;
     let activeClient: WebSocket | undefined;
+    let activeClosed: Promise<number> | undefined;
     let pendingUpgrade: Promise<number> | undefined;
     let attachCalled = false;
     let initializeAfterAttachCalled = false;
     let listeningServer: Server | undefined;
     const closeRedis = vi.fn(async () => {
       cleanupSnapshot = {
-        activeReadyState: activeClient?.readyState ?? WebSocket.CLOSED,
         allServerSocketsDestroyed: [...serverSockets].every(
           (socket) => socket.destroyed,
         ),
@@ -1068,6 +1074,7 @@ describe("API startup WebSocket orchestration", () => {
               activeClient = await connectOpen(
                 `${origin}/api/ws?ticket=${activeTicket.value}`,
               );
+              activeClosed = closeCode(activeClient);
               pendingUpgrade = rawUpgrade(
                 origin,
                 `/api/ws?ticket=${pendingTicket.value}`,
@@ -1085,12 +1092,14 @@ describe("API startup WebSocket orchestration", () => {
     expect(attachCalled).toBe(true);
     expect(initializeAfterAttachCalled).toBe(true);
     expect(cleanupSnapshot).toEqual({
-      activeReadyState: WebSocket.CLOSED,
       allServerSocketsDestroyed: true,
       serverSocketCount: 2,
       timerCount: 0,
       upgradeListenerCount: 0,
     });
+    expect(activeClosed).toBeDefined();
+    await activeClosed;
+    expect(activeClient?.readyState).toBe(WebSocket.CLOSED);
     await expect(pendingUpgrade).resolves.toBe(0);
     expect(closeQueues).toHaveBeenCalledOnce();
     expect(closeRedis).toHaveBeenCalledOnce();

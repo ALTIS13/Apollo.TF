@@ -1,13 +1,19 @@
 import { once } from "node:events";
 import { EventEmitter } from "node:events";
-import type { Server } from "node:http";
+import { request as httpRequest, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 
-import express from "express";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import express, { type Response as ExpressResponse } from "express";
+import pino from "pino";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TfSearchGateway } from "../lib/tf-search-client.js";
+import { HttpTfSearchClient } from "../lib/tf-search-client.js";
+import { downloadJobDataSchema } from "@workspace/tf-download-contract";
+import { createMediaLinkAdmission, MediaLinkAdmissionError } from "../lib/media-link-admission.js";
+import { MediaLinkResolutionError } from "../lib/media-link.js";
 import {
   TfDownloadWorkerError,
   type TfDownloadWorkerGateway,
@@ -23,10 +29,24 @@ const ytdlpMocks = vi.hoisted(() => ({
   spawnAudioDownload: vi.fn(),
 }));
 
+const durationProbeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@workspace/tf-download-contract/duration-probe", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@workspace/tf-download-contract/duration-probe")>()),
+  probeSourceDuration: durationProbeMock,
+}));
+
 vi.mock("../lib/ytdlp.js", () => ({
   getStreamUrl: ytdlpMocks.getStreamUrl,
   spawnAudioDownload: ytdlpMocks.spawnAudioDownload,
 }));
+
+const streamCacheMocks = vi.hoisted(() => ({
+  getCachedStreamUrl: vi.fn(),
+  setCachedStreamUrl: vi.fn(),
+}));
+
+vi.mock("../lib/stream-cache.js", () => streamCacheMocks);
 
 vi.hoisted(() => {
   process.env["DATABASE_URL"] ??= "postgres://unused:unused@127.0.0.1:1/unused";
@@ -49,6 +69,7 @@ const principal = {
   policyFreshUntil: "2026-07-24T03:05:00.000Z",
 } as const;
 const servers: Server[] = [];
+const testLogger = pino({ enabled: false });
 
 function trackIdFor(
   source: "yt" | "sc" | "bc" | "dz",
@@ -141,13 +162,34 @@ function artistDiscoveryResponse(
 function searchGateway() {
   return {
     search: vi.fn().mockResolvedValue(searchResponse()),
+    freeSearch: vi.fn().mockResolvedValue(searchResponse()),
     discoverArtist: vi.fn().mockResolvedValue(artistDiscoveryResponse()),
     suggestions: vi.fn().mockResolvedValue({
       schemaVersion: 1,
       requestId: "10000000-0000-4000-8000-000000000001",
       suggestions: [{ artist: "Artist", title: "Track" }],
     }),
+    sourceReference: vi.fn().mockResolvedValue(sourceReference("unknown")),
   } satisfies TfSearchGateway;
+}
+
+function sourceReference(status: "known" | "unknown" | "ambiguous", duration = 210) {
+  const now = Date.now();
+  return {
+    schemaVersion: 1 as const,
+    requestId: ACCOUNT_ID,
+    sourceKey: "yt:server-reference",
+    status,
+    ...(status === "known" ? { reference: {
+      artist: "Server Artist",
+      title: "Server Title (Live)",
+      type: "live" as const,
+      expectedDurationSeconds: duration,
+      provenance: "catalog" as const,
+      observedAt: now,
+      expiresAt: now + 300_000,
+    } } : {}),
+  };
 }
 
 function downloadWorkerGateway(): TfDownloadWorkerGateway & {
@@ -161,6 +203,14 @@ function downloadWorkerGateway(): TfDownloadWorkerGateway & {
 function routeDependencies(overrides: Partial<TrackRouteDependencies> = {}) {
   const dependencies = {
     searchGateway: searchGateway(),
+    admitMediaLink: createMediaLinkAdmission(),
+    resolveMediaLink: vi.fn().mockResolvedValue({
+      schemaVersion: 1,
+      source: "youtube",
+      artist: "Artist",
+      title: "Track",
+      durationSeconds: 180,
+    }),
     loadRecentTracks: vi.fn().mockResolvedValue([
       {
         trackId: "recent-track",
@@ -169,7 +219,13 @@ function routeDependencies(overrides: Partial<TrackRouteDependencies> = {}) {
       },
     ]),
     recordPlay: vi.fn().mockResolvedValue(undefined),
+    recordLyricsFeedback: vi.fn().mockResolvedValue("recorded"),
     loadTopArtists: vi.fn().mockResolvedValue([]),
+    loadLikedArtists: vi.fn().mockResolvedValue([]),
+    loadHiddenTrackIds: vi.fn().mockResolvedValue([]),
+    hideRecommendation: vi.fn().mockResolvedValue(undefined),
+    restoreRecommendation: vi.fn().mockResolvedValue(undefined),
+    clearHiddenRecommendations: vi.fn().mockResolvedValue(undefined),
     enqueueDownload: vi.fn().mockResolvedValue({
       jobId: "job-created",
       position: 1,
@@ -198,11 +254,14 @@ async function startTracksServer(
     readonly sessionExpiresAt: string;
     readonly policyFreshUntil: string;
   } = principal,
+  observeResponse?: (response: ExpressResponse) => void,
 ): Promise<string> {
   const app = express();
   app.use(express.json());
-  app.use((request, _response, next) => {
+  app.use((request, response, next) => {
     request.tfPrincipal = currentPrincipal;
+    request.log = testLogger;
+    observeResponse?.(response);
     next();
   });
   app.use("/api", createTracksRouter(dependencies));
@@ -212,6 +271,13 @@ async function startTracksServer(
   const address = server.address() as AddressInfo;
   return `http://127.0.0.1:${address.port}/api`;
 }
+
+beforeEach(() => {
+  streamCacheMocks.getCachedStreamUrl.mockReset().mockResolvedValue(null);
+  streamCacheMocks.setCachedStreamUrl.mockReset().mockResolvedValue(undefined);
+  ytdlpMocks.getStreamUrl.mockReset();
+  durationProbeMock.mockReset();
+});
 
 afterEach(async () => {
   vi.clearAllMocks();
@@ -226,6 +292,134 @@ afterEach(async () => {
 });
 
 describe("TF search module routing", () => {
+  it("returns pasted track-link metadata without selecting playable media", async () => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies);
+    const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+    const response = await fetch(`${baseUrl}/tracks/link-metadata`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      schemaVersion: 1,
+      source: "youtube",
+      artist: "Artist",
+      title: "Track",
+      durationSeconds: 180,
+    });
+    expect(dependencies.resolveMediaLink).toHaveBeenCalledWith(url);
+    expect(dependencies.searchGateway.search).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid link input before provider metadata lookup", async () => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/link-metadata`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "" }),
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "bad_request" });
+    expect(dependencies.resolveMediaLink).not.toHaveBeenCalled();
+  });
+
+  it("returns stable errors for unsupported and unavailable media links", async () => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies);
+    for (const [code, status] of [
+      ["unsupported_media_link", 422],
+      ["media_link_unavailable", 503],
+    ] as const) {
+      dependencies.resolveMediaLink.mockRejectedValueOnce(new MediaLinkResolutionError(code));
+      const response = await fetch(`${baseUrl}/tracks/link-metadata`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://soundcloud.com/artist/track" }),
+      });
+      expect(response.status).toBe(status);
+      await expect(response.json()).resolves.toEqual({ error: code });
+    }
+  });
+
+  it.each([
+    ["media_link_rate_limited", 429, 17],
+    ["media_link_overloaded", 503, 1],
+  ] as const)("maps %s admission to a stable response", async (code, status, retryAfterSeconds) => {
+    const admitMediaLink = vi.fn().mockRejectedValue(
+      new MediaLinkAdmissionError(code, retryAfterSeconds),
+    );
+    const dependencies = routeDependencies({ admitMediaLink });
+    const baseUrl = await startTracksServer(dependencies);
+    const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+
+    const response = await fetch(`${baseUrl}/tracks/link-metadata`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+
+    expect(response.status).toBe(status);
+    expect(response.headers.get("retry-after")).toBe(String(retryAfterSeconds));
+    await expect(response.json()).resolves.toEqual({ error: code });
+    expect(admitMediaLink).toHaveBeenCalledWith(ACCOUNT_ID, url, expect.any(Function));
+    expect(dependencies.resolveMediaLink).not.toHaveBeenCalled();
+  });
+
+  it("shares an in-flight link lookup for one account without spending another request", async () => {
+    let release!: (value: Awaited<ReturnType<TrackRouteDependencies["resolveMediaLink"]>>) => void;
+    const pending = new Promise<Awaited<ReturnType<TrackRouteDependencies["resolveMediaLink"]>>>(
+      (resolve) => { release = resolve; },
+    );
+    const dependencies = routeDependencies({
+      admitMediaLink: createMediaLinkAdmission({ maxRequestsPerAccount: 1, now: () => 0 }),
+    });
+    dependencies.resolveMediaLink.mockReturnValueOnce(pending);
+    const baseUrl = await startTracksServer(dependencies);
+    const request = (url: string) => fetch(`${baseUrl}/tracks/link-metadata`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+
+    const first = request(url);
+    await vi.waitFor(() => expect(dependencies.resolveMediaLink).toHaveBeenCalledTimes(1));
+    const joined = request(url);
+    const limited = await request("https://www.youtube.com/watch?v=another-ID");
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("60");
+    release({ schemaVersion: 1, source: "youtube", title: "Track" });
+
+    const [firstResponse, joinedResponse] = await Promise.all([first, joined]);
+    expect(firstResponse.status).toBe(200);
+    expect(joinedResponse.status).toBe(200);
+    expect(dependencies.resolveMediaLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes free text with account scope and strips internal result URLs", async () => {
+    const gateway = searchGateway();
+    gateway.freeSearch.mockResolvedValue({ ...searchResponse(), query: "late night music" });
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+    const result = await fetch(`${baseUrl}/tracks/free-search`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "  late night music  ", mode: "manual", sources: ["yt"] }),
+    });
+    expect(result.status).toBe(200);
+    expect(gateway.freeSearch).toHaveBeenCalledWith({
+      accountId: ACCOUNT_ID, query: "late night music", mode: "manual", sources: ["yt"], maxResults: 20,
+    });
+    expect(JSON.stringify(await result.json())).not.toContain("sourceUrl");
+    const invalid = await fetch(`${baseUrl}/tracks/free-search`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "x" }),
+    });
+    expect(invalid.status).toBe(400);
+  });
   it("preserves the public search response while stripping module-only fields", async () => {
     const gateway = searchGateway();
     gateway.search.mockResolvedValue(
@@ -255,6 +449,7 @@ describe("TF search module routing", () => {
     expect(gateway.search).toHaveBeenCalledWith({
       artist: "Artist",
       title: "Track",
+      accountId: ACCOUNT_ID,
       mode: "manual",
       sources: ["yt"],
       maxResults: 7,
@@ -440,6 +635,7 @@ describe("TF search module routing", () => {
     const gateway = searchGateway();
     const baseUrl = await startTracksServer(
       routeDependencies({ searchGateway: gateway }),
+      { ...principal, accountId: OTHER_ACCOUNT_ID },
     );
 
     const response = await fetch(`${baseUrl}/tracks/suggest?q=%20ArTiSt%20`);
@@ -448,7 +644,17 @@ describe("TF search module routing", () => {
     await expect(response.json()).resolves.toEqual({
       suggestions: [{ artist: "Artist", title: "Track" }],
     });
-    expect(gateway.suggestions).toHaveBeenCalledWith("artist", 5);
+    expect(gateway.suggestions).toHaveBeenCalledWith(OTHER_ACCOUNT_ID, "artist", 5);
+  });
+
+  it("rejects an overlong suggestion query before calling the module", async () => {
+    const gateway = searchGateway();
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+
+    const response = await fetch(`${baseUrl}/tracks/suggest?q=${"a".repeat(201)}`);
+
+    expect(response.status).toBe(400);
+    expect(gateway.suggestions).not.toHaveBeenCalled();
   });
 
   it("keeps recommendation personalization in the API and strips private candidates", async () => {
@@ -486,21 +692,80 @@ describe("TF search module routing", () => {
     });
     expect(gateway.search).not.toHaveBeenCalled();
     expect(body).toMatchObject({
+      schemaVersion: 1,
+      hiddenCount: 0,
+      basis: "listening_history",
       results: [
-        { id: "yt_result_0" },
-        { id: "yt_result_1" },
-        { id: "yt_unique" },
+        { id: "yt_result_0", recommendationReason: { basis: "listening_history", artist: "Artist" } },
+        { id: "yt_result_1", recommendationReason: { basis: "listening_history", artist: "Artist" } },
+        { id: "yt_unique", recommendationReason: { basis: "listening_history", artist: "Second Artist" } },
       ],
     });
     expect(JSON.stringify(body)).not.toContain("sourceUrl");
     expect(JSON.stringify(body)).not.toContain("providerStatus");
   });
 
+  it("discovers from saved artists when an account has no listening history", async () => {
+    const gateway = searchGateway();
+    const loadLikedArtists = vi.fn().mockResolvedValue(["Favorite Artist"]);
+    gateway.discoverArtist.mockResolvedValue(
+      artistDiscoveryResponse({ query: "Favorite Artist", results: [result(7)] }),
+    );
+    const baseUrl = await startTracksServer(routeDependencies({
+      searchGateway: gateway,
+      loadLikedArtists,
+      loadTopArtists: vi.fn().mockResolvedValue([]),
+    }));
+
+    const response = await fetch(`${baseUrl}/tracks/recommendations`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      schemaVersion: 1,
+      hiddenCount: 0,
+      basis: "liked_tracks",
+      results: [{ id: "yt_result_7", recommendationReason: { basis: "liked_tracks", artist: "Favorite Artist" } }],
+    });
+    expect(loadLikedArtists).toHaveBeenCalledWith(ACCOUNT_ID);
+    expect(gateway.discoverArtist).toHaveBeenCalledWith({
+      artist: "Favorite Artist",
+      sources: ["yt", "sc"],
+      limitPerSource: 6,
+    });
+  });
+
+  it("deduplicates artist seeds and names only sources that produced results", async () => {
+    const gateway = searchGateway();
+    gateway.discoverArtist
+      .mockResolvedValueOnce(artistDiscoveryResponse({ results: [{ ...result(0), artist: "Candidate metadata artist" }] }))
+      .mockRejectedValueOnce(new Error("saved artist unavailable"))
+      .mockResolvedValueOnce(artistDiscoveryResponse({ results: [result(0), result(9)] }));
+    const baseUrl = await startTracksServer(routeDependencies({
+      searchGateway: gateway,
+      loadLikedArtists: vi.fn().mockResolvedValue(["Artist", " artist ", "Saved"]),
+      loadTopArtists: vi.fn().mockResolvedValue(["ARTIST", "History"]),
+    }));
+
+    const response = await fetch(`${baseUrl}/tracks/recommendations`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      schemaVersion: 1,
+      hiddenCount: 0,
+      basis: "mixed",
+      results: [
+        { id: "yt_result_0", recommendationReason: { basis: "liked_tracks", artist: "Artist" } },
+        { id: "yt_result_9", recommendationReason: { basis: "listening_history", artist: "History" } },
+      ],
+    });
+    expect(gateway.discoverArtist.mock.calls.map(([input]) => input.artist)).toEqual([
+      "Artist", "Saved", "History",
+    ]);
+  });
+
   it("isolates artist discovery failures and returns at most 20 deduped public candidates", async () => {
     const gateway = searchGateway();
-    const candidates = Array.from({ length: 22 }, (_, index) =>
+    const candidates = Array.from({ length: 25 }, (_, index) =>
       result(index, {
-        id: index === 21 ? "yt_result_0" : `candidate_${index}`,
+        id: index === 24 ? "candidate_0" : `candidate_${index}`,
       }),
     );
     gateway.discoverArtist
@@ -515,17 +780,24 @@ describe("TF search module routing", () => {
       routeDependencies({
         searchGateway: gateway,
         loadTopArtists: vi.fn().mockResolvedValue(["Artist", "Second Artist"]),
+        loadHiddenTrackIds: vi.fn().mockResolvedValue(["candidate_0", "candidate_1"]),
       }),
     );
 
     const response = await fetch(`${baseUrl}/tracks/recommendations`);
     const body = (await response.json()) as {
+      schemaVersion: number;
+      hiddenCount: number;
       results: Array<Record<string, unknown>>;
     };
 
     expect(response.status).toBe(200);
     expect(gateway.discoverArtist).toHaveBeenCalledTimes(2);
+    expect(body.schemaVersion).toBe(1);
+    expect(body.hiddenCount).toBe(2);
     expect(body.results).toHaveLength(20);
+    expect(body.results[0]?.id).toBe("candidate_2");
+    expect(body.results.at(-1)?.id).toBe("candidate_21");
     expect(new Set(body.results.map((candidate) => candidate["id"])).size).toBe(
       20,
     );
@@ -548,7 +820,31 @@ describe("TF search module routing", () => {
     const response = await fetch(`${baseUrl}/tracks/recommendations`);
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ results: [] });
+    await expect(response.json()).resolves.toEqual({ schemaVersion: 1, hiddenCount: 0, results: [], basis: "none" });
+  });
+
+  it("fails recommendation reads closed when hidden membership storage is unavailable", async () => {
+    const dependencies = routeDependencies({
+      loadHiddenTrackIds: vi.fn().mockRejectedValue(new Error("private database detail")),
+      loadLikedArtists: vi.fn().mockResolvedValue(["Artist"]),
+    });
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/recommendations`);
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "recommendations_unavailable" });
+    expect(dependencies.searchGateway.discoverArtist).not.toHaveBeenCalled();
+  });
+
+  it("counts account exclusions but reports no recommendation basis when every candidate is hidden", async () => {
+    const dependencies = routeDependencies({
+      loadHiddenTrackIds: vi.fn().mockResolvedValue(["yt_result_0", "sc_same_work"]),
+      loadLikedArtists: vi.fn().mockResolvedValue(["Artist"]),
+    });
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/recommendations`);
+    await expect(response.json()).resolves.toEqual({
+      schemaVersion: 1, hiddenCount: 2, results: [], basis: "none",
+    });
   });
 
   it("uses private module candidates for every Deezer playback and download fallback", async () => {
@@ -563,6 +859,7 @@ describe("TF search module routing", () => {
       url: "https://media.example.test/audio",
       mimeType: "audio/mpeg",
     });
+    durationProbeMock.mockResolvedValue(210);
     ytdlpMocks.spawnAudioDownload.mockImplementation(() => {
       const process = new EventEmitter() as EventEmitter & {
         stdout: PassThrough;
@@ -585,16 +882,20 @@ describe("TF search module routing", () => {
     const trackId = `dz_${Buffer.from(deezerUrl).toString("base64url")}`;
     const query = "artist=Artist&title=Track";
 
-    const stream = await fetch(`${baseUrl}/tracks/${trackId}/stream?${query}`);
+    const stream = await fetch(`${baseUrl}/tracks/${trackId}/stream?${query}&expectedDurationSeconds=205`);
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+    expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
     const download = await fetch(
       `${baseUrl}/tracks/${trackId}/download?${query}`,
     );
     const audioStream = await fetch(
-      `${baseUrl}/tracks/${trackId}/audio-stream?${query}`,
+      `${baseUrl}/tracks/${trackId}/audio-stream?${query}&expectedDurationSeconds=205`,
     );
     await Promise.all([download.arrayBuffer(), audioStream.arrayBuffer()]);
 
     expect(stream.status).toBe(200);
+    expect(durationProbeMock).toHaveBeenCalledTimes(2);
+    expect(durationProbeMock).toHaveBeenCalledWith(expect.objectContaining({ sourceUrl }));
     await expect(stream.json()).resolves.toMatchObject({
       streamUrl: "https://media.example.test/audio",
     });
@@ -610,6 +911,985 @@ describe("TF search module routing", () => {
       sourceUrl,
       "128",
     );
+  });
+});
+
+it("skips mismatched LRCLIB search records before returning lyrics", async () => {
+  const originalFetch = globalThis.fetch;
+  const record = (artistName: string, duration: number, plainLyrics: string) => ({
+    id: duration,
+    trackName: "First song",
+    artistName,
+    albumName: "Album",
+    duration,
+    instrumental: false,
+    plainLyrics,
+    syncedLyrics: null,
+    lyricsfile: null,
+  });
+  vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("https://lrclib.net/api/get?")) return Promise.resolve(new Response(null, { status: 404 }));
+    if (url.startsWith("https://lrclib.net/api/search?")) return Promise.resolve(Response.json([
+      record("Other artist", 180, "Wrong artist"),
+      record("Artist", 30, "Wrong version"),
+      record("Artist", 181, "Matching line"),
+    ]));
+    return originalFetch(input, init);
+  });
+  try {
+    const baseUrl = await startTracksServer(routeDependencies());
+    const response = await originalFetch(`${baseUrl}/tracks/lyrics?artist=Artist&title=First+song&duration=180`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      plainLyrics: "Matching line",
+      syncedLyrics: null,
+      source: "lrclib",
+      match: "metadata",
+    });
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("marks lyrics.ovh fallback as unverified when LRCLIB has no matching recording", async () => {
+  const originalFetch = globalThis.fetch;
+  vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("https://lrclib.net/api/get?")) return Promise.resolve(new Response(null, { status: 404 }));
+    if (url.startsWith("https://lrclib.net/api/search?")) return Promise.resolve(Response.json([{
+      id: 1, trackName: "Other song", artistName: "Artist", albumName: "Album", duration: 180,
+      instrumental: false, plainLyrics: "Wrong song", syncedLyrics: null, lyricsfile: null,
+    }]));
+    if (url.startsWith("https://api.lyrics.ovh/v1/")) return Promise.resolve(Response.json({ lyrics: "Unverified line" }));
+    return originalFetch(input, init);
+  });
+  try {
+    const baseUrl = await startTracksServer(routeDependencies());
+    const response = await originalFetch(`${baseUrl}/tracks/lyrics?artist=Artist&title=First+song&duration=180`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      plainLyrics: "Unverified line",
+      syncedLyrics: null,
+      source: "lyrics.ovh",
+      match: "unverified",
+    });
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+describe("recommendation hidden membership", () => {
+  const mutations = [
+    { method: "PUT", suffix: `/${encodeURIComponent(" yt_hidden ")}`, status: "hidden", operation: "hideRecommendation" },
+    { method: "DELETE", suffix: "/yt_hidden", status: "restored", operation: "restoreRecommendation" },
+    { method: "DELETE", suffix: "", status: "cleared", operation: "clearHiddenRecommendations" },
+  ] as const;
+
+  it.each(mutations)("returns scoped idempotent $status recommendation receipts", async ({ method, suffix, status, operation }) => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await fetch(`${baseUrl}/tracks/recommendations/hidden${suffix}?accountId=${OTHER_ACCOUNT_ID}`, {
+        method,
+        headers: { "x-client-session": OTHER_ACCOUNT_ID },
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ schemaVersion: 1, status });
+    }
+    expect(dependencies[operation]).toHaveBeenCalledTimes(2);
+    expect(dependencies[operation]).toHaveBeenCalledWith(...(status === "cleared"
+      ? [ACCOUNT_ID]
+      : [{ accountId: ACCOUNT_ID, trackId: "yt_hidden" }]));
+    expect(dependencies.searchGateway.discoverArtist).not.toHaveBeenCalled();
+    expect(dependencies.recordPlay).not.toHaveBeenCalled();
+  });
+
+  it.each(mutations)("denies $status recommendation changes without tf.search before storage", async ({ method, suffix }) => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies, { ...principal, entitlements: ["tf.collections"] });
+    const response = await fetch(`${baseUrl}/tracks/recommendations/hidden${suffix}`, { method });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "module_access_denied" });
+    expect(dependencies.hideRecommendation).not.toHaveBeenCalled();
+    expect(dependencies.restoreRecommendation).not.toHaveBeenCalled();
+    expect(dependencies.clearHiddenRecommendations).not.toHaveBeenCalled();
+  });
+
+  it.each(mutations)("does not return optimistic $status recommendation success on storage failure", async ({ method, suffix, operation }) => {
+    const dependencies = routeDependencies();
+    dependencies[operation].mockRejectedValue(new Error("private store detail"));
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/recommendations/hidden${suffix}`, { method });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "recommendations_unavailable" });
+  });
+
+  it.each([
+    ["blank hide", "PUT", "/%20%20", undefined],
+    ["blank restore", "DELETE", "/%20%20", undefined],
+    ["oversized hide", "PUT", `/${"x".repeat(4097)}`, undefined],
+    ["oversized restore", "DELETE", `/${"x".repeat(4097)}`, undefined],
+    ["foreign-account hide", "PUT", "/yt_hidden", { accountId: OTHER_ACCOUNT_ID }],
+    ["foreign-account restore", "DELETE", "/yt_hidden", { accountId: OTHER_ACCOUNT_ID }],
+    ["foreign-account clear", "DELETE", "", { accountId: OTHER_ACCOUNT_ID }],
+  ] as const)("rejects malformed recommendation preference %s", async (_label, method, suffix, body) => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/recommendations/hidden${suffix}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    expect(response.status).toBe(400);
+    expect(dependencies.hideRecommendation).not.toHaveBeenCalled();
+    expect(dependencies.restoreRecommendation).not.toHaveBeenCalled();
+    expect(dependencies.clearHiddenRecommendations).not.toHaveBeenCalled();
+  });
+
+  it("denies recommendation reads without tf.search before hidden storage even with empty seeds", async () => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies, { ...principal, entitlements: ["tf.collections"] });
+    const response = await fetch(`${baseUrl}/tracks/recommendations`);
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "module_access_denied" });
+    expect(dependencies.loadHiddenTrackIds).not.toHaveBeenCalled();
+    expect(dependencies.searchGateway.discoverArtist).not.toHaveBeenCalled();
+  });
+});
+
+it("records a lyrics issue for the authenticated account without accepting client identity or lyrics text", async () => {
+  const recordLyricsFeedback = vi.fn()
+    .mockResolvedValueOnce("recorded")
+    .mockResolvedValueOnce("already_reported");
+  const baseUrl = await startTracksServer(routeDependencies({ recordLyricsFeedback }));
+  const body = {
+    trackId: "yt_first",
+    artist: "Artist",
+    title: "First song",
+    durationSeconds: 180,
+    lyricsSource: "lrclib",
+    reason: "wrong_track",
+  };
+
+  const first = await fetch(`${baseUrl}/tracks/lyrics/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  expect(first.status).toBe(201);
+  await expect(first.json()).resolves.toEqual({ state: "recorded" });
+  expect(recordLyricsFeedback).toHaveBeenCalledWith({
+    accountId: ACCOUNT_ID,
+    ...body,
+  });
+
+  const duplicate = await fetch(`${baseUrl}/tracks/lyrics/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  expect(duplicate.status).toBe(200);
+  await expect(duplicate.json()).resolves.toEqual({ state: "already_reported" });
+
+  for (const extra of [
+    { accountId: OTHER_ACCOUNT_ID },
+    { lyrics: "private text" },
+    { lyricsSource: "none" },
+  ]) {
+    const invalid = await fetch(`${baseUrl}/tracks/lyrics/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, ...extra }),
+    });
+    expect(invalid.status).toBe(400);
+  }
+  expect(recordLyricsFeedback).toHaveBeenCalledTimes(2);
+});
+
+describe("bounded queue preflight", () => {
+  const tracks = Array.from({ length: 7 }, (_, index) => queueTrack({
+    trackId: trackIdFor("sc", `https://soundcloud.com/artist/preflight-${index}`),
+  }));
+  const post = (baseUrl: string, input = tracks) => fetch(`${baseUrl}/tracks/download/queue`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tracks: input }),
+  });
+
+  it("runs four checks at once but admits the whole batch only after the last proof in input order", async () => {
+    const gateway = searchGateway();
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let maximum = 0;
+    gateway.sourceReference.mockImplementation(({ sourceUrl }) => new Promise((resolve) => {
+      const index = Number(sourceUrl.split("-").at(-1));
+      active++;
+      maximum = Math.max(maximum, active);
+      releases[index] = () => { active--; resolve(sourceReference("known", 200 + index)); };
+    }));
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    const baseUrl = await startTracksServer(dependencies);
+    const pending = post(baseUrl);
+    try {
+      await vi.waitFor(() => expect(gateway.sourceReference).toHaveBeenCalledTimes(4));
+      expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+      for (const index of [3, 2, 1]) releases[index]!();
+      await vi.waitFor(() => expect(gateway.sourceReference).toHaveBeenCalledTimes(7));
+      for (const index of [6, 5, 4]) releases[index]!();
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+      releases[0]!();
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(maximum).toBe(4);
+      await expect(response.json()).resolves.toEqual({ results: tracks.map((track) => ({
+        trackId: track.trackId, jobId: "job-created", position: 1,
+      })) });
+      expect(dependencies.enqueueDownload.mock.calls.map(([job]) => job.expectedDurationSeconds))
+        .toEqual([200, 201, 202, 203, 204, 205, 206]);
+      expect(dependencies.enqueueDownload.mock.calls.every(([job]) => job.accountId === ACCOUNT_ID)).toBe(true);
+    } finally {
+      gateway.sourceReference.mockResolvedValue(sourceReference("unknown"));
+      for (const release of releases) release?.();
+      await pending;
+    }
+  });
+
+  it.each([
+    ["invalid id", queueTrack({ trackId: "opaque-invalid" }), principal, 400, "bad_request"],
+    ["missing fallback capability", queueTrack({ trackId: trackIdFor("dz", "https://api.deezer.com/track/1") }),
+      { ...principal, entitlements: ["tf.downloads"] }, 403, "module_access_denied"],
+  ] as const)("rejects a late %s before any provider I/O", async (_label, badTrack, currentPrincipal, status, error) => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies, currentPrincipal);
+    const response = await post(baseUrl, [tracks[0]!, badTrack]);
+    expect(response.status).toBe(status);
+    await expect(response.json()).resolves.toEqual({ error });
+    expect(dependencies.searchGateway.sourceReference).not.toHaveBeenCalled();
+    expect(dependencies.searchGateway.search).not.toHaveBeenCalled();
+    expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+  });
+
+  it("cancels sibling checks on failure without starting more tracks or admitting late successes", async () => {
+    const gateway = searchGateway();
+    const releases: Array<(fail?: boolean) => void> = [];
+    const signals: Array<AbortSignal | undefined> = [];
+    gateway.sourceReference.mockImplementation((_input, options) => new Promise((resolve, reject) => {
+      signals.push(options?.signal);
+      releases.push((fail) => fail ? reject(new Error("private detail")) : resolve(sourceReference("known")));
+    }));
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    const baseUrl = await startTracksServer(dependencies);
+    const pending = post(baseUrl);
+    try {
+      await vi.waitFor(() => expect(releases).toHaveLength(4));
+      releases[0]!(true);
+      const response = await pending;
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "duration_unverified" });
+      expect(signals.every((signal) => signal?.aborted)).toBe(true);
+      for (const release of releases.slice(1)) release();
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(gateway.sourceReference).toHaveBeenCalledTimes(4);
+      expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+    } finally {
+      gateway.sourceReference.mockResolvedValue(sourceReference("unknown"));
+      for (const release of releases) release();
+      await pending;
+    }
+  });
+
+  it("bounds the entire batch wait even if a reference ignores abort and resolves later", async () => {
+    const gateway = searchGateway();
+    const releases: Array<() => void> = [];
+    const signals: Array<AbortSignal | undefined> = [];
+    let started!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => { started = resolve; });
+    gateway.sourceReference.mockImplementation((_input, options) => new Promise((resolve) => {
+      signals.push(options?.signal);
+      releases.push(() => resolve(sourceReference("known")));
+      started();
+    }));
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    const baseUrl = await startTracksServer(dependencies);
+    // Leave HTTP real; only advance the application's deadline once I/O has started.
+    const realSetTimeout = globalThis.setTimeout;
+    let expire: (() => void) | undefined;
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) => {
+      if (delay === 30_000) expire = () => { Reflect.apply(callback, undefined, args); };
+      return realSetTimeout(callback, delay, ...args);
+    }) as typeof setTimeout);
+    const pending = post(baseUrl);
+    try {
+      await lookupStarted;
+      expect(expire).toBeTypeOf("function");
+      expire!();
+      const response = await pending;
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "duration_unverified" });
+      expect(signals.every((signal) => signal?.aborted)).toBe(true);
+      for (const release of releases) release();
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(gateway.sourceReference).toHaveBeenCalledTimes(4);
+      expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+    } finally {
+      timer.mockRestore();
+      gateway.sourceReference.mockResolvedValue(sourceReference("unknown"));
+      for (const release of releases) release();
+      await pending;
+    }
+  });
+
+  it("stops pending fallback work when the client closes without looking up or enqueuing its late result", async () => {
+    const gateway = searchGateway();
+    let release!: () => void;
+    let started!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => { started = resolve; });
+    let signal: AbortSignal | undefined;
+    gateway.search.mockImplementation((_input, options) => new Promise((resolve) => {
+      signal = options?.signal;
+      release = () => resolve(searchResponse());
+      started();
+    }));
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    let closed!: () => void;
+    const responseClosed = new Promise<void>((resolve) => { closed = resolve; });
+    const baseUrl = await startTracksServer(dependencies, principal, (response) => response.once("close", closed));
+    const request = httpRequest(`${baseUrl}/tracks/download/queue`, {
+      method: "POST", headers: { "content-type": "application/json" },
+    });
+    const clientError = once(request, "error");
+    request.end(JSON.stringify({ tracks: [queueTrack({ trackId: trackIdFor("dz", "https://api.deezer.com/track/1") })] }));
+    try {
+      await lookupStarted;
+      request.destroy(new Error("fixture client abort"));
+      await clientError;
+      await responseClosed;
+      release();
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(signal?.aborted).toBe(true);
+      expect(gateway.sourceReference).not.toHaveBeenCalled();
+      expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+    } finally {
+      release?.();
+      request.destroy();
+    }
+  });
+});
+
+describe("server source-reference admission", () => {
+  const sourceUrl = "https://www.youtube.com/watch?v=Ap0ll0Tf001";
+  const id = trackIdFor("yt", sourceUrl);
+
+  it.each(["stream", "download", "audio-stream", "queue"])(
+    "stops %s admission when HTTP closes during a successful short-reference lookup",
+    async (route) => {
+      const gateway = searchGateway();
+      let releaseReference!: (value: ReturnType<typeof sourceReference>) => void;
+      const reference = new Promise<ReturnType<typeof sourceReference>>((resolve) => {
+        releaseReference = resolve;
+      });
+      let markLookupStarted!: () => void;
+      const lookupStarted = new Promise<void>((resolve) => { markLookupStarted = resolve; });
+      gateway.sourceReference.mockImplementation(() => {
+        markLookupStarted();
+        return reference;
+      });
+      const dependencies = routeDependencies({ searchGateway: gateway });
+      let markResponseClosed!: (response: ExpressResponse) => void;
+      const responseClosed = new Promise<ExpressResponse>((resolve) => { markResponseClosed = resolve; });
+      const baseUrl = await startTracksServer(dependencies, principal, (response) => {
+        response.once("close", () => markResponseClosed(response));
+      });
+      streamCacheMocks.getCachedStreamUrl.mockResolvedValue({ url: "https://media.example.test/short", mimeType: "audio/webm" });
+      ytdlpMocks.spawnAudioDownload.mockImplementation(() => {
+        const process = Object.assign(new EventEmitter(), {
+          stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+        });
+        queueMicrotask(() => {
+          process.stdout.end("audio");
+          process.stderr.end();
+          process.emit("close", 0);
+        });
+        return process;
+      });
+      const queued = route === "queue";
+      const request = httpRequest(
+        queued ? `${baseUrl}/tracks/download/queue` : `${baseUrl}/tracks/${id}/${route}`,
+        { method: queued ? "POST" : "GET", headers: { "content-type": "application/json" } },
+      );
+      const clientError = once(request, "error");
+      const clientClosed = new Promise<void>((resolve) => { request.once("close", resolve); });
+      request.end(queued ? JSON.stringify({ tracks: [queueTrack({ trackId: id })] }) : undefined);
+
+      try {
+        await lookupStarted;
+        request.destroy(new Error("fixture client abort"));
+        await clientError;
+        await clientClosed;
+        const response = await responseClosed;
+        expect(response.destroyed).toBe(true);
+        releaseReference(sourceReference("known", 25));
+        // Flush the released admission's promise chain before inspecting its side effects.
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
+
+        expect(gateway.sourceReference).toHaveBeenCalledExactlyOnceWith(
+          { accountId: ACCOUNT_ID, sourceUrl },
+          ...(queued ? [{ signal: expect.any(AbortSignal) }] : []),
+        );
+        expect(durationProbeMock).not.toHaveBeenCalled();
+        expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+        expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+        expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+        expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+        expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+      } finally {
+        releaseReference(sourceReference("known", 25));
+        request.destroy();
+        await clientClosed;
+      }
+    },
+  );
+
+  it.each(["stream", "download", "audio-stream"])(
+    "rejects a known preview on %s when the browser omits its duration",
+    async (route) => {
+      const gateway = searchGateway();
+      gateway.sourceReference.mockResolvedValue(sourceReference("known"));
+      durationProbeMock.mockResolvedValue(30);
+      streamCacheMocks.getCachedStreamUrl.mockResolvedValue({ url: "https://media.example.test/cached", mimeType: "audio/webm" });
+      const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+      const response = await fetch(`${baseUrl}/tracks/${id}/${route}`);
+      expect(response.status).toBe(422);
+      await expect(response.json()).resolves.toEqual({ error: "preview_rejected" });
+      expect(gateway.sourceReference).toHaveBeenCalledWith({ accountId: ACCOUNT_ID, sourceUrl });
+      expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+      expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+      expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("cannot weaken a known reference with a small client hint", async () => {
+    const gateway = searchGateway();
+    gateway.sourceReference.mockResolvedValue(sourceReference("known"));
+    durationProbeMock.mockResolvedValue(30);
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=1`);
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ error: "preview_rejected" });
+  });
+
+  it("preserves a genuinely short server recording despite a forged long hint", async () => {
+    const gateway = searchGateway();
+    gateway.sourceReference.mockResolvedValue(sourceReference("known", 25));
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({ url: "https://media.example.test/short", mimeType: "audio/webm" });
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=300`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ cached: true });
+    expect(durationProbeMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["stream", "download", "audio-stream"])(
+    "fails closed before %s side effects when the reference service fails",
+    async (route) => {
+      const gateway = searchGateway();
+      gateway.sourceReference.mockRejectedValue(new Error("private upstream detail"));
+      const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+      const response = await fetch(`${baseUrl}/tracks/${id}/${route}`);
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "duration_unverified" });
+      expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+      expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+      expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not treat a gateway without reference support as an unknown success", async () => {
+    const { sourceReference: _reference, ...gateway } = searchGateway();
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream`);
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "duration_unverified" });
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+  });
+
+  it("cannot turn ambiguous server evidence into a reference through a browser hint", async () => {
+    const gateway = searchGateway();
+    gateway.sourceReference.mockResolvedValue(sourceReference("ambiguous"));
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({ url: "https://media.example.test/unknown", mimeType: "audio/webm" });
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=300`);
+    expect(response.status).toBe(200);
+    expect(durationProbeMock).not.toHaveBeenCalled();
+  });
+
+  it("binds Deezer fallback to the selected media source, not the original id or browser metadata", async () => {
+    const gateway = searchGateway();
+    gateway.sourceReference.mockResolvedValue(sourceReference("known"));
+    gateway.search.mockResolvedValue(searchResponse({ results: [result(0, { sourceUrl })] }));
+    durationProbeMock.mockResolvedValue(30);
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+    const deezerId = trackIdFor("dz", "https://cdns-preview-e.dzcdn.net/stream/c-reference");
+    const response = await fetch(`${baseUrl}/tracks/${deezerId}/download?artist=Forged&title=Forged&expectedDurationSeconds=1`);
+    expect(response.status).toBe(422);
+    expect(gateway.sourceReference).toHaveBeenCalledExactlyOnceWith({ accountId: ACCOUNT_ID, sourceUrl });
+    expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 1, 86_400])(
+    "freezes server recording and duration instead of queue hint %s",
+    async (expectedDurationSeconds) => {
+      const gateway = searchGateway();
+      gateway.sourceReference.mockResolvedValue(sourceReference("known"));
+      const dependencies = routeDependencies({ searchGateway: gateway });
+      const baseUrl = await startTracksServer(dependencies);
+      const response = await fetch(`${baseUrl}/tracks/download/queue`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tracks: [queueTrack({ trackId: id, expectedDurationSeconds })] }),
+      });
+      expect(response.status).toBe(200);
+      const job = dependencies.enqueueDownload.mock.calls[0]![0];
+      expect(job).toMatchObject({ accountId: ACCOUNT_ID, sourceUrl, artist: "Server Artist", title: "Server Title (Live)", expectedDurationSeconds: 210 });
+      expect(job).not.toHaveProperty("reference");
+      expect(job).not.toHaveProperty("sourceKey");
+    },
+  );
+
+  it("does not partially enqueue a batch with an unavailable reference", async () => {
+    const gateway = searchGateway();
+    gateway.sourceReference.mockResolvedValueOnce(sourceReference("known")).mockRejectedValueOnce(new Error("private detail"));
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/download/queue`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tracks: [queueTrack({ trackId: id }), queueTrack()] }),
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "duration_unverified" });
+    expect(dependencies.enqueueDownload).not.toHaveBeenCalled();
+  });
+
+  it("clears an ambiguous queued hint instead of forwarding it as recording evidence", async () => {
+    const gateway = searchGateway();
+    gateway.sourceReference.mockResolvedValue(sourceReference("ambiguous"));
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    const baseUrl = await startTracksServer(dependencies);
+    const response = await fetch(`${baseUrl}/tracks/download/queue`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tracks: [queueTrack({ trackId: id, expectedDurationSeconds: 300 })] }),
+    });
+    expect(response.status).toBe(200);
+    expect(dependencies.enqueueDownload.mock.calls[0]![0].expectedDurationSeconds).toBeUndefined();
+  });
+
+  it("uses the authenticated account rather than a query-supplied account for lookup", async () => {
+    const gateway = searchGateway();
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({ url: "https://media.example.test/source", mimeType: "audio/webm" });
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }), { ...principal, accountId: OTHER_ACCOUNT_ID });
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream?accountId=${ACCOUNT_ID}`);
+    expect(response.status).toBe(200);
+    expect(gateway.sourceReference).toHaveBeenCalledExactlyOnceWith({ accountId: OTHER_ACCOUNT_ID, sourceUrl });
+  });
+
+  it.each(["warm", "cold"] as const)("carries a real signed %s source reference into API admission and a frozen queue command", async (mode) => {
+    // Exercise the service boundary without making API production compilation own search sources.
+    const searchModuleRoot = new URL("../../../tf-search/src/", import.meta.url);
+    const { createTfSearchApp } = await import(fileURLToPath(new URL("app.ts", searchModuleRoot)));
+    const { createSearchService } = await import(fileURLToPath(new URL("search-service.ts", searchModuleRoot)));
+    const { HmacInternalRequestAuthenticator } = await import(fileURLToPath(new URL("internal-auth.ts", searchModuleRoot)));
+    const secret = "integration-fixture-secret".repeat(2);
+    let metadataUnavailable = false;
+    const service = createSearchService({
+      providers: [{ source: "yt", async search() {
+        return [{ ...result(0, { id, sourceUrl }), duration: 120 }];
+      } }],
+      ...(mode === "cold" ? { async sourceMetadataLookup(selectedUrl: string) {
+        if (metadataUnavailable) throw new Error("private provider failure");
+        return { ...result(0, { id, sourceUrl: selectedUrl }), duration: 30 };
+      } } : {}),
+      async catalogLookup() {
+        return [{ artist: "Artist", title: "Track 0", type: "original", duration: 210 }];
+      },
+    });
+    const server = createTfSearchApp({
+      service, auth: new HmacInternalRequestAuthenticator({ secret }), ready: () => true,
+    }).listen(0, "127.0.0.1");
+    servers.push(server);
+    await once(server, "listening");
+    const { port } = server.address() as AddressInfo;
+    const gateway = new HttpTfSearchClient({ origin: `http://127.0.0.1:${port}`, internalAuthSecret: secret, timeoutMs: 1000 });
+    if (mode === "warm") {
+      const search = await gateway.search({ accountId: ACCOUNT_ID, artist: "Artist", title: "Track 0", sources: ["yt"], mode: "manual", maxResults: 1 });
+      expect(search.results.map(({ id: trackId }) => trackId)).toEqual([id]);
+    }
+    const dependencies = routeDependencies({ searchGateway: gateway });
+    const baseUrl = await startTracksServer(dependencies);
+    durationProbeMock.mockResolvedValue(30);
+    const playback = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=1`);
+    expect(playback.status).toBe(422);
+    await expect(playback.json()).resolves.toEqual({ error: "preview_rejected" });
+    const queued = await fetch(`${baseUrl}/tracks/download/queue`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tracks: [queueTrack({ trackId: id, expectedDurationSeconds: 1 })] }),
+    });
+    expect(queued.status).toBe(200);
+    const job = dependencies.enqueueDownload.mock.calls[0]![0];
+    expect(job).toMatchObject({
+      accountId: ACCOUNT_ID, sourceUrl, expectedDurationSeconds: 210, artist: "Artist", title: "Track 0",
+    });
+    expect(downloadJobDataSchema.safeParse(job).success).toBe(true);
+    if (mode === "cold") {
+      metadataUnavailable = true;
+      const failedId = trackIdFor("yt", "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+      const probeCalls = durationProbeMock.mock.calls.length;
+      const unavailable = await fetch(`${baseUrl}/tracks/${failedId}/stream?expectedDurationSeconds=1`);
+      expect(unavailable.status).toBe(503);
+      await expect(unavailable.json()).resolves.toEqual({ error: "duration_unverified" });
+      expect(durationProbeMock.mock.calls.length).toBe(probeCalls);
+      const deniedQueue = await fetch(`${baseUrl}/tracks/download/queue`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tracks: [queueTrack({ trackId: failedId, expectedDurationSeconds: 1 })] }),
+      });
+      expect(deniedQueue.status).toBe(503);
+      await expect(deniedQueue.json()).resolves.toEqual({ error: "duration_unverified" });
+      expect(dependencies.enqueueDownload).toHaveBeenCalledTimes(1);
+    }
+  });
+});
+
+describe("stream preview boundary", () => {
+  const previewUrl = "https://cdns-preview-e.dzcdn.net/stream/c-test-preview";
+  const deezerId = trackIdFor("dz", previewUrl);
+
+  it("does not probe or resolve a Deezer fallback outside its declared provider host", async () => {
+    const gateway = searchGateway();
+    gateway.search.mockResolvedValue(searchResponse({
+      results: [result(0, {
+        source: "youtube",
+        sourceUrl: "https://www.youtube.com.evil.example/watch?v=private",
+      })],
+    }));
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+
+    const response = await fetch(
+      `${baseUrl}/tracks/${deezerId}/stream?artist=Artist&title=Track&expectedDurationSeconds=210`,
+    );
+
+    expect(response.status).toBe(500);
+    expect(durationProbeMock).not.toHaveBeenCalled();
+    expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+  });
+
+  it("rejects a preview before reading an existing non-Deezer stream cache", async () => {
+    const sourceUrl = "https://www.youtube.com/watch?v=preview";
+    const id = trackIdFor("yt", sourceUrl);
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({
+      url: "https://media.example.test/cached-preview",
+      mimeType: "audio/webm",
+    });
+    durationProbeMock.mockResolvedValue(30);
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=210`);
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ error: "preview_rejected" });
+    expect(durationProbeMock).toHaveBeenCalledWith(expect.objectContaining({ sourceUrl }));
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+    expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid expected duration without probing or reading the cache", async () => {
+    const id = trackIdFor("yt", "https://www.youtube.com/watch?v=bad-duration");
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=0`);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "bad_request" });
+    expect(durationProbeMock).not.toHaveBeenCalled();
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+  });
+
+  it("keeps a verified full-length cache hit and fails closed on unavailable duration", async () => {
+    const sourceUrl = "https://www.youtube.com/watch?v=complete";
+    const id = trackIdFor("yt", sourceUrl);
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({
+      url: "https://media.example.test/full",
+      mimeType: "audio/webm",
+    });
+    durationProbeMock.mockResolvedValueOnce(205).mockRejectedValueOnce(new Error("private provider text"));
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const full = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=210`);
+    expect(full.status).toBe(200);
+    await expect(full.json()).resolves.toMatchObject({ cached: true });
+    const unknown = await fetch(`${baseUrl}/tracks/${id}/stream?expectedDurationSeconds=210`);
+    expect(unknown.status).toBe(503);
+    await expect(unknown.json()).resolves.toEqual({ error: "duration_unverified" });
+    expect(streamCacheMocks.getCachedStreamUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes a verified non-Deezer stream without reading the cached URL", async () => {
+    const sourceUrl = "https://www.youtube.com/watch?v=refreshable";
+    const id = trackIdFor("yt", sourceUrl);
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({
+      url: "https://media.example.test/stale",
+      mimeType: "audio/webm",
+    });
+    durationProbeMock.mockResolvedValue(205);
+    ytdlpMocks.getStreamUrl.mockResolvedValue({
+      url: "https://media.example.test/fresh",
+      mimeType: "audio/mpeg",
+    });
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const response = await fetch(
+      `${baseUrl}/tracks/${id}/stream?refresh=1&expectedDurationSeconds=210`,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      id,
+      streamUrl: "https://media.example.test/fresh",
+      mimeType: "audio/mpeg",
+    });
+    expect(durationProbeMock).toHaveBeenCalledWith(expect.objectContaining({ sourceUrl }));
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+    expect(ytdlpMocks.getStreamUrl).toHaveBeenCalledExactlyOnceWith(sourceUrl);
+    expect(streamCacheMocks.setCachedStreamUrl).toHaveBeenCalledExactlyOnceWith(
+      id,
+      "https://media.example.test/fresh",
+      "audio/mpeg",
+    );
+  });
+
+  it("rejects a known preview before refreshing a non-Deezer stream", async () => {
+    const sourceUrl = "https://www.youtube.com/watch?v=short-refresh";
+    const id = trackIdFor("yt", sourceUrl);
+    durationProbeMock.mockResolvedValue(30);
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const response = await fetch(
+      `${baseUrl}/tracks/${id}/stream?refresh=1&expectedDurationSeconds=210`,
+    );
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ error: "preview_rejected" });
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+    expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+    expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+  });
+
+  it.each(["0", "01", "true", "", "1&refresh=1"])(
+    "rejects invalid refresh=%s before probing or reading the cache",
+    async (refresh) => {
+      const id = trackIdFor("yt", "https://www.youtube.com/watch?v=bad-refresh");
+      const baseUrl = await startTracksServer(routeDependencies());
+
+      const response = await fetch(`${baseUrl}/tracks/${id}/stream?refresh=${refresh}`);
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "bad_request" });
+      expect(durationProbeMock).not.toHaveBeenCalled();
+      expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+      expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+      expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["ID only", ""],
+    ["artist only", "?artist=Artist"],
+    ["title only", "?title=Track"],
+  ])(
+    "refuses legacy Deezer %s without using an opaque cache hit",
+    async (_name, query) => {
+      streamCacheMocks.getCachedStreamUrl.mockResolvedValue({
+        url: previewUrl,
+        mimeType: "audio/mpeg",
+      });
+      const gateway = searchGateway();
+      const baseUrl = await startTracksServer(
+        routeDependencies({ searchGateway: gateway }),
+      );
+
+      const response = await fetch(
+        `${baseUrl}/tracks/${deezerId}/stream${query}`,
+      );
+
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual({
+        error: "stream_error",
+        message: "Could not resolve stream URL",
+      });
+      expect(gateway.search).not.toHaveBeenCalled();
+      expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+      expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+      expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["no candidate", "search rejection", "resolver rejection"])(
+    "refuses preview substitution after %s",
+    async (failure) => {
+      const gateway = searchGateway();
+      if (failure === "no candidate") {
+        gateway.search.mockResolvedValue(searchResponse({ results: [] }));
+      } else if (failure === "search rejection") {
+        gateway.search.mockRejectedValue(new Error("search unavailable"));
+      } else {
+        ytdlpMocks.getStreamUrl.mockRejectedValueOnce(
+          new Error("resolver unavailable"),
+        );
+      }
+      const baseUrl = await startTracksServer(
+        routeDependencies({ searchGateway: gateway }),
+      );
+
+      const response = await fetch(
+        `${baseUrl}/tracks/${deezerId}/stream?artist=Artist&title=Track`,
+      );
+
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual({
+        error: "stream_error",
+        message: "Could not resolve stream URL",
+      });
+      expect(gateway.search).toHaveBeenCalledTimes(1);
+      expect(gateway.search).toHaveBeenCalledWith({
+        artist: "Artist",
+        title: "Track",
+        mode: "manual",
+        sources: ["yt"],
+        maxResults: 3,
+      });
+      expect(ytdlpMocks.getStreamUrl).toHaveBeenCalledTimes(
+        failure === "resolver rejection" ? 1 : 0,
+      );
+      expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+      expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps Deezer private resolution behind tf.search even with a cache hit", async () => {
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({
+      url: "https://media.example.test/previous-resolution",
+      mimeType: "audio/mpeg",
+    });
+    const gateway = searchGateway();
+    const baseUrl = await startTracksServer(
+      routeDependencies({ searchGateway: gateway }),
+      { ...principal, entitlements: ["tf.downloads"] },
+    );
+
+    const response = await fetch(
+      `${baseUrl}/tracks/${deezerId}/stream?artist=Artist&title=Track`,
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "module_access_denied",
+    });
+    expect(gateway.search).not.toHaveBeenCalled();
+    expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+    expect(streamCacheMocks.getCachedStreamUrl).not.toHaveBeenCalled();
+    expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+  });
+
+  it("preserves a non-Deezer cache hit without resolving again", async () => {
+    const id = trackIdFor("yt", "https://www.youtube.com/watch?v=cached");
+    streamCacheMocks.getCachedStreamUrl.mockResolvedValue({
+      url: "https://media.example.test/cached-audio",
+      mimeType: "audio/webm",
+    });
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const response = await fetch(`${baseUrl}/tracks/${id}/stream`);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      id,
+      streamUrl: "https://media.example.test/cached-audio",
+      mimeType: "audio/webm",
+      cached: true,
+    });
+    expect(streamCacheMocks.getCachedStreamUrl).toHaveBeenCalledExactlyOnceWith(
+      id,
+    );
+    expect(streamCacheMocks.setCachedStreamUrl).not.toHaveBeenCalled();
+    expect(ytdlpMocks.getStreamUrl).not.toHaveBeenCalled();
+  });
+});
+
+describe("legacy binary route preview admission", () => {
+  const sourceUrl = "https://www.youtube.com/watch?v=legacy-preview";
+  const id = trackIdFor("yt", sourceUrl);
+
+  it.each(["download", "audio-stream"])(
+    "rejects a known short source before starting %s output",
+    async (route) => {
+      durationProbeMock.mockResolvedValue(30);
+      const baseUrl = await startTracksServer(routeDependencies());
+
+      const response = await fetch(
+        `${baseUrl}/tracks/${id}/${route}?expectedDurationSeconds=210`,
+      );
+
+      expect(response.status).toBe(422);
+      await expect(response.json()).resolves.toEqual({ error: "preview_rejected" });
+      expect(durationProbeMock).toHaveBeenCalledWith(expect.objectContaining({ sourceUrl }));
+      expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["download", "audio-stream"])(
+    "does not start %s output when known duration cannot be checked",
+    async (route) => {
+      durationProbeMock.mockRejectedValue(new Error("private provider text"));
+      const baseUrl = await startTracksServer(routeDependencies());
+
+      const response = await fetch(
+        `${baseUrl}/tracks/${id}/${route}?expectedDurationSeconds=210`,
+      );
+
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "duration_unverified" });
+      expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+    },
+  );
+
+  it("checks the Deezer fallback source rather than its preview URL", async () => {
+    const previewId = trackIdFor("dz", "https://cdns-preview-e.dzcdn.net/stream/c-legacy");
+    const gateway = searchGateway();
+    gateway.search.mockResolvedValue(searchResponse({
+      results: [result(0, { sourceUrl })],
+    }));
+    durationProbeMock.mockResolvedValue(30);
+    const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+
+    const response = await fetch(
+      `${baseUrl}/tracks/${previewId}/download?artist=Artist&title=Track&expectedDurationSeconds=210`,
+    );
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ error: "preview_rejected" });
+    expect(durationProbeMock).toHaveBeenCalledWith(expect.objectContaining({ sourceUrl }));
+    expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed expected duration before starting a legacy download", async () => {
+    const baseUrl = await startTracksServer(routeDependencies());
+
+    const response = await fetch(
+      `${baseUrl}/tracks/${id}/download?expectedDurationSeconds=0`,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "bad_request" });
+    expect(durationProbeMock).not.toHaveBeenCalled();
+    expect(ytdlpMocks.spawnAudioDownload).not.toHaveBeenCalled();
   });
 });
 
@@ -652,6 +1932,8 @@ describe("track account ownership", () => {
       title: "Title",
     });
     expect(dependencies.loadTopArtists).toHaveBeenCalledWith(ACCOUNT_ID);
+    expect(dependencies.loadLikedArtists).toHaveBeenCalledWith(ACCOUNT_ID);
+    expect(dependencies.loadHiddenTrackIds).toHaveBeenCalledWith(ACCOUNT_ID);
     expect(
       JSON.stringify(dependencies.loadRecentTracks.mock.calls),
     ).not.toContain(OTHER_ACCOUNT_ID);
@@ -660,6 +1942,9 @@ describe("track account ownership", () => {
     );
     expect(
       JSON.stringify(dependencies.loadTopArtists.mock.calls),
+    ).not.toContain(OTHER_ACCOUNT_ID);
+    expect(
+      JSON.stringify(dependencies.loadLikedArtists.mock.calls),
     ).not.toContain(OTHER_ACCOUNT_ID);
   });
 
@@ -860,6 +2145,25 @@ describe("track account ownership", () => {
     expect(dependencies.enqueueDownload).toHaveBeenCalledOnce();
   });
 
+  it("forwards a bounded expected duration to the worker and rejects invalid values", async () => {
+    const dependencies = routeDependencies();
+    const baseUrl = await startTracksServer(dependencies);
+    const send = (expectedDurationSeconds: unknown) => fetch(`${baseUrl}/tracks/download/queue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tracks: [queueTrack({ expectedDurationSeconds })] }),
+    });
+
+    expect((await send(210)).status).toBe(200);
+    expect(dependencies.enqueueDownload).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedDurationSeconds: 210 }),
+    );
+    for (const invalid of [0, 86_401, 30.5, "210"]) {
+      expect((await send(invalid)).status).toBe(400);
+    }
+    expect(dependencies.enqueueDownload).toHaveBeenCalledTimes(1);
+  });
+
   it("resolves a Deezer download through tf-search only with live tf.search access", async () => {
     const gateway = searchGateway();
     const resolvedSourceUrl =
@@ -899,7 +2203,7 @@ describe("track account ownership", () => {
       mode: "manual",
       sources: ["yt", "sc"],
       maxResults: 6,
-    });
+    }, { signal: expect.any(AbortSignal) });
     expect(dependencies.enqueueDownload).toHaveBeenCalledWith(
       expect.objectContaining({ sourceUrl: resolvedSourceUrl }),
     );

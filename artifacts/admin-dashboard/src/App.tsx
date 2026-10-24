@@ -1,8 +1,11 @@
 import { useCallback, useState } from "react";
 import { AdminSidebar } from "./components/AdminSidebar";
+import { AccountsTable } from "./components/AccountsTable";
 import { CommandBar } from "./components/CommandBar";
 import { DeploymentsTable } from "./components/DeploymentsTable";
 import { IncidentRail } from "./components/IncidentRail";
+import { LyricsFeedbackPanel } from "./components/LyricsFeedbackPanel";
+import { ParserTable } from "./components/ParserTable";
 import { ProviderTable } from "./components/ProviderTable";
 import { SummaryStrip } from "./components/SummaryStrip";
 import { TopologyPanel } from "./components/TopologyPanel";
@@ -71,6 +74,12 @@ export default function App({ adapter = demoDashboardAdapter }: AppProps) {
                 <div className="detail-tables">
                   <DeploymentsTable modules={dashboard.snapshot.modules} />
                   <ProviderTable providers={dashboard.snapshot.providers} />
+                  <ParserTable parsers={dashboard.snapshot.parsers} />
+                  <AccountsTable
+                    summary={dashboard.snapshot.accountSummary}
+                    accounts={dashboard.snapshot.accounts}
+                  />
+                  <LyricsFeedbackPanel mode={adapter.mode} refreshKey={dashboard.lastUpdatedAt} />
                 </div>
               </div>
             </>

@@ -1,5 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import dockerIgnore from "@balena/dockerignore";
 import { describe, expect, it } from "vitest";
@@ -107,15 +114,73 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isGitIgnored(relativePath: string): boolean {
-  const result = spawnSync(
-    "git",
-    ["check-ignore", "--quiet", "--no-index", "--", relativePath],
-    { cwd: workspaceRoot, encoding: "utf8" },
-  );
-  if (result.error !== undefined) throw result.error;
-  expect(result.status, result.stderr).toBeOneOf([0, 1]);
-  return result.status === 0;
+function withGitIgnore(
+  check: (isIgnored: (path: string) => boolean) => void,
+): void {
+  const fixture = mkdtempSync(resolve(tmpdir(), "apollo-tf-git-ignore-"));
+  try {
+    const empty = resolve(fixture, "empty");
+    const metadata = resolve(fixture, "metadata");
+    writeFileSync(empty, "");
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([name]) => !name.toUpperCase().startsWith("GIT_"),
+      ),
+    );
+    const git = (args: readonly string[]) => {
+      const result = spawnSync(
+        "git",
+        [
+          "-c",
+          `core.excludesFile=${empty}`,
+          "-c",
+          "core.ignoreCase=false",
+          ...args,
+        ],
+        {
+          cwd: fixture,
+          encoding: "utf8",
+          env: {
+            ...env,
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_CONFIG_GLOBAL: empty,
+            GIT_TERMINAL_PROMPT: "0",
+          },
+          shell: false,
+          windowsHide: true,
+          timeout: 10_000,
+        },
+      );
+      if (result.error !== undefined) throw result.error;
+      return result;
+    };
+    const initialized = git([
+      "init",
+      "--bare",
+      "--quiet",
+      "--template=",
+      metadata,
+    ]);
+    expect(initialized.status, initialized.stderr).toBe(0);
+    check((relativePath) => {
+      // Metadata stays outside the read-only source; Git loads nested rules itself.
+      const result = git([
+        "--git-dir",
+        metadata,
+        "--work-tree",
+        workspaceRoot,
+        "check-ignore",
+        "--quiet",
+        "--no-index",
+        "--",
+        relativePath,
+      ]);
+      expect(result.status, result.stderr).toBeOneOf([0, 1]);
+      return result.status === 0;
+    });
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 }
 
 function isDockerIgnored(ignoreFile: string, relativePath: string): boolean {
@@ -145,7 +210,6 @@ describe("admin telemetry container contract", () => {
   const loggerSource = readWorkspaceFile(
     "artifacts/api-server/src/lib/logger.ts",
   );
-  const gitignore = readWorkspaceFile(".gitignore");
   const dockerignore = readWorkspaceFile(".dockerignore");
   const webDockerfile = readWorkspaceFile("artifacts/music-player/Dockerfile");
   const viteSources = [
@@ -441,26 +505,33 @@ describe("admin telemetry container contract", () => {
   );
 
   it("applies Git and Docker ignore rules in order for operator files", () => {
-    for (const secretPath of [
-      ".env",
-      "artifacts/.env.local",
-      "artifacts/api-server/.env.production",
-    ]) {
-      expect(isGitIgnored(secretPath)).toBe(true);
-      expect(isDockerIgnored(dockerignore, secretPath)).toBe(true);
-    }
+    withGitIgnore((isGitIgnored) => {
+      for (const secretPath of [
+        ".env",
+        "artifacts/.env.local",
+        "artifacts/api-server/.env.production",
+        "artifacts/api-server/proofs/coolify/migrate.mjs",
+      ]) {
+        expect(isGitIgnored(secretPath)).toBe(true);
+        expect(isDockerIgnored(dockerignore, secretPath)).toBe(true);
+      }
 
-    for (const examplePath of [
-      ".env.example",
-      "artifacts/.env.example",
-      "artifacts/api-server/.env.example",
-    ]) {
-      expect(isGitIgnored(examplePath)).toBe(false);
-      expect(isDockerIgnored(dockerignore, examplePath)).toBe(false);
-    }
+      for (const examplePath of [
+        ".env.example",
+        "artifacts/.env.example",
+        "artifacts/api-server/.env.example",
+        "README.md",
+        "artifacts/api-server/proofs/coolify/README.md",
+      ]) {
+        expect(isGitIgnored(examplePath)).toBe(false);
+        expect(isDockerIgnored(dockerignore, examplePath)).toBe(false);
+      }
 
-    expect(isGitIgnored(".ops-private/notes.txt")).toBe(true);
-    expect(isDockerIgnored(dockerignore, ".ops-private/notes.txt")).toBe(true);
+      expect(isGitIgnored(".ops-private/notes.txt")).toBe(true);
+      expect(isDockerIgnored(dockerignore, ".ops-private/notes.txt")).toBe(
+        true,
+      );
+    });
   });
 
   it("requires operator authentication and rate limits the public admin surface", () => {

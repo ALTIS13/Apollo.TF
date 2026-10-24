@@ -412,6 +412,228 @@ describe("spawnYtDlpDownload", () => {
 });
 
 describe("createDownloadProcessor", () => {
+  it.each([
+    { expected: 200, actual: 90 },
+    { expected: 160, actual: 88 },
+    { expected: 90, actual: 49.5 },
+  ])(
+    "rejects a short preview before storage or download ($expected/$actual)",
+    async ({ expected, actual }) => {
+      const { root, storage } = await createStorage();
+      const begin = vi.spyOn(storage, "begin");
+      const spawnDownload = vi.fn(() => createFakeProcess());
+      const probeDuration = vi.fn(async () => actual);
+      const logger = createLogger();
+      const processor = createDownloadProcessor({
+        storage,
+        cancellationStore: createCancellationStore(),
+        spawnDownload,
+        probeDuration,
+        logger,
+      });
+
+      await expect(
+        processor(
+          createJob({ ...validData, expectedDurationSeconds: expected }),
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({
+        code: "preview_rejected",
+        retriable: false,
+      });
+      expect(probeDuration).toHaveBeenCalledWith({
+        executable: "yt-dlp",
+        sourceUrl: SOURCE_URL,
+        signal: expect.any(AbortSignal),
+      });
+      expect(begin).not.toHaveBeenCalled();
+      expect(spawnDownload).not.toHaveBeenCalled();
+      expect(await readdir(root)).toEqual([]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          state: "failed",
+          code: "preview_rejected",
+        }),
+      );
+      expect(JSON.stringify(logger)).not.toContain(SOURCE_URL);
+    },
+  );
+
+  it("fails closed when duration cannot be verified", async () => {
+    const { root, storage } = await createStorage();
+    const begin = vi.spyOn(storage, "begin");
+    const spawnDownload = vi.fn(() => createFakeProcess());
+    const probeDuration = vi.fn(async (): Promise<number> => {
+      throw new Error(`probe failed: ${SOURCE_URL} ${STDERR_SECRET}`);
+    });
+    const logger = createLogger();
+    const processor = createDownloadProcessor({
+      storage,
+      cancellationStore: createCancellationStore(),
+      spawnDownload,
+      probeDuration,
+      logger,
+    });
+
+    await expect(
+      processor(
+        createJob({ ...validData, expectedDurationSeconds: 200 }),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: "duration_unverified",
+      retriable: false,
+      message: "duration_unverified",
+    });
+    expect(begin).not.toHaveBeenCalled();
+    expect(spawnDownload).not.toHaveBeenCalled();
+    expect(await readdir(root)).toEqual([]);
+    expect(JSON.stringify(logger)).not.toContain(SOURCE_URL);
+    expect(JSON.stringify(logger)).not.toContain(STDERR_SECRET);
+  });
+
+  it.each([undefined, 89])(
+    "preserves legacy download when expected duration is %s",
+    async (expected) => {
+      const { storage } = await createStorage();
+      const probeDuration = vi.fn(async () => 20);
+      const processor = createDownloadProcessor({
+        storage,
+        cancellationStore: createCancellationStore(),
+        spawnDownload: vi.fn(() =>
+          createFakeProcess({ stdout: [Buffer.from("audio")] }),
+        ),
+        probeDuration,
+        logger: createLogger(),
+      });
+
+      await expect(
+        processor(
+          createJob({ ...validData, expectedDurationSeconds: expected }),
+          new AbortController().signal,
+        ),
+      ).resolves.toMatchObject({
+        storageKey: `${JOB_ID}.mp3`,
+      });
+      expect(probeDuration).not.toHaveBeenCalled();
+    },
+  );
+
+  it("admits verified full-length media", async () => {
+    const { storage } = await createStorage();
+    const probeDuration = vi.fn(async () => 110);
+    const probeFileDuration = vi.fn(async () => 110);
+    const processor = createDownloadProcessor({
+      storage,
+      cancellationStore: createCancellationStore(),
+      spawnDownload: vi.fn(() =>
+        createFakeProcess({ stdout: [Buffer.from("audio")] }),
+      ),
+      probeDuration,
+      probeFileDuration,
+      logger: createLogger(),
+    });
+
+    await expect(
+      processor(
+        createJob({ ...validData, expectedDurationSeconds: 200 }),
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({
+      storageKey: `${JOB_ID}.mp3`,
+    });
+    expect(probeDuration).toHaveBeenCalledTimes(1);
+    expect(probeFileDuration).toHaveBeenCalledWith({
+      executable: "ffprobe",
+      filePath: expect.stringMatching(/\.mp3\.part$/),
+      extension: "mp3",
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("rejects a short encoded file before publishing it", async () => {
+    const { root, storage } = await createStorage();
+    const commit = vi.spyOn(storage, "commit");
+    const processor = createDownloadProcessor({
+      storage,
+      cancellationStore: createCancellationStore(),
+      spawnDownload: vi.fn(() =>
+        createFakeProcess({ stdout: [Buffer.from("audio")] }),
+      ),
+      probeDuration: vi.fn(async () => 205),
+      probeFileDuration: vi.fn(async () => 30),
+      logger: createLogger(),
+    });
+
+    await expect(
+      processor(
+        createJob({ ...validData, expectedDurationSeconds: 210 }),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "preview_rejected", retriable: false });
+    expect(commit).not.toHaveBeenCalled();
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it("fails closed and removes staged media when encoded duration is unavailable", async () => {
+    const { root, storage } = await createStorage();
+    const commit = vi.spyOn(storage, "commit");
+    const processor = createDownloadProcessor({
+      storage,
+      cancellationStore: createCancellationStore(),
+      spawnDownload: vi.fn(() =>
+        createFakeProcess({ stdout: [Buffer.from("audio")] }),
+      ),
+      probeDuration: vi.fn(async () => 205),
+      probeFileDuration: vi.fn(async () => {
+        throw new Error("private file path");
+      }),
+      logger: createLogger(),
+    });
+
+    await expect(
+      processor(
+        createJob({ ...validData, expectedDurationSeconds: 210 }),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "duration_unverified", retriable: false });
+    expect(commit).not.toHaveBeenCalled();
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it("cancels a pending duration probe without opening storage", async () => {
+    const { root, storage } = await createStorage();
+    const begin = vi.spyOn(storage, "begin");
+    const entered = deferred<void>();
+    let probeSignal: AbortSignal | undefined;
+    const processor = createDownloadProcessor({
+      storage,
+      cancellationStore: createCancellationStore(),
+      spawnDownload: vi.fn(() => createFakeProcess()),
+      probeDuration: vi.fn(async ({ signal }) => {
+        probeSignal = signal;
+        entered.resolve();
+        return new Promise<number>(() => undefined);
+      }),
+      logger: createLogger(),
+    });
+    const controller = new AbortController();
+    const pending = processor(
+      createJob({ ...validData, expectedDurationSeconds: 200 }),
+      controller.signal,
+    );
+    await entered.promise;
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({
+      code: "download_canceled",
+      retriable: false,
+    });
+    expect(probeSignal?.aborted).toBe(true);
+    expect(begin).not.toHaveBeenCalled();
+    expect(await readdir(root)).toEqual([]);
+  });
+
   it("rejects a non-strict job before spawning or creating output", async () => {
     const { root, storage } = await createStorage();
     const spawnDownload = vi.fn(() => createFakeProcess());
@@ -487,15 +709,18 @@ describe("createDownloadProcessor", () => {
   it("revalidates a disallowed source before child spawn", async () => {
     const { storage } = await createStorage();
     const spawnDownload = vi.fn(() => createFakeProcess());
+    const probeDuration = vi.fn(async () => 120);
     const processor = createDownloadProcessor({
       storage,
       cancellationStore: createCancellationStore(),
       spawnDownload,
+      probeDuration,
       logger: createLogger(),
     });
     const job = createJob({
       ...validData,
       sourceUrl: "https://youtube.com.evil.example/watch?v=secret",
+      expectedDurationSeconds: 200,
     });
 
     await expect(
@@ -504,6 +729,7 @@ describe("createDownloadProcessor", () => {
       code: "source_not_allowed",
       retriable: false,
     });
+    expect(probeDuration).not.toHaveBeenCalled();
     expect(spawnDownload).not.toHaveBeenCalled();
   });
 

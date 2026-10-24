@@ -1,0 +1,52 @@
+# Source-only v2 overlay after base + canary v1. No runtime admission.
+name: apollo-tf-canary-renewal-v2
+
+services:
+  tf-api:
+    environment:
+      APOLLO_TF_RENEWAL_ENABLED: ${TF_RENEWAL_ENABLED:?}
+      APOLLO_TF_REVOKE_KEYRING_FILE: /run/secrets/tf_revoke_keyring
+    secrets:
+      - source: tf_revoke_keyring
+        target: tf_revoke_keyring
+        uid: "10001"
+        gid: "10001"
+        mode: "0400"
+
+secrets:
+  tf_revoke_keyring:
+    file: ${TF_CANARY_SECRET_DIRECTORY:?}/tf_revoke_keyring
+
+volumes:
+  tf-postgres-data:
+    name: apollo-tf-canary-renewal-postgres-v2
+  tf-redis-data:
+    name: apollo-tf-canary-renewal-redis-v2
+  tf-integrations-postgres-data:
+    name: apollo-tf-canary-renewal-integrations-postgres-v2
+  tf-download-redis-data:
+    name: apollo-tf-canary-renewal-download-redis-v2
+  tf-downloads:
+    name: apollo-tf-canary-renewal-downloads-v2
+
+networks:
+  tf-data:
+    name: apollo-tf-canary-renewal-data-v2
+  tf-edge:
+    name: apollo-tf-canary-renewal-edge-v2
+  tf-integrations-control:
+    name: apollo-tf-canary-renewal-integrations-control-v2
+  tf-integrations-data:
+    name: apollo-tf-canary-renewal-integrations-data-v2
+  tf-integrations-egress:
+    name: apollo-tf-canary-renewal-integrations-egress-v2
+  tf-search-control:
+    name: apollo-tf-canary-renewal-search-control-v2
+  tf-search-egress:
+    name: apollo-tf-canary-renewal-search-egress-v2
+  tf-download-queue:
+    name: apollo-tf-canary-renewal-download-queue-v2
+  tf-download-control:
+    name: apollo-tf-canary-renewal-download-control-v2
+  tf-download-egress:
+    name: apollo-tf-canary-renewal-download-egress-v2

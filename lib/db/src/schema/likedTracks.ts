@@ -1,4 +1,5 @@
-import { pgTable, text, timestamp, serial, index, unique } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, text, timestamp, serial, bigint, index, unique } from "drizzle-orm/pg-core";
 
 export const likedTracksTable = pgTable("liked_tracks", {
   id: serial("id").primaryKey(),
@@ -9,6 +10,8 @@ export const likedTracksTable = pgTable("liked_tracks", {
   thumbnailUrl: text("thumbnail_url"),
   duration: text("duration"),
   likedAt: timestamp("liked_at", { withTimezone: true }).defaultNow().notNull(),
+  sortPosition: bigint("sort_position", { mode: "bigint" })
+    .default(sql`nextval('public.liked_tracks_id_seq'::regclass)`).notNull(),
 }, (t) => [
   unique("liked_tracks_session_track_uniq").on(t.sessionId, t.trackId),
   index("liked_tracks_session_idx").on(t.sessionId),

@@ -1,0 +1,119 @@
+# Git-backed Coolify raw Compose build check, not a release/canary runtime.
+# Pin the job checkout and TF_BUILD_SOURCE_COMMIT to the same full Git commit
+# containing this file. The pre-stage source archive is baseline evidence only.
+# Image tags are local candidates, not registry digests or publication receipts.
+name: apollo-tf-build-check
+
+x-build: &build
+  # Coolify BaseDir '/' uses the checkout root as --project-directory.
+  context: .
+  labels:
+    org.opencontainers.image.source: https://github.com/ALTIS13/Apollo.TF
+    org.opencontainers.image.revision: ${TF_BUILD_SOURCE_COMMIT:?Pin the job checkout and this label to the same commit containing this Compose file}
+
+x-build-check-job: &build-check-job
+  platform: linux/amd64
+  pull_policy: build
+  entrypoint: ["/bin/true"]
+  # An empty string clears image CMD and survives Coolify's YAML round-trip.
+  command: ""
+  restart: "no"
+  healthcheck:
+    disable: true
+  network_mode: none
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  user: "10001:10001"
+  cpus: "0.25"
+  mem_limit: 16M
+  pids_limit: 16
+  deploy:
+    resources:
+      limits:
+        cpus: "0.25"
+        memory: 16M
+        pids: 16
+
+services:
+  tf-api:
+    <<: *build-check-job
+    image: apollo-tf-build-check-tf-api:${TF_BUILD_SOURCE_COMMIT:?}
+    build:
+      <<: *build
+      dockerfile: artifacts/api-server/Dockerfile
+      target: runner
+
+  tf-postgres:
+    <<: *build-check-job
+    image: apollo-tf-build-check-tf-postgres:${TF_BUILD_SOURCE_COMMIT:?}
+    build:
+      <<: *build
+      dockerfile: artifacts/api-server/Dockerfile
+      target: postgres-role-init
+    # Mask the base image's declared data volume with bounded ephemeral storage.
+    tmpfs:
+      - /var/lib/postgresql/data:rw,noexec,nosuid,nodev,size=1m
+
+  tf-web:
+    <<: *build-check-job
+    image: apollo-tf-build-check-tf-web:${TF_BUILD_SOURCE_COMMIT:?}
+    build:
+      <<: *build
+      dockerfile: artifacts/music-player/Dockerfile
+      target: runner
+      args:
+        VITE_API_URL: https://api.tf.canary.apollot.ru
+        VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED: "false"
+
+  tf-admin:
+    <<: *build-check-job
+    image: apollo-tf-build-check-tf-admin:${TF_BUILD_SOURCE_COMMIT:?}
+    build:
+      <<: *build
+      dockerfile: artifacts/admin-dashboard/Dockerfile
+      target: default
+
+  tf-search:
+    <<: *build-check-job
+    image: apollo-tf-build-check-tf-search:${TF_BUILD_SOURCE_COMMIT:?}
+    build:
+      <<: *build
+      dockerfile: artifacts/tf-search/Dockerfile
+      target: runner
+
+  tf-integrations:
+    <<: *build-check-job
+    image: apollo-tf-build-check-tf-integrations:${TF_BUILD_SOURCE_COMMIT:?}
+    build:
+      <<: *build
+      dockerfile: artifacts/tf-integrations/Dockerfile
+      target: runner
+
+  tf-integrations-postgres:
+    <<: *build-check-job
+    image: apollo-tf-build-check-tf-integrations-postgres:${TF_BUILD_SOURCE_COMMIT:?}
+    build:
+      <<: *build
+      dockerfile: artifacts/tf-integrations/Dockerfile
+      target: postgres-role-init
+    tmpfs:
+      - /var/lib/postgresql/data:rw,noexec,nosuid,nodev,size=1m
+
+  tf-download-worker:
+    <<: *build-check-job
+    image: apollo-tf-build-check-tf-download-worker:${TF_BUILD_SOURCE_COMMIT:?}
+    build:
+      <<: *build
+      dockerfile: artifacts/tf-download-worker/Dockerfile
+      target: runner
+
+  tf-download-redis:
+    <<: *build-check-job
+    image: apollo-tf-build-check-tf-download-redis:${TF_BUILD_SOURCE_COMMIT:?}
+    build:
+      <<: *build
+      dockerfile: artifacts/tf-download-worker/Dockerfile
+      target: queue-redis
+    tmpfs:
+      - /data:rw,noexec,nosuid,nodev,size=1m

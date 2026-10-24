@@ -24,4 +24,10 @@ export interface DownloadQueueTrack {
    */
   title: string;
   quality: DownloadQuality;
+  /**
+   * Expected full recording duration from the selected candidate, when known.
+   * @minimum 1
+   * @maximum 86400
+   */
+  expectedDurationSeconds?: number;
 }

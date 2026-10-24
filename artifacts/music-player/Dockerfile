@@ -2,7 +2,7 @@ FROM docker.io/library/node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a9423
 
 WORKDIR /app
 
-RUN npm install -g pnpm
+RUN npm install -g pnpm@10.33.2
 
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json tsconfig.json ./
 
@@ -21,8 +21,10 @@ RUN pnpm install --frozen-lockfile
 COPY lib/api-client-react ./lib/api-client-react
 COPY artifacts/music-player ./artifacts/music-player
 
-ARG VITE_API_URL
+ARG VITE_API_URL=https://api.tf.apollot.ru
+ARG VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED=false
 ENV VITE_API_URL=${VITE_API_URL}
+ENV VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED=${VITE_APOLLO_TF_SUCCESSOR_WS_ENABLED}
 
 RUN pnpm --filter @workspace/music-player run build
 

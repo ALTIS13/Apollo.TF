@@ -1,6 +1,6 @@
 # Codex reference for Apollo TF
 
-Last updated: 2026-07-14.
+Last updated: 2026-09-26.
 
 ## Project context
 
@@ -12,8 +12,28 @@ Apollo Track Finder (Apollo TF) is a pnpm workspace for a music search/player sy
 - `lib/api-spec`: OpenAPI source of truth. Do not edit this directory casually; update generated clients through the established API generation flow.
 - `lib/api-client-react`, `lib/api-zod`, `lib/db`: shared clients, validation, and database packages.
 
-GitHub repository: `https://github.com/ALTIS13/apollo-trackfinder-api`.
+GitHub repository: `https://github.com/ALTIS13/Apollo.TF`.
 Local checkout remote `origin` points to that repo. Do not print credential-bearing remote URLs.
+
+## Unified Apollo ownership
+
+- Apollo TF is the `TF` module in the unified Apollo account and installation
+  system while retaining ownership of TF runtime and TF API behavior.
+- Supabase Auth owns identity and source sessions. Platform API owns policy,
+  module entitlements/capabilities, installation identity, module access,
+  release/download admission, and root audit.
+- Apollo.GAP remains authority for AWG/OlcRTC subscriptions, signed routes and
+  bundles, nodes, rooms, runtime, and network telemetry. TF has no direct
+  control-plane dependency on GAP.
+- Top-level module keys are `QUASAR`, `TF`, `OLC`, `AWG`, and `AI`. Existing
+  `tf.search`, `tf.integrations`, `tf.downloads`, and `tf.collections` values
+  remain compatibility capability keys and must not be renamed in place.
+- The cross-project handoff is
+  `docs/superpowers/specs/2026-08-24-apollo-tf-unified-platform-handoff-design.md`.
+  Its implementation plan is
+  `docs/superpowers/plans/2026-08-24-apollo-tf-unified-platform-integration.md`.
+  No implementation starts until ownership and the proposed contracts are
+  approved.
 
 ## Authorization and safety boundaries
 
@@ -36,6 +56,7 @@ Local checkout remote `origin` points to that repo. Do not print credential-bear
 ## Android workflow
 
 - Two physical Android devices are available through ADB and must be used for release-candidate smoke testing.
+- For Apollo TF Android checks, use the owner's A063 device. MobileNext is reserved for iOS work in another project; do not spend its limits on TF or treat it as Android validation.
 - Android SDK and ADB are installed locally. Verify Java/Gradle compatibility before pinning the APK build pipeline.
 - Do not use Expo Go or the custom `static-build` path as release validation.
 - The current code still depends on Expo packages. Before implementation, explicitly choose between retaining Expo modules with native Gradle/prebuild or migrating to bare React Native; do not blur those two scopes.
@@ -64,13 +85,15 @@ Add short sections such as `Risks`, `Notes`, or `Blocked` when useful.
 
 Tool endpoints vary between the main agent, sub-agents, installed plugin versions, and future sessions. This document records stable capability groups; cache presence alone never proves that a tool is callable.
 
+The following catalog is historical. Recheck the live tool list each session; current exceptions are recorded below.
+
 - `functions.shell_command`: run PowerShell commands in the workspace.
 - `functions.apply_patch`: edit files through patches.
 - `functions.update_plan`: keep implementation stages visible.
 - Multi-agent tools: spawn, wait, message, resume, and close independent agents. Spawn and parallel execution were verified in this project.
 - Remote SSH tools: list/test configured hosts, run read-only commands, inspect files/directories/logs, inspect Git workspaces, and perform narrow writes where host policy allows. Access to the designated HomeNode was verified; connection details remain private.
 - GitHub connector: repository, branch, commit, issue, pull request, review, workflow, and artifact operations. Local `gh` authentication and connector availability were verified for account `ALTIS13`; `origin` uses a credential-free HTTPS URL.
-- Browser/Playwright tools: navigate, inspect, interact, capture screenshots, and validate responsive UI in the in-app browser.
+- Browser automation: Playwright CLI is usable locally. The Browser/Chrome plugin is not callable in the 2026-09-26 TF session; do not claim an in-app or Chrome extension check when using Playwright.
 - `web.run`: browse/search when information may be current, unstable, or explicitly requested.
 - `image_gen.imagegen`: generate or edit raster images.
 - Figma tools: inspect design files, capture nodes, generate diagrams/designs, and maintain Code Connect mappings when a Figma target is provided.
@@ -81,7 +104,7 @@ Tool endpoints vary between the main agent, sub-agents, installed plugin version
 
 ## Available plugin groups
 
-- OpenAI bundled: browser, Chrome, computer-use.
+- OpenAI bundled: computer-use; Browser/Chrome were not callable in the 2026-09-26 TF session.
 - OpenAI primary runtime: documents, spreadsheets, presentations, PDF, template creator.
 - GitHub: repository, PR, issue, CI, publish workflows.
 - Build Web Apps: frontend app builder, frontend debugging, React/Next best practices, shadcn, Stripe, Supabase/Postgres.
@@ -122,7 +145,15 @@ This is the active catalog advertised to the main agent on 2026-07-14. Plugin ro
 - Artifacts: `documents`, `pdf`, `Presentations`, `Spreadsheets`, `excel-live-control`, `template-creator`.
 - Infrastructure: `remote-ssh`.
 
-Skill files live under `$CODEX_HOME/skills` and `$CODEX_HOME/plugins/cache/.../skills`. Before using a skill, read its current `SKILL.md` fully and follow its routing instructions.
+Skill files live under `$CODEX_HOME/skills` and `$CODEX_HOME/plugins/cache/.../skills`. Before using a skill, read its current `SKILL.md` fully and follow its routing instructions. The skill catalog above is historical, not a live availability claim.
+
+## Design plugin checkpoint (2026-09-26)
+
+- Figma tools are callable; a read-only `whoami` confirmed a Pro team plan with a Full seat. No TF design file was supplied, so no Figma file read, generation, or canvas mutation was attempted.
+- Mobbin search is callable. One focused standard web search returned three Spotify collection references ([artist list](https://mobbin.com/screens/fd00bec6-299f-4a82-9b99-448f679233cc), [playlist row](https://mobbin.com/screens/f57cdb1b-d7af-416a-be72-b5d6d9b13fad), [track action menu](https://mobbin.com/screens/f37a6914-3f91-4c6a-879a-59ccd2fbc3c8)); no deep search or export was used.
+- Rive tools are callable. Read-only `session_info` succeeded, but no file is open, so no animation edit or export was attempted.
+- MobileNext has no callable tool in this TF session and is out of scope for TF Android work. Do not probe or invoke it to check A063.
+- None of these tools exposed a read-only remaining-credits counter in the current TF session. Do not invent quota balances; batch specific design questions and use paid search/generation only when a concrete interface decision needs it.
 
 ## Agent usage
 

@@ -39,7 +39,7 @@ describe("HTTP dashboard snapshot adapter", () => {
     await expect(adapter.loadSnapshot()).resolves.toEqual(body);
   });
 
-  it("keeps the demo snapshot as an unverified fallback and rejects a non-OK response", async () => {
+  it("has no fabricated initial snapshot and rejects a non-OK response", async () => {
     const fetchSnapshot = vi.fn().mockResolvedValue({
       ok: false,
       status: 503,
@@ -49,7 +49,7 @@ describe("HTTP dashboard snapshot adapter", () => {
       fetchSnapshot,
     });
 
-    expect(adapter.initialSnapshot).toBe(demoSnapshot);
+    expect(adapter.initialSnapshot).toBeUndefined();
     expect(adapter).toMatchObject({
       mode: "http",
       capabilities: { canAcknowledgeIncidents: false },

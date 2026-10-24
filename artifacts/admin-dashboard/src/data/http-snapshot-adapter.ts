@@ -1,4 +1,3 @@
-import { demoSnapshot } from "./demo-snapshot";
 import { parseDashboardSnapshot } from "./dashboard-snapshot-schema";
 import type { DashboardSnapshot, DashboardSnapshotAdapter } from "../types/dashboard";
 
@@ -24,7 +23,7 @@ interface HttpDashboardSnapshotAdapterOptions {
 }
 
 export function createHttpDashboardSnapshotAdapter({
-  initialSnapshot = demoSnapshot,
+  initialSnapshot,
   fetchSnapshot = fetch,
   timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 }: HttpDashboardSnapshotAdapterOptions): DashboardSnapshotAdapter {

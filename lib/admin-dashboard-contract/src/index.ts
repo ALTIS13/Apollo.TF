@@ -79,6 +79,89 @@ const providerSchema = z
   })
   .strict();
 
+const parserSchema = z
+  .object({
+    id: z.enum(["youtube", "soundcloud", "bandcamp", "deezer"]),
+    name: labelSchema,
+    status: healthStatusSchema,
+    version: z.string().trim().min(1).max(128),
+    requestsPerMinute: nonNegativeIntegerSchema.max(1_000_000),
+    failuresPerMinute: nonNegativeIntegerSchema.max(1_000_000),
+    previewsRejectedPerMinute: nonNegativeIntegerSchema.max(1_000_000),
+    lastCheckedAt: timestampSchema.optional(),
+  })
+  .strict();
+
+const accountConnectionSchema = z
+  .object({
+    state: z.enum(["connected", "disconnected", "unavailable"]),
+    displayName: labelSchema.optional(),
+    updatedAt: timestampSchema.optional(),
+  })
+  .strict()
+  .superRefine((connection, context) => {
+    const connected = connection.state === "connected";
+    if (
+      connected &&
+      (connection.displayName === undefined ||
+        connection.updatedAt === undefined)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Connected account providers require display metadata",
+      });
+    }
+    if (
+      !connected &&
+      (connection.displayName !== undefined ||
+        connection.updatedAt !== undefined)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Disconnected account providers cannot expose metadata",
+      });
+    }
+  });
+
+const accountConnectionSummarySchema = z.discriminatedUnion("availability", [
+  z
+    .object({
+      availability: z.literal("available"),
+      spotifyConnectedInList: nonNegativeIntegerSchema.max(100),
+      yandexConnectedInList: nonNegativeIntegerSchema.max(100),
+    })
+    .strict(),
+  z.object({ availability: z.literal("unavailable") }).strict(),
+]);
+
+const accountSummarySchema = z.discriminatedUnion("availability", [
+  z
+    .object({
+      availability: z.literal("available"),
+      total: nonNegativeIntegerSchema.max(1_000_000_000),
+      activeNow: nonNegativeIntegerSchema.max(1_000_000_000),
+      pending: nonNegativeIntegerSchema.max(1_000_000_000),
+      suspended: nonNegativeIntegerSchema.max(1_000_000_000),
+      connectionSummary: accountConnectionSummarySchema,
+    })
+    .strict(),
+  z.object({ availability: z.literal("unavailable") }).strict(),
+]);
+
+const accountSchema = z
+  .object({
+    id: z.string().uuid(),
+    email: z.string().trim().email().max(320),
+    displayName: labelSchema,
+    status: z.enum(["pending", "active", "suspended", "deleted"]),
+    latestActivityAt: timestampSchema.optional(),
+    activeSessionCount: nonNegativeIntegerSchema.max(1_000_000),
+    moduleKeys: z.array(idSchema).max(64),
+    spotify: accountConnectionSchema,
+    yandex: accountConnectionSchema,
+  })
+  .strict();
+
 export const dashboardSnapshotSchema = z
   .object({
     generatedAt: timestampSchema,
@@ -87,12 +170,22 @@ export const dashboardSnapshotSchema = z
     edges: z.array(edgeSchema).max(512),
     incidents: z.array(incidentSchema).max(512),
     providers: z.array(providerSchema).max(128),
+    parsers: z.array(parserSchema).max(4),
+    accountSummary: accountSummarySchema,
+    accounts: z.array(accountSchema).max(100),
   })
   .strict()
   .superRefine((snapshot, context) => {
     const uniqueIds = (
       items: ReadonlyArray<{ id: string }>,
-      collection: "metrics" | "modules" | "edges" | "incidents" | "providers",
+      collection:
+        | "metrics"
+        | "modules"
+        | "edges"
+        | "incidents"
+        | "providers"
+        | "parsers"
+        | "accounts",
     ) => {
       const ids = new Set<string>();
       items.forEach((item, index) => {
@@ -116,6 +209,19 @@ export const dashboardSnapshotSchema = z
       snapshot.incidents.map((incident) => [incident.id, incident]),
     );
     uniqueIds(snapshot.providers, "providers");
+    uniqueIds(snapshot.parsers, "parsers");
+    uniqueIds(snapshot.accounts, "accounts");
+
+    if (
+      snapshot.accountSummary.availability === "unavailable" &&
+      snapshot.accounts.length > 0
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Unavailable account summaries cannot include account rows",
+        path: ["accounts"],
+      });
+    }
 
     const directedEdgeRelations = new Set<string>();
     snapshot.edges.forEach((edge, index) => {
@@ -200,6 +306,10 @@ export type ServiceEdge = z.infer<typeof edgeSchema>;
 export type IncidentDiagnostic = z.infer<typeof incidentDiagnosticSchema>;
 export type Incident = z.infer<typeof incidentSchema>;
 export type ProviderHealth = z.infer<typeof providerSchema>;
+export type ParserHealth = z.infer<typeof parserSchema>;
+export type AccountConnection = z.infer<typeof accountConnectionSchema>;
+export type AccountSummary = z.infer<typeof accountSummarySchema>;
+export type DashboardAccount = z.infer<typeof accountSchema>;
 export type DashboardSnapshot = z.infer<typeof dashboardSnapshotSchema>;
 export type IncidentSeverity = Incident["severity"];
 export type IncidentStatus = Incident["status"];
@@ -214,4 +324,66 @@ export function parseDashboardSnapshot(value: unknown): DashboardSnapshot {
     throw new Error(`Invalid admin dashboard snapshot: ${details}`);
   }
   return result.data;
+}
+
+export const lyricsFeedbackListSchema = z.object({
+  schemaVersion: z.literal(1),
+  reports: z.array(z.object({
+    id: z.number().int().positive(),
+    accountId: z.string().uuid(),
+    trackId: z.string().trim().min(1).max(4096),
+    artist: z.string().trim().min(1).max(200),
+    title: z.string().trim().min(1).max(300),
+    lyricsSource: z.enum(["lrclib", "lyrics.ovh", "none"]),
+    reason: z.enum(["wrong_track", "out_of_sync", "incomplete", "missing"]),
+    createdAt: timestampSchema,
+  }).strict()).max(25),
+}).strict();
+
+export type LyricsFeedbackList = z.infer<typeof lyricsFeedbackListSchema>;
+
+export function parseLyricsFeedbackList(value: unknown): LyricsFeedbackList {
+  return lyricsFeedbackListSchema.parse(value);
+}
+
+export const lyricsFeedbackStatusSchema = z.enum(["open", "reviewing", "resolved", "dismissed"]);
+
+export const lyricsFeedbackTriageReportSchema = lyricsFeedbackListSchema.shape.reports.element.extend({
+  status: lyricsFeedbackStatusSchema,
+  revision: z.number().int().positive(),
+  updatedAt: timestampSchema,
+  resolutionNote: z.string().trim().min(3).max(500).nullable(),
+});
+
+export const lyricsFeedbackTriageListSchema = z.object({
+  schemaVersion: z.literal(1),
+  reports: z.array(lyricsFeedbackTriageReportSchema).max(25),
+  nextCursor: z.number().int().positive().nullable(),
+}).strict();
+
+export const lyricsFeedbackTriageUpdateSchema = z.object({
+  status: lyricsFeedbackStatusSchema,
+  expectedRevision: z.number().int().positive(),
+  note: z.string().trim().min(3).max(500).optional(),
+}).strict().superRefine(({ status, note }, context) => {
+  if ((status === "resolved" || status === "dismissed") && note === undefined) {
+    context.addIssue({ code: "custom", path: ["note"], message: "Resolution requires a note" });
+  }
+  if ((status === "open" || status === "reviewing") && note !== undefined) {
+    context.addIssue({ code: "custom", path: ["note"], message: "Only terminal states accept a note" });
+  }
+});
+
+export const lyricsFeedbackTriageUpdateResultSchema = z.object({
+  schemaVersion: z.literal(1),
+  report: lyricsFeedbackTriageReportSchema,
+}).strict();
+
+export type LyricsFeedbackStatus = z.infer<typeof lyricsFeedbackStatusSchema>;
+export type LyricsFeedbackTriageList = z.infer<typeof lyricsFeedbackTriageListSchema>;
+export type LyricsFeedbackTriageReport = z.infer<typeof lyricsFeedbackTriageReportSchema>;
+export type LyricsFeedbackTriageUpdate = z.infer<typeof lyricsFeedbackTriageUpdateSchema>;
+
+export function parseLyricsFeedbackTriageList(value: unknown): LyricsFeedbackTriageList {
+  return lyricsFeedbackTriageListSchema.parse(value);
 }

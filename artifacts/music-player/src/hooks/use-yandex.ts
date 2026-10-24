@@ -28,10 +28,11 @@ export interface YandexStatus {
   userId?: string;
 }
 
-export function useYandexStatus() {
+export function useYandexStatus(enabled = true) {
   return useQuery<YandexStatus>({
     queryKey: ["yandex", "status"],
     queryFn: () => tfFetch("/yandex/status"),
+    enabled,
     retry: false,
   });
 }

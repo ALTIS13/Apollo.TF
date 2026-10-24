@@ -1,7 +1,15 @@
 # Apollo Identity, Registration, and Policy Design
 
 **Date:** 2026-07-15
-**Status:** Approved
+**Status:** Partially superseded on 2026-08-24
+
+> **2026-08-24 ownership update:** Supabase Auth is now the authority for
+> identity and source sessions; Platform remains authority for account policy,
+> installation identity, module entitlements/capabilities, release/download
+> admission, and audit. The additive migration and compatibility boundary is
+> defined in `2026-08-24-apollo-tf-unified-platform-handoff-design.md`. This
+> document must not be used to expand the current credential/session code into
+> a parallel identity system.
 
 ## Goal
 

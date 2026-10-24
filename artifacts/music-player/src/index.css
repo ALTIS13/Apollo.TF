@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 @import "tw-animate-css";
 @plugin "@tailwindcss/typography";
@@ -40,8 +39,8 @@
   --color-destructive-foreground: hsl(var(--destructive-foreground));
   --color-destructive-border: var(--destructive-border);
 
-  --font-sans: 'Plus Jakarta Sans', sans-serif;
-  --font-display: 'Outfit', sans-serif;
+  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-display: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -61,8 +60,8 @@
   --popover-foreground: 0 0% 98%;
   --popover-border: 240 10% 12%;
   
-  --primary: 228 85% 63%;
-  --primary-foreground: 0 0% 100%;
+  --primary: 175 52% 71%;
+  --primary-foreground: 187 50% 6%;
   
   --secondary: 240 10% 12%;
   --secondary-foreground: 0 0% 98%;
@@ -70,15 +69,15 @@
   --muted: 240 10% 12%;
   --muted-foreground: 240 5% 65%;
   
-  --accent: 280 85% 65%;
-  --accent-foreground: 0 0% 100%;
+  --accent: 255 92% 76%;
+  --accent-foreground: 260 35% 12%;
   
   --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 98%;
   
   --border: 240 10% 15%;
   --input: 240 10% 12%;
-  --ring: 228 85% 63%;
+  --ring: 175 52% 71%;
   
   --radius: 0.75rem;
 }
@@ -96,8 +95,62 @@
 
   h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-display);
-    @apply font-bold tracking-tight;
+    @apply font-semibold;
+    letter-spacing: 0;
   }
+}
+
+.tf-app-shell {
+  height: 100vh;
+  height: 100dvh;
+}
+
+.tf-skip-link {
+  position: fixed;
+  left: 16px;
+  top: 12px;
+  z-index: 100;
+  padding: 10px 16px;
+  border-radius: 6px;
+  color: #071315;
+  background: #8ddbd4;
+  transform: translateY(-200%);
+}
+
+.tf-skip-link:focus {
+  transform: translateY(0);
+}
+
+.tf-mobile-nav {
+  flex-shrink: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid #ffffff14;
+  background: #0e0e12;
+  padding: 4px 4px max(4px, env(safe-area-inset-bottom));
+}
+
+.tf-mobile-link {
+  display: flex;
+  min-width: 0;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 3px;
+  border-radius: 6px;
+  color: #aaa9ba;
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 500;
+  transition: color 150ms ease, background-color 150ms ease;
+}
+
+.tf-mobile-link.is-active { color: #8ddbd4; }
+.tf-mobile-link:hover { background: #ffffff08; color: #f5f3ff; }
+.tf-mobile-link:focus-visible { outline: 2px solid #8ddbd4; outline-offset: -2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tf-mobile-link { transition: none; }
 }
 
 @layer utilities {
@@ -108,4 +161,51 @@
   .glass-card {
     @apply bg-card/60 backdrop-blur-md border border-white/5 shadow-xl transition-all duration-300;
   }
+}
+
+.player-seek {
+  appearance: none;
+  background: transparent;
+  touch-action: pan-y;
+}
+
+.player-seek::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, #8ddbd4 var(--seek-progress), #ffffff30 var(--seek-progress));
+}
+
+.player-seek::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border: 2px solid #0a1114;
+  border-radius: 50%;
+  background: #d8f4f0;
+}
+
+.player-seek::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: #ffffff30;
+}
+
+.player-seek::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: #8ddbd4;
+}
+
+.player-seek::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #0a1114;
+  border-radius: 50%;
+  background: #d8f4f0;
+}
+
+.player-seek:focus-visible {
+  outline: 2px solid #8ddbd4;
+  outline-offset: 2px;
 }

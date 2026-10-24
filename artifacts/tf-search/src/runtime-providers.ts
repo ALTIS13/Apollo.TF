@@ -3,10 +3,11 @@ import type {
   TfSearchSource,
 } from "@workspace/tf-search-contract";
 import { searchBandcamp } from "./adapters/bandcamp.js";
-import { searchDeezer } from "./adapters/deezer.js";
+import { searchDeezer, searchDeezerCatalog } from "./adapters/deezer.js";
 import { searchSoundCloud } from "./adapters/soundcloud.js";
 import { searchYouTube } from "./adapters/youtube.js";
-import type { SearchProvider } from "./search-service.js";
+import type { CatalogDurationLookup, SearchProvider, SourceMetadataLookup } from "./search-service.js";
+import { inspectSourceMetadata } from "./source-metadata.js";
 
 const resultSources: Readonly<Record<TfSearchSource, TfSearchResultSource>> = {
   yt: "youtube",
@@ -48,4 +49,12 @@ export function createRuntimeProviders(
     { source: "bc", search: searchBandcamp },
     { source: "dz", search: searchDeezer },
   ];
+}
+
+export function createRuntimeCatalogLookup(fixtureAdapters: boolean): CatalogDurationLookup {
+  return fixtureAdapters ? async () => [] : searchDeezerCatalog;
+}
+
+export function createRuntimeSourceMetadataLookup(fixtureAdapters: boolean): SourceMetadataLookup {
+  return fixtureAdapters ? async () => undefined : inspectSourceMetadata;
 }

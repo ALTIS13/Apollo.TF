@@ -341,25 +341,20 @@ export function createSpotifyRouter(
           input: { offset, limit: MAX_PAGE_SIZE },
         });
         if (isFailure(result)) {
-          if (
-            result.error.code === "not_connected" &&
-            allTracks.length === 0
-          ) {
-            response.status(401).json({ error: "not_connected" });
-            return;
-          }
-          break;
+          sendLibraryFailure(response, result);
+          return;
         }
         total = result.result.total;
         allTracks.push(...result.result.tracks.map(mapTrack));
+        // Null tracks are filtered out; advance by the raw page size, not retained tracks.
         offset += MAX_PAGE_SIZE;
-        if (result.result.tracks.length < MAX_PAGE_SIZE) break;
       } catch (error) {
         if (error instanceof TfIntegrationsUnavailableError) {
           response.status(503).json({ error: "spotify_unavailable" });
           return;
         }
-        break;
+        response.status(502).json({ error: "spotify_error" });
+        return;
       }
     }
     response.json({ tracks: allTracks, total: allTracks.length });

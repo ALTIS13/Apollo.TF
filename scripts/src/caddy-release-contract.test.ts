@@ -15,6 +15,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+import { runFixtureBash } from "./test-support/noninteractive-bash.js";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const caddyfilePath = resolve(repositoryRoot, "deploy/caddy/apollo.caddyfile");
@@ -51,6 +52,45 @@ function shellPath(path: string): string {
 }
 
 describe("Apollo Caddy release include", () => {
+  it("isolates inherited shell startup files while preserving command stderr", () => {
+    const root = mkdtempSync(join(tmpdir(), "apollo-shell-startup-"));
+    const startup = join(root, ".bashrc");
+    const marker = join(root, "startup-ran");
+    try {
+      writeFileSync(
+        startup,
+        ': > "$APOLLO_STARTUP_MARKER"\nprintf "startup-canary\\n" >&2\n: "$PS1"\n',
+      );
+      const environment = {
+        ...process.env,
+        BASH_ENV: shellPath(startup),
+        ENV: shellPath(startup),
+        HOME: shellPath(root),
+        SSH_CLIENT: "127.0.0.1 12345 22",
+        SHLVL: "0",
+        APOLLO_STARTUP_MARKER: shellPath(marker),
+      };
+      delete (environment as NodeJS.ProcessEnv).PS1;
+      const result = runFixtureBash(
+        ["-ceu", "printf 'command-output\\n'; printf 'command-error\\n' >&2"],
+        { env: environment },
+      );
+      expect(result.error).toBeUndefined();
+      expect({
+        status: result.status,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      }).toEqual({
+        status: 0,
+        stdout: "command-output\n",
+        stderr: "command-error\n",
+      });
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("routes only the four approved hosts to their fixed loopback publications", () => {
     const source = caddyfile();
     const routes = [
@@ -177,10 +217,6 @@ describe("Apollo Caddy release include", () => {
     const username = "release-contract-user";
     const password = "synthetic-contract-password-value";
     const bcrypt = `$2a$12$${"A".repeat(53)}`;
-    const executable =
-      process.platform === "win32"
-        ? "C:\\Program Files\\Git\\bin\\bash.exe"
-        : "bash";
     try {
       for (const directory of [sourceDirectory, generationParent, bin]) {
         mkdirSync(directory);
@@ -231,8 +267,7 @@ printf 'chown %s\n' "$*" >> "$APOLLO_COMMAND_LOG"
       chmodSync(join(bin, "stat"), 0o700);
       chmodSync(join(bin, "chown"), 0o700);
 
-      const run = spawnSync(
-        executable,
+      const run = runFixtureBash(
         [
           "-ceu",
           'PATH="$APOLLO_TEST_BIN:$PATH"; export PATH; exec "$1"',
@@ -283,8 +318,7 @@ printf 'chown %s\n' "$*" >> "$APOLLO_COMMAND_LOG"
       expect(caddyEnvironment).not.toContain(password);
 
       const verify = (htpasswdFile: string, environmentFile: string) =>
-        spawnSync(
-          executable,
+        runFixtureBash(
           [
             shellPath(credentialVerifierPath),
             shellPath(htpasswdFile),
@@ -493,16 +527,11 @@ printf '%s:%s\\n' "$1" "$credential_state"
           { mode: 0o600 },
         );
       }
-      const executable =
-        process.platform === "win32"
-          ? "C:\\Program Files\\Git\\bin\\bash.exe"
-          : "bash";
       try {
         expect(readFileSync(rolloutPath, "utf8")).toContain(
           rollbackEnvironmentCommand,
         );
-        const restore = spawnSync(
-          executable,
+        const restore = runFixtureBash(
           [
             "-ceu",
             rollbackEnvironmentCommand,
@@ -528,8 +557,7 @@ printf '%s:%s\\n' "$1" "$credential_state"
         });
         expect(existsSync(environmentPath)).toBe(priorEnvironment);
         for (const operation of ["validate", "reload"] as const) {
-          const run = spawnSync(
-            executable,
+          const run = runFixtureBash(
             [
               shellPath(contractCommandPath),
               operation,

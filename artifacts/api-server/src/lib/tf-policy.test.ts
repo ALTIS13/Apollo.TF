@@ -162,14 +162,26 @@ afterEach(async () => {
 });
 
 describe("TF route policy map", () => {
-  it("contains the exact 31 anchored capability policies", () => {
-    expect(TF_ROUTE_POLICIES).toHaveLength(31);
+  it.each([
+    ["PUT", "/api/tracks/recommendations/hidden/yt_track"],
+    ["DELETE", "/api/tracks/recommendations/hidden/yt_track"],
+    ["DELETE", "/api/tracks/recommendations/hidden"],
+  ])("gates recommendation preferences %s %s with live collections policy", (method, path) => {
+    expect(requiredPolicyForRequest(method, path)).toMatchObject({
+      capability: "tf.collections", live: true,
+    });
+    expect(requiredPolicyForRequest("POST", path)).toBeNull();
+    expect(requiredPolicyForRequest(method, `${path}/extra/path`)).toBeNull();
+  });
+
+  it("contains the exact 49 anchored capability policies", () => {
+    expect(TF_ROUTE_POLICIES).toHaveLength(49);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === false),
-    ).toHaveLength(6);
+    ).toHaveLength(8);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === true),
-    ).toHaveLength(25);
+    ).toHaveLength(41);
 
     expect(
       requiredPolicyForRequest("POST", "/api/tracks/search?ignored=1"),
@@ -198,6 +210,26 @@ describe("TF route policy map", () => {
   ])("requires live tf.downloads for %s %s", (method, path) => {
     expect(requiredPolicyForRequest(method, path)).toMatchObject({
       capability: "tf.downloads",
+      live: true,
+    });
+  });
+
+  it.each([
+    ["GET", "/api/collections/liked"],
+    ["POST", "/api/collections/liked/lookup"],
+    ["PATCH", "/api/collections/liked/order"],
+    ["PUT", "/api/collections/liked/yt_track-id"],
+    ["DELETE", "/api/collections/liked/yt_track-id"],
+    ["GET", "/api/collections/playlists"],
+    ["POST", "/api/collections/playlists"],
+    ["GET", "/api/collections/playlists/7"],
+    ["POST", "/api/collections/playlists/7/tracks"],
+    ["PATCH", "/api/collections/playlists/7/tracks/order"],
+    ["DELETE", "/api/collections/playlists/7/tracks/yt_track-id"],
+    ["DELETE", "/api/collections/playlists/7"],
+  ])("requires live tf.collections for %s %s", (method, path) => {
+    expect(requiredPolicyForRequest(method, path)).toMatchObject({
+      capability: "tf.collections",
       live: true,
     });
   });

@@ -1,12 +1,13 @@
 # Apollo Production Rollout
 
-Status: `LOCAL_RELEASE_VALIDATED`
+Status: `OPERATOR_PUBLISHER_LOCAL_VALIDATED`
 
 This is an owner-reviewable rollout plan, not a deployment record. The final
-fix wave validated the exact package locally from source commit
-`d0f74122d9e415d7cb9571be678188657f1ce7eb`. HomeNode, Coolify, the host
-Caddy configuration, UFW, DNS, GitHub settings, GHCR, remote databases, and
-remote volumes were not contacted or mutated.
+publisher proof validated the exact future publication source commit
+`9e04ca66a70e4a1563c6a75294d64b8d540959fb` locally. No production image has
+been pushed. HomeNode, Coolify, the host Caddy configuration, UFW, DNS,
+GitHub settings, GHCR, remote databases, and remote volumes were not contacted
+or mutated.
 
 ## Release Boundary
 
@@ -105,16 +106,240 @@ loopback registry, and resolved these registry digests:
 | `TF_WEB_IMAGE`                           | `tf-web`                   | `sha256:b279663a21e27158b0077e42b2cbacd2453282f5632f4c5c430b48b01d54a327` |
 
 The disposable registry and all references were removed. These digests are
-local evidence, not deployable GHCR references. An approved release workflow
-must build the same source commit and produce `apollo-release-manifest.json`
-with `formatVersion`, `sourceCommit`, and every exact logical name,
-repository, digest, and full immutable reference. Set
-`RELEASE_SOURCE_COMMIT` in the release env to that same commit, then validate
-the downloaded artifact and env together:
+local evidence, not deployable GHCR references. The operator-run publisher is
+the only active publication procedure. Its preparation command validates the
+exact archived source before authentication and persists a private receipt
+binding the release identity, source archive, validated source tree, and image
+catalog. Publication accepts only that receipt, revalidates the binding before
+registry access, and writes `apollo-release-manifest.json`,
+`release-images.env`, and its completion marker under the ignored private
+release directory.
 
-```sh
-pnpm release:validate -- --env-file '<RELEASE_ENV>' --mode production --release-manifest '<APOLLO_RELEASE_MANIFEST>'
+The following is a future owner-operated procedure, not a command executed by
+this local proof. It requires a separate explicit owner approval for that
+specific publication action. Before running it, the owner must create a
+classic PAT with `write:packages`, but must not place it in the environment
+before preparation completes. It is never persisted in project files and must
+be revoked or rotated independently. The publisher accepts no credentials or
+registry options. Complete preparation before requesting the credential, then
+keep authentication and publication inside the cleanup boundary:
+
+The publisher's child allowlist intentionally preserves only the operating
+system paths required for Git, Docker, temporary storage, and Docker's existing
+credential store. Credential values and unrelated ambient variables are not
+forwarded. Publication regenerates the archive from the approved commit and
+uses that fresh archive as the only build input.
+
+```powershell
+$approvedSourceCommit = '9e04ca66a70e4a1563c6a75294d64b8d540959fb'
+$releaseId = 'v0.1.0-rc.1'
+$preparation = pnpm --silent release:prepare --mode production --release-id $releaseId --source-commit $approvedSourceCommit | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'Release preparation failed' }
+
+$pat = $null
+$patPointer = [IntPtr]::Zero
+$plainPat = $null
+try {
+  $pat = Read-Host 'GHCR classic PAT' -AsSecureString
+  $patPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($pat)
+  $plainPat = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($patPointer)
+  $plainPat | docker login ghcr.io -u ALTIS13 --password-stdin
+  if ($LASTEXITCODE -ne 0) { throw 'GHCR login failed' }
+
+  pnpm --silent release:publish --mode production --release-id $releaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath
+  if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
+}
+finally {
+  $plainPat = $null
+  if ($patPointer -ne [IntPtr]::Zero) {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($patPointer)
+  }
+  if ($null -ne $pat) { $pat.Dispose() }
+}
+
+pnpm --silent release:validate --env-file '<PRIVATE_RELEASE_ENV>' --mode production --release-manifest '.ops-private/releases/v0.1.0-rc.1/apollo-release-manifest.json'
+if ($LASTEXITCODE -ne 0) { throw 'Release validation failed' }
 ```
+
+### TF-only publication profile
+
+The separate TF-only profile is for publishing the nine TF-owned custom images
+plus the catalog-pinned Redis image without rebuilding or publishing the two
+vendored Platform images. It keeps the complete publisher above unchanged and
+uses disjoint ignored paths:
+
+- claims: `.ops-private/tf-only-release-claims/<releaseId>/`
+- final evidence: `.ops-private/tf-only-releases/<releaseId>/`
+- manifest: `apollo-tf-release-manifest.json`
+- environment: `tf-release-images.env`
+- completion marker: `apollo-tf-release-complete.json`
+
+The owner chooses a fresh release ID and binds `$approvedSourceCommit` to the
+accepted commit that contains the TF-only publisher implementation and the
+image sources being built. Do not reuse the implementation base commit merely
+because it was used to design this profile. Offline preparation remains before
+credential introduction:
+
+Pass flags directly after the script name. With pinned pnpm 10.33.2 a standalone
+`--` is forwarded to the operator and rejected as `invalid_arguments`; it is not
+a separator to add to these commands.
+
+Preparation failures keep the existing top-level `error` code and exit 1.
+An observed source-validation failure also includes a fixed `validationStage`
+in its stderr JSON, for example:
+`{"error":"source_validation_failed","validationStage":"platform_api_tests"}`.
+Both preparation profiles use the same mandatory gates, including vendored
+Platform checks. The stage identifies the failed gate, not its cause; child
+output and private values are never included. Unknown or unstaged failures omit
+the field. Consumers must tolerate this optional field; successful receipt and
+output schemas are unchanged. No failed preparation grants publication authority.
+Keep any consumed release ID closed and investigate before authorizing a new one;
+do not blindly retry preparation. See the
+[diagnostics contract](2026-09-21-tf-validation-diagnostics.md).
+
+```powershell
+$approvedSourceCommit = '<ACCEPTED_TF_SOURCE_COMMIT>'
+$releaseId = '<NEW_UNIQUE_RELEASE_ID>'
+$preparation = pnpm --silent release:prepare:tf-only --mode production --release-id $releaseId --source-commit $approvedSourceCommit | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'TF-only release preparation failed' }
+
+# Only after preparation: authenticate Docker's external credential store with
+# an authorized principal that can read and write all nine private TF packages.
+pnpm --silent release:publish:tf-only --mode production --release-id $releaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath
+if ($LASTEXITCODE -ne 0) { throw 'TF-only release publication failed' }
+```
+
+The operation accepts no image subset and no successor-WebSocket override; the
+TF Web build and emitted environment both fix that selection to `false`.
+`verifyTfOnlyOperatorReleaseEvidence` is the strict consumer for this artifact.
+The complete `release:validate` command intentionally rejects TF-only evidence,
+which is not a complete Platform/TF Coolify release environment.
+
+For the selected isolated TF canary, pass the exact `--tf-web-api-origin`
+(`https://api.tf.canary.apollot.ru`) to **both** TF-only preparation and
+publication. The non-production HTTPS origin is bound in the preparation
+claim and receipt, used as the immutable `tf-web` `VITE_API_URL` build argument and
+recorded in the TF-only manifest and environment fragment. Omission or a
+different value at publication fails before Docker starts. A release ID with a
+`canary` segment requires the flag on both phases. The default
+production origin remains `https://api.tf.apollot.ru`; it must never be used
+for a web canary. The separate full Platform/TF publisher does not accept this
+override. The override is rejected unless the release ID contains a `canary`
+segment; choose a fresh canary-labeled prerelease ID and inspect the
+verified manifest before allowing Coolify to pull its digests.
+
+```powershell
+$canaryApiOrigin = 'https://api.tf.canary.apollot.ru'
+$canaryReleaseId = '<NEW_UNIQUE_CANARY_RELEASE_ID>'
+$preparation = pnpm --silent release:prepare:tf-only --mode production --release-id $canaryReleaseId --source-commit $approvedSourceCommit --tf-web-api-origin $canaryApiOrigin | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'TF canary preparation failed' }
+pnpm --silent release:publish:tf-only --mode production --release-id $canaryReleaseId --source-commit $approvedSourceCommit --receipt $preparation.receiptPath --tf-web-api-origin $canaryApiOrigin
+if ($LASTEXITCODE -ne 0) { throw 'TF canary publication failed' }
+```
+
+This is image-binding support, not authorization to publish or deploy. The
+canary still needs a separate healthy Platform/Auth issuer and OAuth client,
+private file-backed credentials, isolated Compose names and ports, DNS/TLS and
+prestate/backup/rollback checks. Do not give the example `.invalid` origins
+or zero digests to Coolify.
+
+Before passing the TF canary definition to Coolify, combine the verified
+TF-only image environment fragment with the reviewed canary bindings in one
+ignored private env file. Validate that exact input and manifest locally:
+
+```powershell
+pnpm --silent release:validate:tf-canary --env-file '<PRIVATE_COMBINED_CANARY_ENV>' --release-manifest '<TF_ONLY_RELEASE_MANIFEST>'
+if ($LASTEXITCODE -ne 0) { throw 'TF canary Compose binding failed' }
+```
+
+This read-only check renders the base TF Compose plus its canary override with
+Docker Compose, then compares the verified manifest's ten immutable image
+references and web API origin with the rendered services, callback/issuer
+origins, loopback ports, isolated resource names, file-backed secret paths,
+and absence of host bind mounts.
+`APOLLO_PLATFORM_ISSUER` is the exact Platform API origin that issues TF-audience
+assertions; it is not the Supabase Auth issuer ending in `/auth/v1`. The
+isolated canary must provide both services and register the TF OAuth client.
+The secret and admin-credential directories must be absolute normalized host
+paths with an `apollo-tf-canary` path component. This is a string-level check:
+verify their resolved host paths and permissions before deployment so a
+symlink cannot point the canary at production credentials. The command does
+not start containers, inspect the pulled image, or prove Platform/Auth works.
+
+The local claim/receipt/manifest can be edited by their filesystem owner and
+are not a cryptographic attestation of the web
+image's bundled API URL. Before deployment, compare the approved origin with
+both phase inputs, inspect the pulled `tf-web` image by immutable digest for
+the bundled API origin and absence of the production TF/Platform API origins,
+then confirm real browser requests target only the canary API. Keep this as a
+separate release gate; a locally rehashed manifest alone is insufficient.
+
+After TF-only publication, run the image inspector with the independently
+approved origin (not a value copied from the manifest):
+
+```powershell
+pnpm --silent release:verify:tf-web --manifest '<TF_ONLY_RELEASE_MANIFEST>' --expected-api-origin $canaryApiOrigin
+if ($LASTEXITCODE -ne 0) { throw 'TF web image inspection failed' }
+```
+
+This pulls `tf-web` by the manifest's immutable digest, confirms the local
+image's `RepoDigests`, rejects an oversized image before copying, and creates
+a stopped inspection container. It requires the canary API origin in the
+single executable JS entry loaded by `index.html` and rejects embedded production TF/Platform API
+origins across the bundle. Cleanup reconciles its unique container label and
+name even after an incomplete create response; only that container and its
+temporary directory may be removed. Docker daemon access and authorized GHCR pull access are required;
+source tests do not replace this image check. Static inspection still does not
+replace post-deploy browser network proof.
+
+GHCR repository existence, private read/write access, package visibility, tag
+absence, post-push digest/revision inventory, and a Coolify pull remain runtime
+prerequisites. No registry access, publication, visibility change, or runtime
+acceptance is established by this source procedure. A partial push burns the
+release ID and produces no complete artifact; investigate it and prepare a new
+ID instead of retrying the consumed receipt.
+
+TF-only packages remain private. Provision a separately authorized, read-only
+Coolify pull principal for those packages; the legacy public/anonymous-pull
+procedure below does not apply to the TF-only profile.
+
+### Legacy complete-release visibility and proof (not TF-only)
+
+Set `RELEASE_SOURCE_COMMIT` in the completed private release env to the same
+commit and validate it with the generated manifest. After the first package is
+published, the owner must explicitly change its visibility to public before an
+anonymous Coolify pull proof. Only public GHCR images allow anonymous HomeNode/Coolify pulls.
+Record package visibility checked after first publication before that proof.
+That visibility action and every later HomeNode rollout action remain separate
+approval gates; no production publish, tag, release, package setting, or
+Coolify pull proof is implied by this record.
+
+The focused fake-command publisher proof passed `79/79`. The combined
+successful prepare/publication path records `55` commands: `15`
+source-preparation commands, then exact archive extraction, `11` pre-push tag
+inspections, exact-name builder preflight, one owned builder create, `11`
+Linux/amd64 builds with owned
+metadata files, `11` immutable-tag digest inspections, and exact owned-builder
+inspect/removal/absence confirmation. It covers `11` custom targets plus
+catalog-pinned Redis.
+Preparation durably binds release/source identity, archive and tree hashes,
+protocol version, and image catalog; publication consumes that receipt once
+without running archived lifecycle or test commands. Every custom image uses
+its Buildx metadata digest, and manifest, environment, and marker become
+consumable only through one validated staging-directory rename. No credential
+value is present in commands, artifacts, or child environments.
+
+The complete nine-command non-publishing matrix passed consecutively (counts
+are passed/skipped): scripts `268/4` in `256.92s`; Platform API `422/21` tests
+and `18/6` files in `24.98s`; API `603/8` tests and `32/2` files in `50.44s`;
+admin `218/0` in `19.10s`; music player `118/0` in `11.84s`; search `142/1`
+in `6.91s`; TF integrations `107/10` across `14` files in `7.39s`; download
+worker `186/2` tests and `9/1` files in `8.42s`; and root typecheck in `21.1s`.
+Generated ignored Platform/integrations `dist` roots were moved intact into
+ignored `.ops-private` quarantine after typecheck; they were not deleted or
+tracked. This local evidence does not authorize publication or rollout.
+The post-review final-tree supplement passed scripts `276/4` in `276.58s`, API
+release contract `21/21`, and root typecheck.
 
 Production mode requires the artifact and exact approved repositories. The
 separate `loopback-local-smoke` mode accepts only loopback repositories and no
@@ -337,4 +562,4 @@ at `1 passed / 71 skipped` in `19.08s` and `18.54s`, full scripts
 player `118 passed` in `6.28s`, and root typecheck in `18.4s`. The scripts gate
 included both the hostile rendered-environment matrix and the binary-safe
 newline-free credential verifier with silent embedded-NUL rejection. No
-release workflow was dispatched.
+operator publication was run.

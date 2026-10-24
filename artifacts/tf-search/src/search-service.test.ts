@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   TfSearchArtistDiscoveryCommand,
   TfSearchCommand,
+  TfSearchFreeCommand,
   TfSearchResult,
   TfSearchSource,
 } from "@workspace/tf-search-contract";
@@ -14,6 +15,7 @@ import {
 } from "./search-service.js";
 
 const requestId = "10000000-0000-4000-8000-000000000001";
+const accountId = "11111111-1111-4111-8111-111111111111";
 const allSources = ["yt", "sc", "bc", "dz"] as const;
 
 function command(overrides: Partial<TfSearchCommand> = {}): TfSearchCommand {
@@ -75,6 +77,65 @@ function providers(
 }
 
 describe("search service", () => {
+  it("searches arbitrary text once per selected provider and scopes cached results", async () => {
+    const calls: Array<{ source: TfSearchSource; query: string; limit: number }> = [];
+    const service = createSearchService({ providers: providers(calls) });
+    const freeCommand: TfSearchFreeCommand = {
+      schemaVersion: 1,
+      requestId,
+      accountId: "11111111-1111-4111-8111-111111111111",
+      query: "Artist Track",
+      mode: "auto",
+      sources: [...allSources],
+      maxResults: 6,
+    };
+
+    const first = await service.freeSearch(freeCommand);
+    const second = await service.freeSearch({ ...freeCommand, requestId: "10000000-0000-4000-8000-000000000002" });
+    const otherAccount = await service.freeSearch({
+      ...freeCommand,
+      requestId: "10000000-0000-4000-8000-000000000003",
+      accountId: "22222222-2222-4222-8222-222222222222",
+    });
+
+    expect(first.query).toBe("Artist Track");
+    expect(first.results[0]?.artist).toBe("Artist");
+    expect(first.cached).toBe(false);
+    expect(second.cached).toBe(true);
+    expect(otherAccount.cached).toBe(false);
+    expect(calls).toEqual([
+      { source: "yt", query: "Artist Track", limit: 6 },
+      { source: "sc", query: "Artist Track", limit: 6 },
+      { source: "bc", query: "Artist Track", limit: 3 },
+      { source: "dz", query: "Artist Track", limit: 3 },
+      { source: "yt", query: "Artist Track", limit: 6 },
+      { source: "sc", query: "Artist Track", limit: 6 },
+      { source: "bc", query: "Artist Track", limit: 3 },
+      { source: "dz", query: "Artist Track", limit: 3 },
+    ]);
+  });
+
+  it("does not reveal another account's queries and observes a cached search for its owner", async () => {
+    const accountA = "11111111-1111-4111-8111-111111111111";
+    const accountB = "22222222-2222-4222-8222-222222222222";
+    const service = createSearchService({ providers: providers() });
+
+    await service.search(command({ accountId: accountA, artist: "Private Artist", title: "Rare Track" }));
+    const beforeOwnSearch = await service.suggestions({
+      schemaVersion: 1, requestId, accountId: accountB, query: "rare", limit: 5,
+    });
+    expect(beforeOwnSearch.suggestions).toEqual([]);
+
+    const firstOwnSearch = await service.search(command({ accountId: accountB, artist: "Private Artist", title: "Rare Track" }));
+    const cached = await service.search(command({ accountId: accountB, artist: "Private Artist", title: "Rare Track" }));
+    const afterOwnSearch = await service.suggestions({
+      schemaVersion: 1, requestId, accountId: accountB, query: "rare", limit: 5,
+    });
+    expect(firstOwnSearch.cached).toBe(false);
+    expect(cached.cached).toBe(true);
+    expect(afterOwnSearch.suggestions).toEqual([{ artist: "private artist", title: "rare track" }]);
+  });
+
   it("discovers artists with the exact artist-only query and preserves provider order", async () => {
     const calls: Array<{ source: TfSearchSource; query: string; limit: number }> = [];
     const discoveryCommand: TfSearchArtistDiscoveryCommand = {
@@ -295,12 +356,14 @@ describe("search service", () => {
     const service = createSearchService({ providers: providers(calls) });
 
     await service.search(command({
+      accountId,
       artist: "  THE Artist  ",
       title: "  THE Track  ",
       mode: "manual",
       maxResults: 7,
     }));
     const cached = await service.search(command({
+      accountId,
       requestId: "10000000-0000-4000-8000-000000000002",
       artist: "the artist",
       title: "the track",
@@ -309,6 +372,7 @@ describe("search service", () => {
     }));
     const suggestions = await service.suggestions({
       schemaVersion: 1,
+      accountId,
       requestId: "10000000-0000-4000-8000-000000000003",
       query: "track",
       limit: 5,
@@ -325,6 +389,7 @@ describe("search service", () => {
     const service = createSearchService({ providers: providers() });
 
     await service.search(command({
+      accountId,
       artist: "Visible Artist",
       title: "Visible Track",
       mode: "manual",
@@ -333,12 +398,14 @@ describe("search service", () => {
 
     const modeMatches = await service.suggestions({
       schemaVersion: 1,
+      accountId,
       requestId: "10000000-0000-4000-8000-000000000002",
       query: "manual",
       limit: 5,
     });
     const limitMatches = await service.suggestions({
       schemaVersion: 1,
+      accountId,
       requestId: "10000000-0000-4000-8000-000000000003",
       query: "7",
       limit: 5,
@@ -352,12 +419,14 @@ describe("search service", () => {
     const service = createSearchService({ providers: providers() });
 
     await service.search(command({
+      accountId,
       artist: "Shared Artist",
       title: "Shared Track",
       mode: "manual",
       maxResults: 7,
     }));
     await service.search(command({
+      accountId,
       requestId: "10000000-0000-4000-8000-000000000002",
       artist: "Shared Artist",
       title: "Shared Track",
@@ -367,6 +436,7 @@ describe("search service", () => {
 
     const suggestions = await service.suggestions({
       schemaVersion: 1,
+      accountId,
       requestId: "10000000-0000-4000-8000-000000000003",
       query: "shared",
       limit: 5,
@@ -453,6 +523,71 @@ describe("search service", () => {
     now = 60_000;
     expect(service.telemetry()).toEqual({ requestsPerMinute: 0, status: "healthy" });
     expect(JSON.stringify(service)).not.toContain("Different");
+  });
+
+  it("rejects preview media before ranking and reports parser quality telemetry", async () => {
+    let now = Date.parse("2026-08-10T00:00:00.000Z");
+    const service = createSearchService({
+      now: () => now,
+      providers: [
+        provider("yt", [track("youtube", { id: "yt_full" })]),
+        provider("dz", [
+          track("deezer", {
+            id: "dz_preview",
+            sourceUrl:
+              "https://cdns-preview-a.dzcdn.net/stream/c-a-preview.mp3",
+          }),
+        ]),
+      ],
+    });
+
+    const response = await service.search(
+      command({ sources: ["yt", "dz"], maxResults: 21 }),
+    );
+
+    expect(response.results.map((result) => result.id)).toEqual(["yt_full"]);
+    expect(service.parserTelemetry()).toEqual([
+      {
+        source: "yt",
+        status: "healthy",
+        requestsPerMinute: 1,
+        failuresPerMinute: 0,
+        previewsRejectedPerMinute: 0,
+        lastCheckedAt: "2026-08-10T00:00:00.000Z",
+      },
+      {
+        source: "sc",
+        status: "unknown",
+        requestsPerMinute: 0,
+        failuresPerMinute: 0,
+        previewsRejectedPerMinute: 0,
+      },
+      {
+        source: "bc",
+        status: "unknown",
+        requestsPerMinute: 0,
+        failuresPerMinute: 0,
+        previewsRejectedPerMinute: 0,
+      },
+      {
+        source: "dz",
+        status: "warning",
+        requestsPerMinute: 1,
+        failuresPerMinute: 0,
+        previewsRejectedPerMinute: 1,
+        lastCheckedAt: "2026-08-10T00:00:00.000Z",
+      },
+    ]);
+
+    now += 60_000;
+    expect(
+      service.parserTelemetry().every(
+        (parser) =>
+          parser.status === "unknown" &&
+          parser.requestsPerMinute === 0 &&
+          parser.previewsRejectedPerMinute === 0,
+      ),
+    ).toBe(true);
   });
 
   it("does not add failure observations for cached hits", async () => {

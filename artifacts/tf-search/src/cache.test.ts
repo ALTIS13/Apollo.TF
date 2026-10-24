@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { TfSearchResult } from "@workspace/tf-search-contract";
+import type { TfSearchCommand, TfSearchResult } from "@workspace/tf-search-contract";
 import { BoundedSearchCache, type SearchCacheIdentity } from "./cache.js";
+
+const ACCOUNT_ID = "11111111-1111-4111-8111-111111111111";
 
 function result(index: number): TfSearchResult {
   return {
@@ -18,7 +20,7 @@ function result(index: number): TfSearchResult {
   };
 }
 
-function identity(overrides: Partial<SearchCacheIdentity> = {}): SearchCacheIdentity {
+function identity(overrides: Partial<Omit<TfSearchCommand, "schemaVersion" | "requestId">> = {}): SearchCacheIdentity {
   return {
     artist: "Artist",
     title: "Track",
@@ -33,9 +35,10 @@ describe("BoundedSearchCache", () => {
   it("normalizes cache keys with lowercase trimmed artist and title", () => {
     const cache = new BoundedSearchCache();
     cache.set(identity({ artist: "  The Artist  ", title: "  THE Track " }), [result(1)]);
+    cache.observe(ACCOUNT_ID, "  The Artist  ", "  THE Track ");
 
     expect(cache.get(identity({ artist: "the artist", title: "the track" }))).toEqual([result(1)]);
-    expect(cache.suggestions("ARTIST", 5)).toEqual([
+    expect(cache.suggestions(ACCOUNT_ID, "ARTIST", 5)).toEqual([
       { artist: "the artist", title: "the track" },
     ]);
   });
@@ -44,11 +47,13 @@ describe("BoundedSearchCache", () => {
     const cache = new BoundedSearchCache();
     cache.set(identity({ artist: "Alpha::Beta", title: "Gamma" }), [result(1)]);
     cache.set(identity({ artist: "Alpha", title: "Beta::Gamma" }), [result(2)]);
+    cache.observe(ACCOUNT_ID, "Alpha::Beta", "Gamma");
+    cache.observe(ACCOUNT_ID, "Alpha", "Beta::Gamma");
 
     expect(cache.size).toBe(2);
     expect(cache.get(identity({ artist: "alpha::beta", title: "gamma" }))).toEqual([result(1)]);
     expect(cache.get(identity({ artist: "alpha", title: "beta::gamma" }))).toEqual([result(2)]);
-    expect(cache.suggestions("alpha", 5)).toEqual([
+    expect(cache.suggestions(ACCOUNT_ID, "alpha", 5)).toEqual([
       { artist: "alpha::beta", title: "gamma" },
       { artist: "alpha", title: "beta::gamma" },
     ]);
@@ -114,10 +119,11 @@ describe("BoundedSearchCache", () => {
     const cache = new BoundedSearchCache();
     for (let index = 0; index < 6; index += 1) {
       cache.set(identity({ artist: `Artist ${index}`, title: `Track ${index}` }), [result(index)]);
+      cache.observe(ACCOUNT_ID, `Artist ${index}`, `Track ${index}`);
     }
     cache.set(identity({ artist: "Other Artist", title: "Unrelated" }), [result(7)]);
 
-    expect(cache.suggestions("track", 5)).toEqual(
+    expect(cache.suggestions(ACCOUNT_ID, "track", 5)).toEqual(
       Array.from({ length: 5 }, (_, index) => ({
         artist: `artist ${index}`,
         title: `track ${index}`,

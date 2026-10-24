@@ -15,7 +15,7 @@ const accountB = {
   accountId: "10000000-0000-4000-8000-000000000003",
   installationId: "20000000-0000-4000-8000-000000000004",
   entitlements: ["tf.search", "tf.downloads"],
-  expiresAt: "2099-01-01T00:00:00.000Z",
+  expiresAt: new Date(Date.now() + 300_000).toISOString(),
   csrfToken: "d".repeat(42) + "A",
 };
 
@@ -52,16 +52,16 @@ const staleFailures = [
   {
     label: "policy 403",
     complete: (pending: ReturnType<typeof deferred<Response>>) => {
-      pending.resolve(jsonResponse({ error: "module_access_denied" }, 403));
+      pending.resolve(jsonResponse({ error: "forbidden" }, 403));
     },
-    expected: { status: 403, code: "module_access_denied", kind: "forbidden" },
+    expected: { status: 403, code: "forbidden", kind: "forbidden" },
   },
   {
     label: "policy 503",
     complete: (pending: ReturnType<typeof deferred<Response>>) => {
-      pending.resolve(jsonResponse({ error: "policy_unavailable" }, 503));
+      pending.resolve(jsonResponse({ error: "authentication_unavailable" }, 503));
     },
-    expected: { status: 503, code: "policy_unavailable", kind: "unavailable" },
+    expected: { status: 503, code: "authentication_unavailable", kind: "unavailable" },
   },
   {
     label: "malformed 200 candidate",

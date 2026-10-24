@@ -501,53 +501,186 @@ describe("Spotify gateway routes", () => {
     );
   });
 
-  it("implements liked-all through bounded liked-list commands and preserves partial results", async () => {
-    let likedCalls = 0;
-    const current = spotifyDependencies(async (command) => {
-      if (command.operation !== "spotify.liked.list") {
-        return success(command, defaultResult(command));
-      }
-      likedCalls += 1;
-      if (likedCalls === 1) {
-        return success(command, {
-          tracks: Array.from({ length: 50 }, (_, index) => ({
-            ...track,
-            id: `track-${index}`,
-          })),
-          total: 120,
-          offset: 0,
-          limit: 50,
+  describe.each([1, 2])("liked-all failure on page %i", (failedPage) => {
+    it.each([
+      { kind: "provider_rejected", status: 502, error: "spotify_error" },
+      { kind: "unexpected_exception", status: 502, error: "spotify_error" },
+      { kind: "not_connected", status: 401, error: "not_connected" },
+      {
+        kind: "gateway_unavailable",
+        status: 503,
+        error: "spotify_unavailable",
+      },
+    ] as const)(
+      "returns $kind safely without partial results or further calls",
+      async ({ kind, status, error }) => {
+        let likedCalls = 0;
+        const current = spotifyDependencies(async (command) => {
+          if (command.operation !== "spotify.liked.list") {
+            throw new Error("unexpected operation");
+          }
+          likedCalls += 1;
+          if (likedCalls === failedPage) {
+            if (kind === "unexpected_exception") {
+              throw new Error("private-provider-exception-canary");
+            }
+            if (kind === "gateway_unavailable") {
+              throw new TfIntegrationsUnavailableError();
+            }
+            return failure(command, kind);
+          }
+          return success(command, {
+            tracks: Array.from({ length: 50 }, (_, index) => ({
+              ...track,
+              id: `track-${command.input.offset + index}`,
+            })),
+            total: 120,
+            offset: command.input.offset,
+            limit: command.input.limit,
+          });
         });
-      }
-      return failure(command, "provider_unavailable");
-    });
-    const baseUrl = await startSpotifyServer(current.dependencies);
+        const baseUrl = await startSpotifyServer(current.dependencies);
 
-    const response = await request(baseUrl, "/spotify/liked-all");
+        const response = await request(baseUrl, "/spotify/liked-all");
 
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as {
-      tracks: unknown[];
-      total: number;
-    };
-    expect(body.tracks).toHaveLength(50);
-    expect(body.total).toBe(50);
-    const likedCommands = (
-      current.execute.mock.calls as [GatewayCommand][]
-    ).map(([command]) => command);
-    expect(likedCommands).toEqual([
-      {
-        accountId: ACCOUNT_ID,
-        operation: "spotify.liked.list",
-        input: { offset: 0, limit: 50 },
+        expect(response.status).toBe(status);
+        await expect(response.json()).resolves.toEqual({ error });
+        expect(current.execute.mock.calls).toEqual(
+          (failedPage === 1 ? [0] : [0, 50]).map((offset) => [
+            {
+              accountId: ACCOUNT_ID,
+              operation: "spotify.liked.list",
+              input: { offset, limit: 50 },
+            },
+          ]),
+        );
       },
-      {
-        accountId: ACCOUNT_ID,
-        operation: "spotify.liked.list",
-        input: { offset: 50, limit: 50 },
-      },
-    ]);
+    );
   });
+
+  it.each([
+    { total: 0, offsets: [0] },
+    { total: 100, offsets: [0, 50] },
+    { total: 120, offsets: [0, 50, 100] },
+  ])(
+    "returns the complete liked-all library of $total tracks",
+    async ({ total, offsets }) => {
+      const current = spotifyDependencies(async (command) => {
+        if (command.operation !== "spotify.liked.list") {
+          throw new Error("unexpected operation");
+        }
+        return success(command, {
+          tracks: Array.from(
+            { length: Math.min(50, total - command.input.offset) },
+            (_, index) => ({
+              ...track,
+              id: `track-${command.input.offset + index}`,
+            }),
+          ),
+          total,
+          offset: command.input.offset,
+          limit: command.input.limit,
+        });
+      });
+      const baseUrl = await startSpotifyServer(current.dependencies);
+
+      const response = await request(baseUrl, "/spotify/liked-all");
+
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        tracks: { id: string }[];
+        total: number;
+      };
+      expect(body.total).toBe(total);
+      expect(body.tracks.map(({ id }) => id)).toEqual(
+        Array.from({ length: total }, (_, index) => `track-${index}`),
+      );
+      expect(current.execute.mock.calls).toEqual(
+        offsets.map((offset) => [
+          {
+            accountId: ACCOUNT_ID,
+            operation: "spotify.liked.list",
+            input: { offset, limit: 50 },
+          },
+        ]),
+      );
+    },
+  );
+
+  describe.each([49, 0])(
+    "liked-all normalized first page of %i tracks",
+    (firstPageCount) => {
+      it.each([
+        { outcome: "success", status: 200 },
+        { outcome: "provider_rejected", status: 502 },
+        { outcome: "unexpected_exception", status: 502 },
+      ] as const)(
+        "reaches the remaining page and handles $outcome",
+        async ({ outcome, status }) => {
+          const current = spotifyDependencies(async (command) => {
+            if (command.operation !== "spotify.liked.list") {
+              throw new Error("unexpected operation");
+            }
+            if (command.input.offset === 50) {
+              if (outcome === "provider_rejected") {
+                return failure(command, "provider_rejected");
+              }
+              if (outcome === "unexpected_exception") {
+                throw new Error("private-normalized-page-canary");
+              }
+            }
+            return success(command, {
+              tracks: Array.from(
+                { length: command.input.offset === 0 ? firstPageCount : 50 },
+                (_, index) => ({
+                  ...track,
+                  id: `track-${command.input.offset + index}`,
+                }),
+              ),
+              total: 100,
+              offset: command.input.offset,
+              limit: command.input.limit,
+            });
+          });
+          const baseUrl = await startSpotifyServer(current.dependencies);
+
+          const response = await request(baseUrl, "/spotify/liked-all");
+
+          expect(response.status).toBe(status);
+          if (outcome === "success") {
+            const body = (await response.json()) as {
+              tracks: { id: string }[];
+              total: number;
+            };
+            expect(body.total).toBe(firstPageCount + 50);
+            expect(body.tracks.map(({ id }) => id)).toEqual([
+              ...Array.from(
+                { length: firstPageCount },
+                (_, index) => `track-${index}`,
+              ),
+              ...Array.from(
+                { length: 50 },
+                (_, index) => `track-${50 + index}`,
+              ),
+            ]);
+          } else {
+            await expect(response.json()).resolves.toEqual({
+              error: "spotify_error",
+            });
+          }
+          expect(current.execute.mock.calls).toEqual(
+            [0, 50].map((offset) => [
+              {
+                accountId: ACCOUNT_ID,
+                operation: "spotify.liked.list",
+                input: { offset, limit: 50 },
+              },
+            ]),
+          );
+        },
+      );
+    },
+  );
 
   it("fails explicitly when liked-all exceeds replay admission capacity", async () => {
     let likedCalls = 0;

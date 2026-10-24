@@ -2,15 +2,22 @@ import { Switch, Route, Router as WouterRouter, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  Sheet,
+  SheetContent,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { PlayerProvider, usePlayer } from "@/hooks/use-player";
 import { Player } from "@/components/Player";
-import { Sidebar } from "@/components/Sidebar";
+import { MobileNavigation, Sidebar } from "@/components/Sidebar";
 import { TfAuthProvider } from "@/auth/tf-auth";
 import { TfSessionBoundary } from "@/auth/TfSessionBoundary";
 import { useState, useEffect } from "react";
 import { Menu } from "lucide-react";
 import Home from "@/pages/Home";
 import Favorites from "@/pages/Favorites";
+import Integrations from "@/pages/Integrations";
 import Discover from "@/pages/Discover";
 import Queue from "@/pages/Queue";
 import NotFound from "@/pages/not-found";
@@ -33,6 +40,7 @@ function Router() {
       <Route path="/discover" component={Discover} />
       <Route path="/queue" component={Queue} />
       <Route path="/favorites" component={Favorites} />
+      <Route path="/integrations" component={Integrations} />
       <Route component={NotFound} />
     </Switch>
   );
@@ -44,7 +52,11 @@ function GlobalHotkeys() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
-      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) return;
+      if (
+        ["INPUT", "TEXTAREA", "SELECT", "BUTTON", "A"].includes(el.tagName) ||
+        el.isContentEditable
+      )
+        return;
 
       switch (e.code) {
         case "Space":
@@ -81,56 +93,67 @@ function AppLayout() {
   const [location] = useLocation();
 
   // Close mobile sidebar on nav
-  useEffect(() => { setSidebarOpen(false); }, [location]);
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [location]);
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden bg-background">
-      <GlobalHotkeys />
+    <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
+      <div className="tf-app-shell flex flex-col overflow-hidden bg-background">
+        <a href="#tf-main-content" className="tf-skip-link">К музыке</a>
+        <GlobalHotkeys />
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* Desktop sidebar */}
-        <aside className="hidden md:flex flex-col w-[240px] flex-shrink-0 border-r border-white/5 bg-black/30 overflow-y-auto">
-          <Sidebar />
-        </aside>
+        <div className="flex flex-1 overflow-hidden">
+          {/* Desktop sidebar */}
+          <aside className="hidden md:flex flex-col w-[224px] flex-shrink-0 border-r border-white/8 bg-[#0e0e12] overflow-y-auto">
+            <Sidebar />
+          </aside>
 
-        {/* Mobile sidebar overlay */}
-        {sidebarOpen && (
-          <div className="md:hidden fixed inset-0 z-50 flex">
-            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setSidebarOpen(false)} />
-            <div className="relative w-[260px] bg-[#0a0a0f] border-r border-white/5 flex flex-col overflow-y-auto">
-              <Sidebar onClose={() => setSidebarOpen(false)} />
-            </div>
-          </div>
-        )}
+          {/* Mobile sidebar overlay */}
+          <SheetContent
+            side="left"
+            aria-describedby={undefined}
+            className="w-[min(280px,85vw)] overflow-y-auto bg-[#0e0e12] p-0 motion-reduce:transition-none motion-reduce:animate-none"
+          >
+            <SheetTitle className="sr-only">Навигация Apollo TF</SheetTitle>
+            <Sidebar onClose={() => setSidebarOpen(false)} />
+          </SheetContent>
 
-        {/* Main content */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Mobile top bar */}
-          <div className="md:hidden flex items-center gap-3 px-4 h-12 border-b border-white/5 bg-black/30 flex-shrink-0">
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="text-white/50 hover:text-white transition-colors"
-            >
-              <Menu className="w-5 h-5" />
-            </button>
-            <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
-                <span className="text-white text-[10px] font-bold">A</span>
+          {/* Main content */}
+          <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
+            {/* Mobile top bar */}
+            <div className="md:hidden flex items-center gap-3 px-4 h-12 border-b border-white/8 bg-[#0e0e12]/90 backdrop-blur-xl flex-shrink-0">
+              <SheetTrigger asChild>
+                <button
+                  aria-label="Открыть меню"
+                  title="Открыть меню"
+                  className="flex h-9 w-9 items-center justify-center rounded-lg text-white/60 hover:text-white focus-visible:outline-2 focus-visible:outline-white transition-colors"
+                >
+                  <Menu className="w-5 h-5" />
+                </button>
+              </SheetTrigger>
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-md border border-white/15 bg-white/5 flex items-center justify-center">
+                  <span className="text-white text-[10px] font-bold">A</span>
+                </div>
+                <span className="text-white text-sm font-semibold tracking-normal">
+                  Apollo TF
+                </span>
               </div>
-              <span className="text-white text-sm font-semibold tracking-wide">Apollo</span>
             </div>
+
+            {/* Scrollable content */}
+            <main id="tf-main-content" tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto overscroll-contain focus:outline-none">
+              <Router />
+            </main>
           </div>
-
-          {/* Scrollable content */}
-          <main className="flex-1 overflow-y-auto">
-            <Router />
-          </main>
         </div>
-      </div>
 
-      {/* Bottom player — always visible */}
-      <Player />
-    </div>
+        {/* Bottom player — always visible */}
+        <Player />
+        <MobileNavigation />
+      </div>
+    </Sheet>
   );
 }
 

@@ -1,0 +1,22 @@
+services:
+  tf-api:
+    environment:
+      APOLLO_PLATFORM_API_ORIGIN: https://api.apollot.ru
+      APOLLO_PLATFORM_ISSUER: https://api.apollot.ru
+      APOLLO_TF_BRIDGE_ALLOW_INTERNAL_HTTP: "false"
+      APOLLO_TF_CALLBACK_URL: https://api.tf.apollot.ru/api/auth/callback
+      APOLLO_TF_CLIENT_ID: apollo-tf-api
+      APOLLO_TF_RENEWAL_ENABLED: "true"
+      APOLLO_TF_REVOKE_KEYRING_FILE: /run/secrets/tf_revoke_keyring
+      APOLLO_TF_SUCCESSOR_WS_ENABLED: ${TF_SUCCESSOR_WS_ENABLED:-false}
+      APOLLO_TF_WEB_ORIGIN: https://tf.apollot.ru
+    secrets:
+      - source: tf_revoke_keyring
+        target: tf_revoke_keyring
+        uid: "10001"
+        gid: "10001"
+        mode: "0400"
+
+secrets:
+  tf_revoke_keyring:
+    file: ${TF_SECRET_DIRECTORY:?}/tf_revoke_keyring

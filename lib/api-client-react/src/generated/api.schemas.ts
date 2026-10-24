@@ -5,6 +5,16 @@
  * Music Player API specification
  * OpenAPI spec version: 0.1.0
  */
+export type TrackSuggestionsResponseSuggestionsItem = {
+  artist: string;
+  title: string;
+};
+
+export interface TrackSuggestionsResponse {
+  /** @maxItems 5 */
+  suggestions: TrackSuggestionsResponseSuggestionsItem[];
+}
+
 export interface HealthStatus {
   status: string;
 }
@@ -42,6 +52,102 @@ export interface TrackResult {
   viewCount?: number | null;
   /** Ranking score (higher is better match) */
   score: number;
+}
+
+export interface MediaLinkMetadataRequest {
+  /**
+   * @minLength 1
+   * @maxLength 500
+   */
+  url: string;
+}
+
+export type MediaLinkMetadataResponseSchemaVersion =
+  (typeof MediaLinkMetadataResponseSchemaVersion)[keyof typeof MediaLinkMetadataResponseSchemaVersion];
+
+export const MediaLinkMetadataResponseSchemaVersion = {
+  NUMBER_1: 1,
+} as const;
+
+export type MediaLinkMetadataResponseSource =
+  (typeof MediaLinkMetadataResponseSource)[keyof typeof MediaLinkMetadataResponseSource];
+
+export const MediaLinkMetadataResponseSource = {
+  youtube: "youtube",
+  soundcloud: "soundcloud",
+  bandcamp: "bandcamp",
+  deezer: "deezer",
+} as const;
+
+export interface MediaLinkMetadataResponse {
+  schemaVersion: MediaLinkMetadataResponseSchemaVersion;
+  source: MediaLinkMetadataResponseSource;
+  /**
+   * @minLength 1
+   * @maxLength 300
+   */
+  title: string;
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  artist?: string;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   */
+  durationSeconds?: number;
+}
+
+export type MediaLinkErrorResponseError =
+  (typeof MediaLinkErrorResponseError)[keyof typeof MediaLinkErrorResponseError];
+
+export const MediaLinkErrorResponseError = {
+  unsupported_media_link: "unsupported_media_link",
+  media_link_unavailable: "media_link_unavailable",
+  media_link_rate_limited: "media_link_rate_limited",
+  media_link_overloaded: "media_link_overloaded",
+} as const;
+
+export interface MediaLinkErrorResponse {
+  error: MediaLinkErrorResponseError;
+}
+
+export type FreeSearchRequestMode =
+  (typeof FreeSearchRequestMode)[keyof typeof FreeSearchRequestMode];
+
+export const FreeSearchRequestMode = {
+  auto: "auto",
+  manual: "manual",
+} as const;
+
+export type FreeSearchRequestSourcesItem =
+  (typeof FreeSearchRequestSourcesItem)[keyof typeof FreeSearchRequestSourcesItem];
+
+export const FreeSearchRequestSourcesItem = {
+  yt: "yt",
+  sc: "sc",
+  bc: "bc",
+  dz: "dz",
+} as const;
+
+export interface FreeSearchRequest {
+  /**
+   * @minLength 2
+   * @maxLength 500
+   */
+  query: string;
+  mode?: FreeSearchRequestMode;
+  /**
+   * @minItems 1
+   * @maxItems 4
+   */
+  sources?: FreeSearchRequestSourcesItem[];
+  /**
+   * @minimum 1
+   * @maximum 40
+   */
+  maxResults?: number;
 }
 
 export type SearchRequestMode =
@@ -153,6 +259,12 @@ export interface DownloadQueueTrack {
    */
   title: string;
   quality: DownloadQuality;
+  /**
+   * Expected full recording duration from the selected candidate, when known.
+   * @minimum 1
+   * @maximum 86400
+   */
+  expectedDurationSeconds?: number;
 }
 
 export interface DownloadQueueRequest {
@@ -209,6 +321,14 @@ export const DownloadJobState = {
   canceled: "canceled",
 } as const;
 
+export type DownloadFailureCode =
+  (typeof DownloadFailureCode)[keyof typeof DownloadFailureCode];
+
+export const DownloadFailureCode = {
+  preview_rejected: "preview_rejected",
+  duration_unverified: "duration_unverified",
+} as const;
+
 export interface DownloadJobStatus {
   status: DownloadJobState;
   /**
@@ -226,6 +346,7 @@ export interface DownloadJobStatus {
    * @maximum 1073741824
    */
   fileSize?: number;
+  failureCode?: DownloadFailureCode;
 }
 
 export interface DownloadJob {
@@ -246,6 +367,7 @@ export interface DownloadJob {
    * @maximum 1073741824
    */
   fileSize?: number;
+  failureCode?: DownloadFailureCode;
 }
 
 export interface DownloadJobListResponse {
@@ -276,12 +398,373 @@ export interface DownloadErrorResponse {
   error: DownloadErrorResponseError;
 }
 
+export interface LikedTrack {
+  /**
+   * @minLength 4
+   * @maxLength 4096
+   * @pattern ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+   */
+  trackId: string;
+  /** @maxLength 300 */
+  artist: string | null;
+  /** @maxLength 500 */
+  title: string | null;
+  /** @maxLength 2048 */
+  thumbnailUrl: string | null;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   */
+  durationSeconds: number | null;
+  likedAt: string;
+}
+
+export interface LikedTrackPage {
+  /** @maxItems 100 */
+  items: LikedTrack[];
+  /**
+   * @maxLength 64
+   * @pattern ^[A-Za-z0-9_-]+$
+   */
+  nextCursor: string | null;
+  /**
+   * Present only when sort=manual.
+   * @pattern ^(0|[1-9][0-9]*)$
+   */
+  revision?: string;
+}
+
+export interface MoveLikedTrackRequest {
+  /**
+   * @minLength 4
+   * @maxLength 4096
+   * @pattern ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+   */
+  trackId: string;
+  /**
+   * @minLength 4
+   * @maxLength 4096
+   * @pattern ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+   */
+  beforeTrackId: string | null;
+  /**
+   * @maxLength 20
+   * @pattern ^(0|[1-9][0-9]*)$
+   */
+  expectedRevision: string;
+}
+
+export interface LikedOrderMutationResponse {
+  /** @pattern ^(0|[1-9][0-9]*)$ */
+  revision: string;
+}
+
+export type LikedOrderConflictResponseError =
+  (typeof LikedOrderConflictResponseError)[keyof typeof LikedOrderConflictResponseError];
+
+export const LikedOrderConflictResponseError = {
+  liked_order_conflict: "liked_order_conflict",
+} as const;
+
+export interface LikedOrderConflictResponse {
+  error: LikedOrderConflictResponseError;
+  /** @pattern ^(0|[1-9][0-9]*)$ */
+  revision: string;
+}
+
+export interface LikedTrackLookupRequest {
+  /**
+   * @minItems 1
+   * @maxItems 40
+   */
+  trackIds: string[];
+}
+
+export interface LikedTrackLookupResponse {
+  /** @maxItems 40 */
+  likedTrackIds: string[];
+}
+
+export interface SaveLikedTrackRequest {
+  /**
+   * @minLength 1
+   * @maxLength 300
+   */
+  artist: string;
+  /**
+   * @minLength 1
+   * @maxLength 500
+   */
+  title: string;
+  /** @maxLength 2048 */
+  thumbnailUrl?: string | null;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   */
+  durationSeconds?: number | null;
+}
+
+export interface LikedTrackMutationResponse {
+  item: LikedTrack;
+}
+
+export type CollectionErrorResponseError =
+  (typeof CollectionErrorResponseError)[keyof typeof CollectionErrorResponseError];
+
+export const CollectionErrorResponseError = {
+  bad_request: "bad_request",
+  unauthorized: "unauthorized",
+  forbidden: "forbidden",
+  module_access_denied: "module_access_denied",
+  policy_unavailable: "policy_unavailable",
+  internal_error: "internal_error",
+  playlist_not_found: "playlist_not_found",
+  liked_track_not_found: "liked_track_not_found",
+} as const;
+
+export interface CollectionErrorResponse {
+  error: CollectionErrorResponseError;
+}
+
+export interface Playlist {
+  /** @minimum 1 */
+  id: number;
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  name: string;
+  description: string | null;
+  /** @minimum 0 */
+  trackCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlaylistTrack {
+  /**
+   * @minLength 4
+   * @maxLength 4096
+   * @pattern ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+   */
+  trackId: string;
+  artist: string;
+  title: string;
+  /**
+   * @maxLength 2048
+   * @pattern ^https?:[/][/]
+   */
+  thumbnailUrl: string | null;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   */
+  durationSeconds: number | null;
+  /** @minimum 0 */
+  position: number;
+  addedAt: string;
+}
+
+export interface PlaylistListResponse {
+  playlists: Playlist[];
+}
+
+export interface PlaylistMutationResponse {
+  playlist: Playlist;
+}
+
+export interface PlaylistDetailResponse {
+  playlist: Playlist;
+  tracks: PlaylistTrack[];
+}
+
+export interface CreatePlaylistRequest {
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  name: string;
+}
+
+export interface AddPlaylistTrackRequest {
+  /**
+   * @minLength 4
+   * @maxLength 4096
+   * @pattern ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+   */
+  trackId: string;
+  /**
+   * @minLength 1
+   * @maxLength 300
+   */
+  artist: string;
+  /**
+   * @minLength 1
+   * @maxLength 500
+   */
+  title: string;
+  /**
+   * @maxLength 2048
+   * @pattern ^https?:[/][/]
+   */
+  thumbnailUrl?: string | null;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   */
+  durationSeconds?: number | null;
+}
+
+export interface ReorderPlaylistTracksRequest {
+  /**
+   * Exact playlist membership in final order; cumulative ID length at most 50000 characters
+   * @maxItems 500
+   */
+  trackIds: string[];
+}
+
+export interface PlaylistTrackMutationResponse {
+  track: PlaylistTrack;
+  added: boolean;
+}
+
 export interface ErrorResponse {
   error: string;
   message: string;
+}
+
+export type StreamAdmissionErrorError =
+  (typeof StreamAdmissionErrorError)[keyof typeof StreamAdmissionErrorError];
+
+export const StreamAdmissionErrorError = {
+  preview_rejected: "preview_rejected",
+  duration_unverified: "duration_unverified",
+} as const;
+
+export interface StreamAdmissionError {
+  error: StreamAdmissionErrorError;
+}
+
+export interface StreamBadRequest {
+  error: "bad_request";
+  message?: string;
 }
 
 export const SearchUnavailableResponseValue = {
   error: "search_unavailable",
 } as const;
 export type SearchUnavailableResponse = typeof SearchUnavailableResponseValue;
+
+/**
+ * Invalid playlist input
+ */
+export type CollectionBadRequestResponse = CollectionErrorResponse;
+
+/**
+ * TF session is missing or expired
+ */
+export type CollectionUnauthorizedResponse = CollectionErrorResponse;
+
+/**
+ * Current account lacks tf.collections
+ */
+export type CollectionForbiddenResponse = CollectionErrorResponse;
+
+/**
+ * Playlist missing or owned by another account
+ */
+export type PlaylistNotFoundResponse = CollectionErrorResponse;
+
+/**
+ * Live Platform policy could not be confirmed
+ */
+export type CollectionUnavailableResponse = CollectionErrorResponse;
+
+export type GetTrackSuggestionsParams = {
+  /**
+   * @minLength 2
+   * @maxLength 200
+   */
+  q: string;
+};
+
+export type GetTrackStreamParams = {
+  /**
+   * Artist metadata required for a Deezer fallback.
+   * @maxLength 300
+   */
+  artist?: string;
+  /**
+   * Track metadata required for a Deezer fallback.
+   * @maxLength 500
+   */
+  title?: string;
+  /**
+   * Full recording duration from the selected result, when known.
+   * @minimum 1
+   * @maximum 86400
+   */
+  expectedDurationSeconds?: number;
+  /**
+   * Bypass the cached stream URL and resolve a new one for non-Deezer tracks. The value must be 1; source-duration admission still applies.
+   */
+  refresh?: GetTrackStreamRefresh;
+};
+
+export type GetTrackStreamRefresh =
+  (typeof GetTrackStreamRefresh)[keyof typeof GetTrackStreamRefresh];
+
+export const GetTrackStreamRefresh = {
+  NUMBER_1: 1,
+} as const;
+
+export type GetTrackDownloadParams = {
+  /**
+   * Artist metadata for a Deezer fallback.
+   */
+  artist?: string;
+  /**
+   * Track metadata for a Deezer fallback.
+   */
+  title?: string;
+  /**
+   * One of 128, 192, 256, 320 or flac. Unknown values fall back to 256.
+   */
+  quality?: string;
+  /**
+   * Full recording duration from the selected result, when known.
+   * @minimum 1
+   * @maximum 86400
+   */
+  expectedDurationSeconds?: number;
+};
+
+export type GetTrackDownload403 = {
+  error: "module_access_denied";
+};
+
+export type ListLikedTracksParams = {
+  /**
+   * @minimum 1
+   * @maximum 100
+   */
+  limit?: number;
+  /**
+   * @minLength 1
+   * @maxLength 64
+   * @pattern ^[A-Za-z0-9_-]+$
+   */
+  cursor?: string;
+  /**
+   * Omit for the legacy newest-first order; manual uses the account's saved order.
+   */
+  sort?: ListLikedTracksSort;
+};
+
+export type ListLikedTracksSort =
+  (typeof ListLikedTracksSort)[keyof typeof ListLikedTracksSort];
+
+export const ListLikedTracksSort = {
+  manual: "manual",
+} as const;

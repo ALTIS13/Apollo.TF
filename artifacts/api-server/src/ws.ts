@@ -5,6 +5,12 @@ import type { PolicyIntrospectionResponse } from "@workspace/platform-contract";
 import type { Logger } from "pino";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { z } from "zod";
+import type {
+  TfFamilyWebSocket,
+  FamilyWsTicket,
+  FamilyWsAuthorization,
+} from "./lib/tf-family-websocket.js";
+import { TfRenewalError, unavailable } from "./lib/tf-renewal-contract.js";
 
 import { logger as defaultLogger } from "./lib/logger.js";
 import type { PlatformAuthClient } from "./lib/platform-auth-client.js";
@@ -51,6 +57,8 @@ export interface WebSocketTimerScheduler {
 }
 
 export interface WebSocketServerDependencies {
+  readonly familyWebSocket?: TfFamilyWebSocket;
+  readonly webOrigin?: string;
   readonly platform: Pick<PlatformAuthClient, "introspect">;
   readonly sessionStore: Pick<
     TfSessionStore,
@@ -68,12 +76,25 @@ export interface WebSocketServerHandle {
 type ValidationResult = "authorized" | "forbidden" | "unavailable";
 
 interface SocketContext {
-  readonly ticket: WebSocketTicket;
+  readonly ticket: WebSocketTicket | FamilyWsTicket;
   readonly room: Set<WebSocket>;
   timer: unknown;
   authorized: boolean;
   validating: boolean;
   cleaned: boolean;
+  family?: {
+    ticket: FamilyWsTicket;
+    abort: AbortController;
+    check: Promise<FamilyWsAuthorization> | null;
+    nextCheck: Promise<FamilyWsAuthorization> | null;
+    idle: ReturnType<typeof setTimeout> | null;
+    deadline: ReturnType<typeof setTimeout> | null;
+    until: number;
+  };
+  relayRunning?: boolean;
+  pendingMessage?: string;
+  relayTimer?: ReturnType<typeof setTimeout>;
+  nextRelayAt?: number;
 }
 
 const defaultScheduler: WebSocketTimerScheduler = {
@@ -304,9 +325,10 @@ export function canBufferWebSocketMessage(
   );
 }
 
-function rejectUpgrade(socket: Duplex, status: 401 | 404 | 503): void {
+function rejectUpgrade(socket: Duplex, status: 401 | 403 | 404 | 503): void {
   const reasons = {
     401: "Unauthorized",
+    403: "Forbidden",
     404: "Not Found",
     503: "Service Unavailable",
   } as const;
@@ -326,6 +348,12 @@ export function attachWebSocketServer(
   server: Server,
   dependencies: WebSocketServerDependencies,
 ): WebSocketServerHandle {
+  if (
+    dependencies.familyWebSocket &&
+    (!dependencies.webOrigin ||
+      new URL(dependencies.webOrigin).origin !== dependencies.webOrigin)
+  )
+    throw new Error("invalid successor WebSocket origin configuration");
   const log = dependencies.logger ?? defaultLogger;
   const scheduler = dependencies.scheduler ?? defaultScheduler;
   const wss = new WebSocketServer({
@@ -336,6 +364,7 @@ export function attachWebSocketServer(
   const rooms = new Map<string, Set<WebSocket>>();
   const contexts = new Map<WebSocket, SocketContext>();
   const pendingSockets = new Set<Duplex>();
+  const pendingAborts = new Map<Duplex, AbortController>();
   let closed = false;
   let closePromise: Promise<void> | null = null;
 
@@ -350,7 +379,12 @@ export function attachWebSocketServer(
     const context = contexts.get(ws);
     if (context === undefined || context.cleaned) return;
     context.cleaned = true;
-    scheduler.clearInterval(context.timer);
+    if (!context.family) scheduler.clearInterval(context.timer);
+    context.family?.abort.abort();
+    if (context.family?.idle) clearTimeout(context.family.idle);
+    if (context.family?.deadline) clearTimeout(context.family.deadline);
+    if (context.relayTimer) clearTimeout(context.relayTimer);
+    context.pendingMessage = undefined;
     deauthorizeSocket(ws, context);
     contexts.delete(ws);
     ws.off("message", onMessage);
@@ -360,6 +394,216 @@ export function attachWebSocketServer(
       { component: COMPONENT, roomSize: context.room.size },
       "WebSocket client disconnected",
     );
+  };
+
+  const stopFamily = (
+    ws: WebSocket,
+    context: SocketContext,
+    error: unknown,
+  ) => {
+    if (context.cleaned) return;
+    deauthorizeSocket(ws, context);
+    context.family?.abort.abort();
+    const e = error instanceof TfRenewalError ? error : unavailable();
+    const [code, reason] = e.terminal
+      ? ([4401, "session_revoked"] as const)
+      : e.reason === "ACCESS_EXPIRED" || e.reason === "REFERENCE_SPENT"
+        ? ([4409, "access_revalidation_required"] as const)
+        : e.status === 403
+          ? ([4403, "policy_revoked"] as const)
+          : ([1013, "policy_unavailable"] as const);
+    cleanupSocket(ws);
+    ws.close(code, reason);
+    // Bound the close handshake too; no authorized membership survives this point.
+    const closing = setTimeout(() => ws.terminate(), 1000);
+    closing.unref?.();
+    ws.once("close", () => clearTimeout(closing));
+  };
+  const liveSocket = (ws: WebSocket, context: SocketContext): boolean => {
+    if (
+      closed ||
+      context.cleaned ||
+      !context.authorized ||
+      ws.readyState !== WebSocket.OPEN
+    )
+      return false;
+    if (
+      context.family &&
+      checkedNow(dependencies.now ?? Date.now) >= context.family.until
+    ) {
+      stopFamily(
+        ws,
+        context,
+        new TfRenewalError(
+          checkedNow(dependencies.now ?? Date.now) >=
+            context.family.ticket.absoluteExpiresAt
+            ? "FAMILY_EXPIRED"
+            : "ACCESS_EXPIRED",
+        ),
+      );
+      return false;
+    }
+    return true;
+  };
+  const armDeadline = (ws: WebSocket, context: SocketContext) => {
+    const f = context.family!;
+    if (f.deadline) clearTimeout(f.deadline);
+    f.deadline = setTimeout(
+      () => {
+        stopFamily(
+          ws,
+          context,
+          new TfRenewalError(
+            checkedNow(dependencies.now ?? Date.now) >=
+              f.ticket.absoluteExpiresAt
+              ? "FAMILY_EXPIRED"
+              : "ACCESS_EXPIRED",
+          ),
+        );
+      },
+      Math.max(0, f.until - checkedNow(dependencies.now ?? Date.now)),
+    );
+  };
+  const familyCheck = (
+    ws: WebSocket,
+    context: SocketContext,
+  ): Promise<FamilyWsAuthorization> => {
+    const f = context.family!;
+    if (!liveSocket(ws, context)) return Promise.reject(unavailable());
+    if (f.check) {
+      // Later callers share the NEXT check, never a decision begun before their operation.
+      f.nextCheck ??= f.check
+        .catch(() => {})
+        .then(() => {
+          f.nextCheck = null;
+          return familyCheck(ws, context);
+        });
+      return f.nextCheck;
+    }
+    if (f.idle) clearTimeout(f.idle);
+    const abort = new AbortController();
+    const cancel = () => abort.abort();
+    f.abort.signal.addEventListener("abort", cancel, { once: true });
+    const timeout = setTimeout(cancel, 10_000);
+    const check = dependencies
+      .familyWebSocket!.validate(f.ticket, abort.signal)
+      .then((auth) => {
+        if (!liveSocket(ws, context) || abort.signal.aborted)
+          throw unavailable();
+        f.until = Math.min(
+          f.ticket.accessExpiresAt,
+          f.ticket.absoluteExpiresAt,
+          Date.parse(auth.session.expiresAt),
+        );
+        armDeadline(ws, context);
+        return auth;
+      })
+      .catch((error: unknown) => {
+        stopFamily(ws, context, error);
+        throw error;
+      })
+      .finally(() => {
+        clearTimeout(timeout);
+        f.abort.signal.removeEventListener("abort", cancel);
+        f.check = null;
+        if (liveSocket(ws, context))
+          f.idle = setTimeout(() => {
+            void familyCheck(ws, context).catch(() => {});
+          }, VALIDATION_INTERVAL_MS);
+      });
+    f.check = check;
+    return check;
+  };
+  const checkedSend = async (
+    source: WebSocket,
+    context: SocketContext,
+    message: string,
+  ) => {
+    // No validation lock is held while acquiring a recipient's independent check.
+    const sender = context.family
+      ? await familyCheck(source, context)
+      : undefined;
+    for (const target of [...context.room]) {
+      if (target === source || !liveSocket(source, context)) continue;
+      const recipient = contexts.get(target);
+      if (!recipient || !liveSocket(target, recipient)) continue;
+      let targetAuth: FamilyWsAuthorization | undefined;
+      try {
+        targetAuth = recipient.family
+          ? await familyCheck(target, recipient)
+          : undefined;
+      } catch (error) {
+        if (recipient.family) stopFamily(target, recipient, error);
+        continue;
+      }
+      if (sender) {
+        try {
+          await dependencies.familyWebSocket!.confirm(
+            sender,
+            context.family!.abort.signal,
+          );
+        } catch (error) {
+          stopFamily(source, context, error);
+          return;
+        }
+      }
+      try {
+        if (targetAuth)
+          await dependencies.familyWebSocket!.confirm(
+            targetAuth,
+            recipient.family!.abort.signal,
+          );
+        if (
+          !liveSocket(source, context) ||
+          !liveSocket(target, recipient) ||
+          !context.room.has(target)
+        )
+          continue;
+        if (
+          !canBufferWebSocketMessage(
+            target.bufferedAmount,
+            Buffer.byteLength(message),
+          )
+        ) {
+          target.close(1013, "buffer_unavailable");
+          continue;
+        }
+        target.send(message);
+      } catch (error) {
+        if (recipient.family) stopFamily(target, recipient, error);
+      }
+    }
+  };
+  const enqueueRelay = (
+    ws: WebSocket,
+    context: SocketContext,
+    message: string,
+  ) => {
+    context.pendingMessage = message;
+    if (context.relayRunning || context.relayTimer || !liveSocket(ws, context))
+      return;
+    const delay = Math.max(
+      0,
+      (context.nextRelayAt ?? 0) - checkedNow(dependencies.now ?? Date.now),
+    );
+    context.relayTimer = setTimeout(() => {
+      context.relayTimer = undefined;
+      if (!liveSocket(ws, context) || context.pendingMessage === undefined)
+        return;
+      const latest = context.pendingMessage;
+      context.pendingMessage = undefined;
+      context.nextRelayAt = checkedNow(dependencies.now ?? Date.now) + 1000;
+      context.relayRunning = true;
+      void checkedSend(ws, context, latest)
+        .catch((error: unknown) => {
+          if (context.family) stopFamily(ws, context, error);
+        })
+        .finally(() => {
+          context.relayRunning = false;
+          if (context.pendingMessage !== undefined && liveSocket(ws, context))
+            enqueueRelay(ws, context, context.pendingMessage);
+        });
+    }, delay);
   };
 
   const onMessage = function (
@@ -377,6 +621,13 @@ export function attachWebSocketServer(
     }
     const message = validatedPlayerMessage(data, isBinary);
     if (message === null) return;
+    if (
+      context.family ||
+      [...context.room].some((client) => contexts.get(client)?.family)
+    ) {
+      enqueueRelay(this, context, message);
+      return;
+    }
     for (const client of context.room) {
       const recipientContext = contexts.get(client);
       if (
@@ -429,7 +680,10 @@ export function attachWebSocketServer(
     }
     context.validating = true;
     try {
-      const result = await validateBackingPolicy(context.ticket, dependencies);
+      const result = await validateBackingPolicy(
+        context.ticket as WebSocketTicket,
+        dependencies,
+      );
       if (
         context.cleaned ||
         !context.authorized ||
@@ -449,7 +703,10 @@ export function attachWebSocketServer(
     }
   };
 
-  const connectSocket = (ws: WebSocket, ticket: WebSocketTicket): void => {
+  const connectSocket = (
+    ws: WebSocket,
+    ticket: WebSocketTicket | FamilyWsTicket,
+  ): void => {
     const room = rooms.get(ticket.accountId) ?? new Set<WebSocket>();
     if (!rooms.has(ticket.accountId)) rooms.set(ticket.accountId, room);
     room.add(ws);
@@ -461,9 +718,24 @@ export function attachWebSocketServer(
       validating: false,
       cleaned: false,
     };
-    context.timer = scheduler.setInterval(() => {
-      void validateConnected(ws, context);
-    }, VALIDATION_INTERVAL_MS);
+    if ("kind" in ticket) {
+      context.family = {
+        ticket,
+        abort: new AbortController(),
+        check: null,
+        nextCheck: null,
+        idle: null,
+        deadline: null,
+        until: Math.min(ticket.accessExpiresAt, ticket.absoluteExpiresAt),
+      };
+      armDeadline(ws, context);
+      context.family.idle = setTimeout(() => {
+        void familyCheck(ws, context).catch(() => {});
+      }, VALIDATION_INTERVAL_MS);
+    } else
+      context.timer = scheduler.setInterval(() => {
+        void validateConnected(ws, context);
+      }, VALIDATION_INTERVAL_MS);
     contexts.set(ws, context);
     ws.on("message", onMessage);
     ws.on("close", onSocketClose);
@@ -479,6 +751,10 @@ export function attachWebSocketServer(
     socket: Duplex,
     head: Buffer,
   ): Promise<void> => {
+    if (closed || pendingSockets.size >= 64) {
+      rejectUpgrade(socket, 503);
+      return;
+    }
     pendingSockets.add(socket);
     const target = parseUpgradeTarget(request.url);
     if (target.kind === "not_found") {
@@ -494,6 +770,102 @@ export function attachWebSocketServer(
     if (!validUpgradeHandshake(request)) {
       pendingSockets.delete(socket);
       rejectUpgrade(socket, 401);
+      return;
+    }
+    const rawCookieValues: string[] = [];
+    for (let n = 0; n < request.rawHeaders.length; n += 2)
+      if (request.rawHeaders[n]?.toLowerCase() === "cookie")
+        rawCookieValues.push(request.rawHeaders[n + 1] ?? "");
+    const familyPresent =
+      rawCookieValues.some((v) =>
+        v
+          .split(";")
+          .some((part) =>
+            /^__Host-apollo_tf_family(?:_csrf)?=/.test(part.trim()),
+          ),
+      ) ||
+      (request.headers.cookie ?? "")
+        .split(";")
+        .some((part) =>
+          /^__Host-apollo_tf_family(?:_csrf)?=/.test(part.trim()),
+        );
+    if (familyPresent) {
+      const abort = new AbortController(),
+        cancel = () => abort.abort();
+      pendingAborts.set(socket, abort);
+      socket.once("close", cancel);
+      const timeout = setTimeout(cancel, 10_000);
+      try {
+        if (exactRawHeader(request, "origin") !== dependencies.webOrigin) {
+          rejectUpgrade(socket, 403);
+          return;
+        }
+        if (!dependencies.familyWebSocket) {
+          rejectUpgrade(socket, 503);
+          return;
+        }
+        if (rawCookieValues.length !== 1) {
+          rejectUpgrade(socket, 401);
+          return;
+        }
+        const cookies = new Map<string, string>();
+        for (const part of rawCookieValues[0]!.split(";")) {
+          const eq = part.indexOf("="),
+            name = part.slice(0, eq).trim(),
+            value = part.slice(eq + 1).trim();
+          if (eq < 1 || cookies.has(name))
+            throw new TfRenewalError("INVALID_REFERENCE");
+          cookies.set(name, value);
+        }
+        const handle = cookies.get("__Host-apollo_tf_family"),
+          csrf = cookies.get("__Host-apollo_tf_family_csrf");
+        if (
+          !handle ||
+          !csrf ||
+          !canonicalOpaque(handle) ||
+          !canonicalOpaque(csrf)
+        )
+          throw new TfRenewalError("INVALID_REFERENCE");
+        const ticket = await dependencies.familyWebSocket.consume(
+          target.ticket,
+          handle,
+          csrf,
+          abort.signal,
+        );
+        if (closed || socket.destroyed || abort.signal.aborted) {
+          rejectUpgrade(socket, 503);
+          return;
+        }
+        const count = [...contexts.values()].filter(
+          (c) => c.family?.ticket.handle === handle && !c.cleaned,
+        ).length;
+        if (count >= 4) {
+          rejectUpgrade(socket, 503);
+          return;
+        }
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          if (closed || abort.signal.aborted) {
+            ws.terminate();
+            return;
+          }
+          connectSocket(ws, ticket);
+        });
+      } catch (error) {
+        const e = error instanceof TfRenewalError ? error : unavailable();
+        rejectUpgrade(
+          socket,
+          e.status === 403
+            ? 403
+            : e.status === 401 || e.reason === "REFERENCE_SPENT"
+              ? 401
+              : 503,
+        );
+      } finally {
+        clearTimeout(timeout);
+        socket.off("close", cancel);
+        pendingAborts.delete(socket);
+        pendingSockets.delete(socket);
+      }
       return;
     }
     let ticket: WebSocketTicket | null;
@@ -544,6 +916,8 @@ export function attachWebSocketServer(
       closed = true;
       server.off("upgrade", onUpgrade);
       server.off("close", onServerClose);
+      for (const abort of pendingAborts.values()) abort.abort();
+      pendingAborts.clear();
       for (const socket of pendingSockets) socket.destroy();
       pendingSockets.clear();
       for (const ws of [...contexts.keys()]) {

@@ -12,6 +12,8 @@ tags:
     description: Health operations
   - name: tracks
     description: Track search, streaming, and download operations
+  - name: collections
+    description: Account-scoped TF music collections
 paths:
   /healthz:
     get:
@@ -26,6 +28,106 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /tracks/suggest:
+    get:
+      operationId: getTrackSuggestions
+      tags: [tracks]
+      summary: Suggest artist and title pairs for a search query
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 200
+      responses:
+        "200":
+          description: Up to five search suggestions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackSuggestionsResponse"
+        "400":
+          description: Invalid suggestion query
+        "503":
+          description: Search module unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchUnavailableResponse"
+  /tracks/free-search:
+    post:
+      operationId: freeSearchTracks
+      tags: [tracks]
+      summary: Search open sources by free text
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FreeSearchRequest"
+      responses:
+        "200":
+          description: Ranked track candidates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "400":
+          description: Bad request
+        "503":
+          description: Search module unavailable
+  /tracks/link-metadata:
+    post:
+      operationId: resolveTrackLinkMetadata
+      tags: [tracks]
+      summary: Read metadata from a supported public track link
+      description: Returns metadata only. The link is not admitted as playable media; clients must search and select a separately verified candidate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MediaLinkMetadataRequest"
+      responses:
+        "200":
+          description: Versioned track metadata without a stream URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaLinkMetadataResponse"
+        "400":
+          description: Invalid request body
+        "422":
+          description: Unsupported track link
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaLinkErrorResponse"
+        "429":
+          description: Account link-resolution budget exhausted
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaLinkErrorResponse"
+        "503":
+          description: Provider metadata unavailable or resolver overloaded
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+              description: Present only when the resolver is overloaded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaLinkErrorResponse"
   /tracks/search:
     post:
       operationId: searchTracks
@@ -76,6 +178,35 @@ paths:
           schema:
             type: string
           description: "Track ID from search results. Format: yt_<base64url> or sc_<base64url>."
+        - name: artist
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 300
+          description: Artist metadata required for a Deezer fallback.
+        - name: title
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 500
+          description: Track metadata required for a Deezer fallback.
+        - name: expectedDurationSeconds
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 86400
+          description: Full recording duration from the selected result, when known.
+        - name: refresh
+          in: query
+          required: false
+          schema:
+            type: integer
+            enum: [1]
+          description: Bypass the cached stream URL and resolve a new one for non-Deezer tracks. The value must be 1; source-duration admission still applies.
       responses:
         "200":
           description: Stream URL
@@ -83,12 +214,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StreamResponse"
+        "400":
+          description: Invalid expected duration, refresh value, or track ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamBadRequest"
         "404":
           description: Track not found
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Resolved source is a short preview of a known full recording
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamAdmissionError"
+        "503":
+          description: Source duration could not be verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamAdmissionError"
         "500":
           description: Server error
           content:
@@ -99,8 +248,9 @@ paths:
     get:
       operationId: getTrackDownload
       tags: [tracks]
-      summary: Get download URL for a track
-      description: Returns a direct download URL for the best quality audio. URL may expire.
+      summary: Download a track through the legacy binary route
+      description: Streams encoded audio for older clients. New clients should use the queued download API. A known full-track duration enables preview admission before streaming.
+      deprecated: true
       parameters:
         - name: id
           in: path
@@ -108,15 +258,82 @@ paths:
           schema:
             type: string
           description: "Track ID from search results. Format: yt_<base64url> or sc_<base64url>."
+        - name: artist
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Artist metadata for a Deezer fallback.
+        - name: title
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Track metadata for a Deezer fallback.
+        - name: quality
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "256"
+          description: One of 128, 192, 256, 320 or flac. Unknown values fall back to 256.
+        - name: expectedDurationSeconds
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 86400
+          description: Full recording duration from the selected result, when known.
       responses:
         "200":
-          description: Download URL
+          description: Encoded audio stream
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/flac:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Invalid track ID or expected duration
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DownloadResponse"
+                $ref: "#/components/schemas/StreamBadRequest"
+        "403":
+          description: Missing search entitlement for a Deezer fallback
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    const: module_access_denied
+                required: [error]
         "404":
           description: Track not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Resolved source is a short preview of a known full recording
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamAdmissionError"
+        "503":
+          description: Source duration could not be verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamAdmissionError"
+        "502":
+          description: Deezer fallback source unavailable
           content:
             application/json:
               schema:
@@ -341,8 +558,424 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DownloadErrorResponse"
+  /collections/liked:
+    get:
+      operationId: listLikedTracks
+      tags: [collections]
+      summary: List tracks saved by the current account
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: ^[A-Za-z0-9_-]+$
+        - name: sort
+          in: query
+          required: false
+          description: Omit for the legacy newest-first order; manual uses the account's saved order.
+          schema:
+            type: string
+            enum: [manual]
+      responses:
+        "200":
+          description: Current account liked tracks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikedTrackPage"
+        "400":
+          description: Invalid pagination input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "409":
+          description: Manual-order cursor belongs to an older collection revision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikedOrderConflictResponse"
+        "401":
+          description: TF session is missing or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "403":
+          description: Current account lacks tf.collections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "503":
+          description: Live Platform policy could not be confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+  /collections/liked/order:
+    patch:
+      operationId: moveLikedTrack
+      tags: [collections]
+      summary: Move one liked track before another in the current account order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveLikedTrackRequest"
+      responses:
+        "200":
+          description: Current order revision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikedOrderMutationResponse"
+        "400":
+          description: Invalid move input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "401":
+          description: TF session is missing or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "403":
+          description: Current account lacks tf.collections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "404":
+          description: Track or anchor is absent from this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "409":
+          description: Expected revision is stale
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikedOrderConflictResponse"
+        "503":
+          description: Live Platform policy could not be confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+  /collections/liked/lookup:
+    post:
+      operationId: lookupLikedTracks
+      tags: [collections]
+      summary: Check which requested tracks are saved by the current account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LikedTrackLookupRequest"
+      responses:
+        "200":
+          description: Liked IDs in request order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikedTrackLookupResponse"
+        "400":
+          description: Invalid track IDs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "401":
+          description: TF session is missing or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "403":
+          description: Current account lacks tf.collections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "503":
+          description: Live Platform policy could not be confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+  /collections/liked/{trackId}:
+    put:
+      operationId: saveLikedTrack
+      tags: [collections]
+      summary: Save or update one track for the current account
+      parameters:
+        - $ref: "#/components/parameters/LikedTrackId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveLikedTrackRequest"
+      responses:
+        "200":
+          description: Saved track state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikedTrackMutationResponse"
+        "400":
+          description: Invalid track metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "401":
+          description: TF session is missing or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "403":
+          description: Current account lacks tf.collections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "503":
+          description: Live Platform policy could not be confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+    delete:
+      operationId: removeLikedTrack
+      tags: [collections]
+      summary: Remove one track from the current account collection
+      parameters:
+        - $ref: "#/components/parameters/LikedTrackId"
+      responses:
+        "204":
+          description: Track is no longer saved
+        "400":
+          description: Invalid track ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "401":
+          description: TF session is missing or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "403":
+          description: Current account lacks tf.collections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+        "503":
+          description: Live Platform policy could not be confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionErrorResponse"
+  /collections/playlists:
+    get:
+      operationId: listPlaylists
+      tags: [collections]
+      summary: List playlists owned by the current TF account
+      responses:
+        "200":
+          description: Account playlists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistListResponse"
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+    post:
+      operationId: createPlaylist
+      tags: [collections]
+      summary: Create a playlist for the current TF account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlaylistRequest"
+      responses:
+        "201":
+          description: Created playlist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistMutationResponse"
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+  /collections/playlists/{playlistId}:
+    get:
+      operationId: getPlaylist
+      tags: [collections]
+      summary: Get an owned playlist and its ordered tracks
+      parameters:
+        - $ref: "#/components/parameters/PlaylistId"
+      responses:
+        "200":
+          description: Playlist detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistDetailResponse"
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+    delete:
+      operationId: removePlaylist
+      tags: [collections]
+      summary: Delete an owned playlist and its tracks
+      parameters:
+        - $ref: "#/components/parameters/PlaylistId"
+      responses:
+        "204":
+          description: Playlist deleted
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+  /collections/playlists/{playlistId}/tracks:
+    post:
+      operationId: addPlaylistTrack
+      tags: [collections]
+      summary: Add a TF track once to an owned playlist
+      parameters:
+        - $ref: "#/components/parameters/PlaylistId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddPlaylistTrackRequest"
+      responses:
+        "200":
+          description: Existing or newly added track
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistTrackMutationResponse"
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+  /collections/playlists/{playlistId}/tracks/order:
+    patch:
+      operationId: reorderPlaylistTracks
+      tags: [collections]
+      summary: Reorder all tracks in an owned playlist
+      parameters:
+        - $ref: "#/components/parameters/PlaylistId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReorderPlaylistTracksRequest"
+      responses:
+        "200":
+          description: Playlist with tracks in final order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistDetailResponse"
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+  /collections/playlists/{playlistId}/tracks/{trackId}:
+    delete:
+      operationId: removePlaylistTrack
+      tags: [collections]
+      summary: Remove a TF track from an owned playlist
+      parameters:
+        - $ref: "#/components/parameters/PlaylistId"
+        - $ref: "#/components/parameters/LikedTrackId"
+      responses:
+        "204":
+          description: Track absent from playlist
+        "400":
+          $ref: "#/components/responses/CollectionBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
 components:
   parameters:
+    PlaylistId:
+      name: playlistId
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 2147483647
     DownloadJobId:
       name: jobId
       in: path
@@ -351,7 +984,64 @@ components:
         type: string
         format: uuid
         pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+    LikedTrackId:
+      name: trackId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 4
+        maxLength: 4096
+        pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+  responses:
+    CollectionBadRequest:
+      description: Invalid playlist input
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CollectionErrorResponse"
+    CollectionUnauthorized:
+      description: TF session is missing or expired
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CollectionErrorResponse"
+    CollectionForbidden:
+      description: Current account lacks tf.collections
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CollectionErrorResponse"
+    PlaylistNotFound:
+      description: Playlist missing or owned by another account
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CollectionErrorResponse"
+    CollectionUnavailable:
+      description: Live Platform policy could not be confirmed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CollectionErrorResponse"
   schemas:
+    TrackSuggestionsResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        suggestions:
+          type: array
+          maxItems: 5
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              artist:
+                type: string
+              title:
+                type: string
+            required: [artist, title]
+      required: [suggestions]
     HealthStatus:
       type: object
       properties:
@@ -416,6 +1106,73 @@ components:
         - source
         - quality
         - score
+
+    MediaLinkMetadataRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          minLength: 1
+          maxLength: 500
+      required: [url]
+
+    MediaLinkMetadataResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+        source:
+          type: string
+          enum: [youtube, soundcloud, bandcamp, deezer]
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        artist:
+          type: string
+          minLength: 1
+          maxLength: 200
+        durationSeconds:
+          type: integer
+          minimum: 1
+          maximum: 86400
+      required: [schemaVersion, source, title]
+
+    MediaLinkErrorResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum: [unsupported_media_link, media_link_unavailable, media_link_rate_limited, media_link_overloaded]
+      required: [error]
+
+    FreeSearchRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          minLength: 2
+          maxLength: 500
+        mode:
+          type: string
+          enum: [auto, manual]
+        sources:
+          type: array
+          minItems: 1
+          maxItems: 4
+          uniqueItems: true
+          items:
+            type: string
+            enum: [yt, sc, bc, dz]
+        maxResults:
+          type: integer
+          minimum: 1
+          maximum: 40
+      required: [query]
 
     SearchRequest:
       type: object
@@ -540,6 +1297,11 @@ components:
           maxLength: 500
         quality:
           $ref: "#/components/schemas/DownloadQuality"
+        expectedDurationSeconds:
+          type: integer
+          minimum: 1
+          maximum: 86400
+          description: Expected full recording duration from the selected candidate, when known.
       required: [trackId, artist, title, quality]
 
     DownloadQueueRequest:
@@ -605,6 +1367,10 @@ components:
       type: string
       enum: [waiting, active, completed, failed, canceled]
 
+    DownloadFailureCode:
+      type: string
+      enum: [preview_rejected, duration_unverified]
+
     DownloadJobStatus:
       type: object
       additionalProperties: false
@@ -623,6 +1389,8 @@ components:
           type: integer
           minimum: 1
           maximum: 1073741824
+        failureCode:
+          $ref: "#/components/schemas/DownloadFailureCode"
       required: [status, progress]
 
     DownloadJob:
@@ -646,6 +1414,8 @@ components:
           type: integer
           minimum: 1
           maximum: 1073741824
+        failureCode:
+          $ref: "#/components/schemas/DownloadFailureCode"
       required: [jobId, status, progress]
 
     DownloadJobListResponse:
@@ -687,6 +1457,339 @@ components:
             - worker_unavailable
       required: [error]
 
+    LikedTrack:
+      type: object
+      additionalProperties: false
+      properties:
+        trackId:
+          type: string
+          minLength: 4
+          maxLength: 4096
+          pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+        artist:
+          type: string
+          nullable: true
+          maxLength: 300
+        title:
+          type: string
+          nullable: true
+          maxLength: 500
+        thumbnailUrl:
+          type: string
+          format: uri
+          nullable: true
+          maxLength: 2048
+        durationSeconds:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 86400
+        likedAt:
+          type: string
+          format: date-time
+      required:
+        - trackId
+        - artist
+        - title
+        - thumbnailUrl
+        - durationSeconds
+        - likedAt
+
+    LikedTrackPage:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/LikedTrack"
+        nextCursor:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: ^[A-Za-z0-9_-]+$
+        revision:
+          type: string
+          pattern: ^(0|[1-9][0-9]*)$
+          description: Present only when sort=manual.
+      required: [items, nextCursor]
+
+    MoveLikedTrackRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        trackId:
+          type: string
+          minLength: 4
+          maxLength: 4096
+          pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+        beforeTrackId:
+          type: string
+          nullable: true
+          minLength: 4
+          maxLength: 4096
+          pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+        expectedRevision:
+          type: string
+          maxLength: 20
+          pattern: ^(0|[1-9][0-9]*)$
+      required: [trackId, beforeTrackId, expectedRevision]
+
+    LikedOrderMutationResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        revision:
+          type: string
+          pattern: ^(0|[1-9][0-9]*)$
+      required: [revision]
+
+    LikedOrderConflictResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum: [liked_order_conflict]
+        revision:
+          type: string
+          pattern: ^(0|[1-9][0-9]*)$
+      required: [error, revision]
+
+    LikedTrackLookupRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        trackIds:
+          type: array
+          minItems: 1
+          maxItems: 40
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 4
+            maxLength: 4096
+            pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+      required: [trackIds]
+
+    LikedTrackLookupResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        likedTrackIds:
+          type: array
+          maxItems: 40
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 4
+            maxLength: 4096
+            pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+      required: [likedTrackIds]
+
+    SaveLikedTrackRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        artist:
+          type: string
+          minLength: 1
+          maxLength: 300
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+        thumbnailUrl:
+          type: string
+          format: uri
+          nullable: true
+          maxLength: 2048
+        durationSeconds:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 86400
+      required: [artist, title]
+
+    LikedTrackMutationResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        item:
+          $ref: "#/components/schemas/LikedTrack"
+      required: [item]
+
+    CollectionErrorResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum:
+            - bad_request
+            - unauthorized
+            - forbidden
+            - module_access_denied
+            - policy_unavailable
+            - internal_error
+            - playlist_not_found
+            - liked_track_not_found
+      required: [error]
+
+    Playlist:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          nullable: true
+        trackCount:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, name, description, trackCount, createdAt, updatedAt]
+
+    PlaylistTrack:
+      type: object
+      additionalProperties: false
+      properties:
+        trackId:
+          type: string
+          minLength: 4
+          maxLength: 4096
+          pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+        artist:
+          type: string
+        title:
+          type: string
+        thumbnailUrl:
+          type: string
+          format: uri
+          pattern: '^https?:[/][/]'
+          nullable: true
+          maxLength: 2048
+        durationSeconds:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 86400
+        position:
+          type: integer
+          minimum: 0
+        addedAt:
+          type: string
+          format: date-time
+      required: [trackId, artist, title, thumbnailUrl, durationSeconds, position, addedAt]
+
+    PlaylistListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        playlists:
+          type: array
+          items:
+            $ref: "#/components/schemas/Playlist"
+      required: [playlists]
+
+    PlaylistMutationResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        playlist:
+          $ref: "#/components/schemas/Playlist"
+      required: [playlist]
+
+    PlaylistDetailResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        playlist:
+          $ref: "#/components/schemas/Playlist"
+        tracks:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlaylistTrack"
+      required: [playlist, tracks]
+
+    CreatePlaylistRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+      required: [name]
+
+    AddPlaylistTrackRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        trackId:
+          type: string
+          minLength: 4
+          maxLength: 4096
+          pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+        artist:
+          type: string
+          minLength: 1
+          maxLength: 300
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+        thumbnailUrl:
+          type: string
+          format: uri
+          pattern: '^https?:[/][/]'
+          nullable: true
+          maxLength: 2048
+        durationSeconds:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 86400
+      required: [trackId, artist, title]
+
+    ReorderPlaylistTracksRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        trackIds:
+          type: array
+          maxItems: 500
+          uniqueItems: true
+          description: Exact playlist membership in final order; cumulative ID length at most 50000 characters
+          items:
+            type: string
+            minLength: 4
+            maxLength: 4096
+            pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
+      required: [trackIds]
+
+    PlaylistTrackMutationResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        track:
+          $ref: "#/components/schemas/PlaylistTrack"
+        added:
+          type: boolean
+      required: [track, added]
+
     ErrorResponse:
       type: object
       properties:
@@ -697,6 +1800,26 @@ components:
       required:
         - error
         - message
+
+    StreamAdmissionError:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum: [preview_rejected, duration_unverified]
+      required: [error]
+
+    StreamBadRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          const: bad_request
+        message:
+          type: string
+      required: [error]
 
     SearchUnavailableResponse:
       type: object

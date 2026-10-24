@@ -1,6 +1,7 @@
 import type { Server } from "node:http";
 
 interface ApiListenerOptions {
+  readonly beforeListen?: () => Promise<void>;
   readonly listen: () => Server;
   readonly initialize: (server: Server) => Promise<void>;
   readonly closeQueues: () => Promise<void>;
@@ -58,14 +59,16 @@ export async function initializeApiRuntime<Handle extends ApiRuntimeHandle>(
 export async function startApiListener(
   options: ApiListenerOptions,
 ): Promise<Server> {
-  const server = options.listen();
+  let server: Server | undefined;
   try {
+    if (options.beforeListen) await options.beforeListen();
+    server = options.listen();
     await waitForListening(server);
     await options.initialize(server);
     return server;
   } catch {
     await Promise.allSettled([
-      closeServer(server),
+      ...(server ? [closeServer(server)] : []),
       options.closeQueues(),
       options.closeRedis(),
     ]);
