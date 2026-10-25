@@ -144,7 +144,26 @@ pnpm --filter @workspace/scripts typecheck
 pnpm --filter @workspace/scripts exec vitest run --maxWorkers=1 src/apollo-account-staging-contract.test.ts
 ```
 
+### Consolidation verification: selected greens are not full acceptance
+
+Task 5 passed workspace typecheck, 21 selected non-root/non-mobile package
+builds, 434 music-player tests, 24 Platform contract tests, and the focused
+API bundle-boundary check. Other focused results are recorded in the Task 5
+report. They do not make the full workspace or release acceptance green:
+
+- The root production build remains blocked at mobile because Metro port
+  `8081` is occupied; this reproduced on the pre-merge baseline.
+- Operator-release real-child tests hit timeout/Corepack-shim failures in the
+  Electron-hosted environment. The latest full TF search run was 302 passed,
+  1 skipped, 2 failed: `bundle-startup.test.ts` and
+  `deployment-contract.test.ts` retain Electron child-environment failures.
+- Some native credential/temp tests fail with Windows `EPERM` during cleanup.
+- Canary Compose rendering requires unavailable Docker, and the pinned canary
+  archive hash differs in this Git/runtime. Do not rewrite that hash merely to
+  manufacture a pass; revalidate it under the original evidence environment.
+
 Docker/Compose and real PostgreSQL integration cases require their declared
 local dependencies and fixtures. Record unavailable Docker as an environment
 limitation and integration tests without a configured database as skipped; do
-not weaken contracts or substitute fabricated runtime evidence.
+not weaken contracts or substitute fabricated runtime evidence. Full Auth,
+provider, audio, mobile, deployment, and production acceptance remains open.
