@@ -55,6 +55,30 @@ export interface TrackResult {
   score: number;
 }
 
+export type ArtistTracksResponseSchemaVersion =
+  (typeof ArtistTracksResponseSchemaVersion)[keyof typeof ArtistTracksResponseSchemaVersion];
+
+export const ArtistTracksResponseSchemaVersion = {
+  NUMBER_1: 1,
+} as const;
+
+export interface ArtistTracksResponse {
+  schemaVersion: ArtistTracksResponseSchemaVersion;
+  /**
+   * The requested display name after trimming, collapsing whitespace, and NFC normalization, with its case preserved.
+   * @minLength 1
+   * @maxLength 200
+   */
+  artist: string;
+  /**
+   * Provider order, with duplicate IDs removed and at most ten results per provider.
+   * @maxItems 20
+   */
+  results: TrackResult[];
+  /** True if only one of the two requested providers completed successfully, even when its exact-match result list is empty. */
+  partial: boolean;
+}
+
 export interface MediaLinkMetadataRequest {
   /**
    * @minLength 1
@@ -993,6 +1017,50 @@ export type GetTrackSuggestionsParams = {
    * @maxLength 200
    */
   q: string;
+};
+
+export type GetArtistTracksParams = {
+  /**
+   * Exactly one nonblank name value without control characters or other query parameters. The length limit applies before trimming or normalization.
+   * @minLength 1
+   * @maxLength 200
+   */
+  name: string;
+};
+
+export type GetArtistTracks400Error =
+  (typeof GetArtistTracks400Error)[keyof typeof GetArtistTracks400Error];
+
+export const GetArtistTracks400Error = {
+  bad_request: "bad_request",
+} as const;
+
+export type GetArtistTracks400 = {
+  error: GetArtistTracks400Error;
+};
+
+export type GetArtistTracks403Error =
+  (typeof GetArtistTracks403Error)[keyof typeof GetArtistTracks403Error];
+
+export const GetArtistTracks403Error = {
+  module_access_denied: "module_access_denied",
+  forbidden: "forbidden",
+} as const;
+
+export type GetArtistTracks403 = {
+  error: GetArtistTracks403Error;
+};
+
+export type GetArtistTracks503Error =
+  (typeof GetArtistTracks503Error)[keyof typeof GetArtistTracks503Error];
+
+export const GetArtistTracks503Error = {
+  artist_discovery_unavailable: "artist_discovery_unavailable",
+  policy_unavailable: "policy_unavailable",
+} as const;
+
+export type GetArtistTracks503 = {
+  error: GetArtistTracks503Error;
 };
 
 export type GetTrackStreamParams = {

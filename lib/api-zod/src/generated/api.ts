@@ -42,6 +42,81 @@ export const GetTrackSuggestionsResponse = zod.object({
 });
 
 /**
+ * Requires tf.search. The lookup is read-only and no-store. It searches YouTube and SoundCloud and filters by exact artist name after case, whitespace, and NFC normalization. Results are provider-supplied candidates, not verification of an artist identity, homonym, or recording version.
+ * @summary Discover track candidates by artist name
+ */
+export const getArtistTracksQueryNameMax = 200;
+
+export const GetArtistTracksQueryParams = zod
+  .object({
+    name: zod
+      .string()
+      .min(1)
+      .max(getArtistTracksQueryNameMax)
+      .describe(
+        "Exactly one nonblank name value without control characters or other query parameters. The length limit applies before trimming or normalization.",
+      ),
+  })
+  .strict();
+
+export const getArtistTracksResponseArtistMax = 200;
+
+export const getArtistTracksResponseResultsMax = 20;
+
+export const GetArtistTracksResponse = zod
+  .object({
+    schemaVersion: zod.literal(1),
+    artist: zod
+      .string()
+      .min(1)
+      .max(getArtistTracksResponseArtistMax)
+      .describe(
+        "The requested display name after trimming, collapsing whitespace, and NFC normalization, with its case preserved.",
+      ),
+    results: zod
+      .array(
+        zod
+          .object({
+            id: zod
+              .string()
+              .describe(
+                "Unique track ID. Format: yt_<base64url(https:\/\/www.youtube.com\/watch?v=ID)> for YouTube or sc_<base64url(permalink_url)> for SoundCloud. Pass this ID to \/stream or \/download endpoints.",
+              ),
+            title: zod.string(),
+            artist: zod.string(),
+            type: zod.enum(["original", "remix", "live", "cover"]),
+            duration: zod.number().describe("Duration in seconds"),
+            source: zod.enum([
+              "youtube",
+              "soundcloud",
+              "bandcamp",
+              "deezer",
+              "reviewed",
+            ]),
+            thumbnailUrl: zod.string().nullish(),
+            quality: zod
+              .array(zod.string())
+              .describe('Available quality options (e.g. [\"128\", \"320\"])'),
+            viewCount: zod.number().nullish(),
+            score: zod
+              .number()
+              .describe("Ranking score (higher is better match)"),
+          })
+          .strict(),
+      )
+      .max(getArtistTracksResponseResultsMax)
+      .describe(
+        "Provider order, with duplicate IDs removed and at most ten results per provider.",
+      ),
+    partial: zod
+      .boolean()
+      .describe(
+        "True if only one of the two requested providers completed successfully, even when its exact-match result list is empty.",
+      ),
+  })
+  .strict();
+
+/**
  * @summary Search open sources by free text
  */
 export const freeSearchTracksBodyQueryMin = 2;

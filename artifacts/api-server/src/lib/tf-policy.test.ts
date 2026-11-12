@@ -176,11 +176,11 @@ describe("TF route policy map", () => {
     expect(requiredPolicyForRequest(method, `${path}/extra/path`)).toBeNull();
   });
 
-  it("contains the exact 59 anchored capability policies", () => {
-    expect(TF_ROUTE_POLICIES).toHaveLength(59);
+  it("contains the exact 60 anchored capability policies", () => {
+    expect(TF_ROUTE_POLICIES).toHaveLength(60);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === false),
-    ).toHaveLength(8);
+    ).toHaveLength(9);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === true),
     ).toHaveLength(51);

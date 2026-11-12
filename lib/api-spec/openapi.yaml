@@ -56,6 +56,71 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SearchUnavailableResponse"
+  /tracks/artist:
+    get:
+      operationId: getArtistTracks
+      tags: [tracks]
+      summary: Discover track candidates by artist name
+      description: Requires tf.search. The lookup is read-only and no-store. It searches YouTube and SoundCloud and filters by exact artist name after case, whitespace, and NFC normalization. Results are provider-supplied candidates, not verification of an artist identity, homonym, or recording version.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: Exactly one nonblank name value without control characters or other query parameters. The length limit applies before trimming or normalization.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      responses:
+        "200":
+          description: Discovery completed for at least one provider, with zero or more exact-name candidates
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtistTracksResponse"
+        "400":
+          description: Missing, malformed, repeated, or unexpected query input
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  error:
+                    type: string
+                    enum: [bad_request]
+                required: [error]
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          description: The current account lacks tf.search or session policy denied the request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  error:
+                    type: string
+                    enum: [module_access_denied, forbidden]
+                required: [error]
+        "503":
+          description: Artist discovery wholly failed, or TF policy could not be checked before dispatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  error:
+                    type: string
+                    enum: [artist_discovery_unavailable, policy_unavailable]
+                required: [error]
   /tracks/free-search:
     post:
       operationId: freeSearchTracks
@@ -1461,6 +1526,29 @@ components:
         - source
         - quality
         - score
+
+    ArtistTracksResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+        artist:
+          type: string
+          description: The requested display name after trimming, collapsing whitespace, and NFC normalization, with its case preserved.
+          minLength: 1
+          maxLength: 200
+        results:
+          type: array
+          description: Provider order, with duplicate IDs removed and at most ten results per provider.
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/TrackResult"
+        partial:
+          type: boolean
+          description: True if only one of the two requested providers completed successfully, even when its exact-match result list is empty.
+      required: [schemaVersion, artist, results, partial]
 
     MediaLinkMetadataRequest:
       type: object

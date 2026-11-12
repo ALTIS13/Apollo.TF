@@ -284,10 +284,14 @@ export async function tfFetch<T>(path: string, init?: RequestInit): Promise<T> {
         (response.status === 413 && code === "request_too_large")
       ))
     );
+    const expectedArtistRejection = /^\/tracks\/artist(?:\?|$)/.test(path) &&
+      requestInit.method === "GET" &&
+      response.status === 503 && code === "artist_discovery_unavailable";
     const kind =
       spotifyRead && response.status === 401 && code === "not_connected"
         ? "provider"
-        : expectedImportRejection || expectedRecordingRejection || (spotifyRead && response.status === 502 && code === "spotify_error")
+        : expectedImportRejection || expectedRecordingRejection || expectedArtistRejection ||
+            (spotifyRead && response.status === 502 && code === "spotify_error")
           ? "rejected"
           : response.status === 401
             ? "unauthenticated"

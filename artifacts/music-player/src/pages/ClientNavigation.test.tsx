@@ -50,7 +50,8 @@ beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     async (input: string | URL | Request, init?: RequestInit) => {
-      const path = new URL(String(input), "https://tf.apollot.ru").pathname;
+      const url = new URL(String(input), "https://tf.apollot.ru");
+      const path = url.pathname;
       calls.push({ path, init });
       if (path.endsWith("/auth/me")) {
         const response = json({
@@ -102,6 +103,18 @@ beforeEach(() => {
           offset: 0,
           limit: 50,
         });
+      if (path.endsWith("/tracks/artist") && url.searchParams.get("name") === "Fixture Artist") {
+        return json({
+          schemaVersion: 1,
+          artist: "Fixture Artist",
+          partial: false,
+          results: [{
+            id: "sc_artist_second", title: "Second Recording", artist: "Fixture Artist",
+            type: "original", duration: 192, source: "soundcloud", thumbnailUrl: null,
+            quality: [], viewCount: 0, score: 42,
+          }],
+        });
+      }
       if (path.endsWith("/tracks/search"))
         return candidateFailure
           ? json({ error: "search_unavailable" }, 503)
@@ -314,6 +327,29 @@ it("offers a completed exact search again after returning to Home", async () => 
   await user.click(repeat);
   await screen.findByText("Independent Recording");
   expect(calls.filter(({ path }) => path.endsWith("/tracks/search"))).toHaveLength(2);
+});
+
+it("opens an artist from search and adds an artist result to the existing queue", async () => {
+  candidateFixture = true;
+  const user = userEvent.setup();
+  await open("/");
+  await user.click(screen.getByRole("button", { name: "Точный" }));
+  await user.type(screen.getByRole("textbox", { name: "Исполнитель" }), "Fixture Artist");
+  await user.type(screen.getByRole("combobox", { name: "Название трека" }), "Fixture Track");
+  await user.keyboard("{Enter}");
+  await screen.findByRole("heading", { name: "Independent Recording" });
+
+  await user.click(screen.getByRole("link", { name: /Fixture Artist/ }));
+  expect(window.location.pathname).toBe("/artist");
+  expect(new URLSearchParams(window.location.search).get("name")).toBe("Fixture Artist");
+  const addToQueue = await screen.findByRole("button", { name: "Добавить в очередь: Second Recording" });
+  expect(screen.queryByRole("button", { name: "Скачать" })).not.toBeInTheDocument();
+  await user.click(addToQueue);
+  const nav = screen.getByRole("navigation", { name: "Основная навигация" });
+  await user.click(within(nav).getByRole("link", { name: "Очередь" }));
+  expect(await within(screen.getByRole("main")).findByRole("button", { name: "Воспроизвести Second Recording" }))
+    .toBeInTheDocument();
+  expect(calls.some(({ path }) => /\/stream(?:\/|$)/.test(path))).toBe(false);
 });
 
 it("resolves a provider-library track in place into playable and savable TF candidates", async () => {

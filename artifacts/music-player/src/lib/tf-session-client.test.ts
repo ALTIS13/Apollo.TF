@@ -55,6 +55,23 @@ describe("TF browser session client", () => {
     } finally { unsubscribe(); }
   });
 
+  it("keeps artist search outages local without masking a policy outage on the same route", async () => {
+    const securityEvents = vi.fn();
+    const unsubscribe = subscribeTfAuthSecurityEvents(securityEvents);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(Response.json(session))
+      .mockResolvedValueOnce(Response.json({ error: "artist_discovery_unavailable" }, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ error: "policy_unavailable" }, { status: 503 }));
+    try {
+      await fetchAndCommitSession();
+      const path = "/tracks/artist?name=Fixture";
+      await expect(tfFetch(path)).rejects.toMatchObject({ kind: "rejected" });
+      expect(securityEvents).not.toHaveBeenCalled();
+      await expect(tfFetch(path)).rejects.toMatchObject({ kind: "unavailable" });
+      expect(securityEvents).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "unavailable" }));
+    } finally { unsubscribe(); }
+  });
+
   it("fetches and validates the session without committing CSRF until the caller accepts it", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(session), {
       status: 200,

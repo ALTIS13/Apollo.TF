@@ -18,6 +18,7 @@ import type {
 
 import type {
   AddPlaylistTrackRequest,
+  ArtistTracksResponse,
   CollectionBadRequestResponse,
   CollectionErrorResponse,
   CollectionForbiddenResponse,
@@ -32,6 +33,10 @@ import type {
   DownloadQueueResponse,
   ErrorResponse,
   FreeSearchRequest,
+  GetArtistTracks400,
+  GetArtistTracks403,
+  GetArtistTracks503,
+  GetArtistTracksParams,
   GetTrackDownload403,
   GetTrackDownloadParams,
   GetTrackStreamParams,
@@ -262,6 +267,116 @@ export function useGetTrackSuggestions<
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getGetTrackSuggestionsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Requires tf.search. The lookup is read-only and no-store. It searches YouTube and SoundCloud and filters by exact artist name after case, whitespace, and NFC normalization. Results are provider-supplied candidates, not verification of an artist identity, homonym, or recording version.
+ * @summary Discover track candidates by artist name
+ */
+export const getGetArtistTracksUrl = (params: GetArtistTracksParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/tracks/artist?${stringifiedParams}`
+    : `/api/tracks/artist`;
+};
+
+export const getArtistTracks = async (
+  params: GetArtistTracksParams,
+  options?: RequestInit,
+): Promise<ArtistTracksResponse> => {
+  return customFetch<ArtistTracksResponse>(getGetArtistTracksUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetArtistTracksQueryKey = (params?: GetArtistTracksParams) => {
+  return [`/api/tracks/artist`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetArtistTracksQueryOptions = <
+  TData = Awaited<ReturnType<typeof getArtistTracks>>,
+  TError = ErrorType<
+    | GetArtistTracks400
+    | CollectionUnauthorizedResponse
+    | GetArtistTracks403
+    | GetArtistTracks503
+  >,
+>(
+  params: GetArtistTracksParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getArtistTracks>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetArtistTracksQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getArtistTracks>>> = ({
+    signal,
+  }) => getArtistTracks(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getArtistTracks>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetArtistTracksQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getArtistTracks>>
+>;
+export type GetArtistTracksQueryError = ErrorType<
+  | GetArtistTracks400
+  | CollectionUnauthorizedResponse
+  | GetArtistTracks403
+  | GetArtistTracks503
+>;
+
+/**
+ * @summary Discover track candidates by artist name
+ */
+
+export function useGetArtistTracks<
+  TData = Awaited<ReturnType<typeof getArtistTracks>>,
+  TError = ErrorType<
+    | GetArtistTracks400
+    | CollectionUnauthorizedResponse
+    | GetArtistTracks403
+    | GetArtistTracks503
+  >,
+>(
+  params: GetArtistTracksParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getArtistTracks>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetArtistTracksQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

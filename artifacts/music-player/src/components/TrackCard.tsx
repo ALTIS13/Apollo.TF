@@ -19,6 +19,7 @@ import { useToast } from "@/hooks/use-toast";
 import { motion, useReducedMotion } from "framer-motion";
 import { useTrackDownload } from "@/hooks/use-track-download";
 import { downloadFailureFeedback, TrackDetails } from "@/components/TrackDetails";
+import { ArtistLink } from "@/components/ArtistLink";
 
 const actionClassName = "flex h-[44px] shrink-0 items-center justify-center rounded-md border border-white/10 bg-[#09090b] transition-colors hover:bg-white/5 hover:text-[#8ddbd4] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8ddbd4] motion-reduce:transition-none";
 
@@ -30,9 +31,14 @@ interface TrackCardProps {
   onPlay?: (track: TrackResult) => void | Promise<unknown>;
   playLabel?: string;
   playDisabled?: boolean;
+  linkArtist?: boolean;
+  allowDownload?: boolean;
 }
 
-export function TrackCard({ track, index, collectionAction, compact = false, onPlay, playLabel, playDisabled = false }: TrackCardProps) {
+export function TrackCard({
+  track, index, collectionAction, compact = false, onPlay, playLabel,
+  playDisabled = false, linkArtist = true, allowDownload = true,
+}: TrackCardProps) {
   const reduceMotion = useReducedMotion();
   const {
     currentTrack,
@@ -202,7 +208,7 @@ export function TrackCard({ track, index, collectionAction, compact = false, onP
               {track.title}
             </h3>
             <p className={`${compact ? "text-xs" : ""} text-[#aaa9ba] flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 mt-1`}>
-              <span className="min-w-0 truncate">{track.artist}</span>
+              <ArtistLink artist={track.artist} enabled={linkArtist && !onPlay} />
               <span className="w-1 h-1 rounded-full bg-muted-foreground/30 inline-block" />
               <span className="max-w-full font-mono text-[10px] tracking-normal">
                 {track.duration > 0 ? formatDuration(track.duration) : "Длительность неизвестна"}
@@ -255,7 +261,7 @@ export function TrackCard({ track, index, collectionAction, compact = false, onP
           {queueAdded ? <Check className="h-4 w-4" /> : <ListPlus className="h-4 w-4" />}
         </button>
 
-        <div
+        {allowDownload && <div
           data-testid="track-download-action"
           className="grid h-[64px] w-[72px] shrink-0 grid-rows-[44px_20px]"
         >
@@ -295,7 +301,7 @@ export function TrackCard({ track, index, collectionAction, compact = false, onP
           >
             {isDownloadPending ? downloadState === "active" ? `${progress}%` : "Подготовка" : downloadState === "failed" ? failureFeedback.shortLabel : terminalDownloadStatus}
           </span>
-        </div>
+        </div>}
       </div>
     </motion.div>
   );

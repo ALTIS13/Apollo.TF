@@ -70,6 +70,12 @@ export const playlistImportNoStore: RequestHandler = (
 
 export function createApiRouter(options: ApiRouterOptions = {}): IRouter {
   const router: IRouter = Router();
+  router.use((request, response, next) => {
+    if (request.method === "GET" && request.path === "/tracks/artist") {
+      response.set("Cache-Control", "no-store");
+    }
+    next();
+  });
   if (options.auth !== undefined) {
     router.use("/auth", createAuthRouter(options.auth));
   }

@@ -7,6 +7,8 @@
  */
 
 export * from "./addPlaylistTrackRequest";
+export * from "./artistTracksResponse";
+export * from "./artistTracksResponseSchemaVersion";
 export * from "./collectionBadRequestResponse";
 export * from "./collectionErrorResponse";
 export * from "./collectionErrorResponseError";
@@ -34,6 +36,13 @@ export * from "./errorResponse";
 export * from "./freeSearchRequest";
 export * from "./freeSearchRequestMode";
 export * from "./freeSearchRequestSourcesItem";
+export * from "./getArtistTracks400";
+export * from "./getArtistTracks400Error";
+export * from "./getArtistTracks403";
+export * from "./getArtistTracks403Error";
+export * from "./getArtistTracks503";
+export * from "./getArtistTracks503Error";
+export * from "./getArtistTracksParams";
 export * from "./getTrackDownload403";
 export * from "./getTrackDownloadParams";
 export * from "./getTrackStreamParams";
