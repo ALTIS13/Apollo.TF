@@ -405,9 +405,13 @@ function trackPage(
   if (
     !isObject(value) ||
     !Array.isArray(value.items) ||
-    value.items.length > MAX_ITEMS
+    value.items.length > limit
   ) {
     throw new ProviderError("invalid_provider_response");
+  }
+  const total = pageTotal(value.total);
+  if (value.items.length === 0 && offset < total) {
+    throw new ProviderError("provider_unavailable");
   }
   const tracks: NormalizedTrack[] = [];
   for (const item of value.items) {
@@ -422,9 +426,15 @@ function trackPage(
     ) {
       continue;
     }
+    // Spotify reports a taken-down album with an empty name. Keep its position,
+    // but do not invent album metadata or fail the other tracks on the page.
+    if (isObject(entry) && isObject(entry.album) && entry.album.name === "" &&
+        spotifyCatalogIdSchema.safeParse(entry.id).success) {
+      continue;
+    }
     tracks.push(normalizedTrack(entry));
   }
-  return { offset, limit, total: pageTotal(value.total), tracks };
+  return { offset, limit, total, tracks };
 }
 
 function playlistsResult(

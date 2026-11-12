@@ -470,6 +470,48 @@ describe("SpotifyProvider", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it.each(["liked", "playlist-items"] as const)("rejects a zero-progress %s track page without rejecting unavailable positions", async (kind) => {
+    const wrapper = kind === "liked" ? "track" : "item";
+    const { provider } = makeProvider([
+      jsonResponse({ items: [], total: 80 }),
+      jsonResponse({ items: [{ [wrapper]: null }], total: 51 }),
+      jsonResponse({ items: [], total: 50 }),
+    ], { playlistApi: "items" });
+    const read = () => kind === "liked"
+      ? provider.likedTracks({ accessToken: "access", offset: 50, limit: 1 })
+      : provider.playlistTracks({ accessToken: "access", playlistId: "owned", offset: 50, limit: 1 });
+
+    await expect(read()).rejects.toMatchObject({ code: "provider_unavailable" });
+    await expect(read()).resolves.toEqual({ offset: 50, limit: 1, total: 51, tracks: [] });
+    await expect(read()).resolves.toEqual({ offset: 50, limit: 1, total: 50, tracks: [] });
+  });
+
+  it("retains neighboring Spotify tracks when an album was taken down", async () => {
+    const removed = spotifyTrack("RemovedAlbumTrack");
+    const { provider } = makeProvider([jsonResponse({
+      items: [
+        { item: spotifyTrack("FirstTrack") },
+        { item: { ...removed, album: { ...removed.album, name: "" } } },
+        { item: spotifyTrack("LastTrack") },
+      ],
+      total: 3,
+    })], { playlistApi: "items" });
+
+    const result = await provider.playlistTracks({ accessToken: "access", playlistId: "owned", offset: 0, limit: 3 });
+    expect(result.total).toBe(3);
+    expect(result.tracks.map(({ id }) => id)).toEqual(["FirstTrack", "LastTrack"]);
+  });
+
+  it("rejects a track response larger than its requested page", async () => {
+    const { provider } = makeProvider([jsonResponse({
+      items: [{ track: spotifyTrack("FirstTrack") }, { track: spotifyTrack("LastTrack") }],
+      total: 2,
+    })]);
+
+    await expect(provider.likedTracks({ accessToken: "access", offset: 0, limit: 1 }))
+      .rejects.toMatchObject({ code: "invalid_provider_response" });
+  });
+
   describe("playlist catalog pages", () => {
     const metadata = {
       id: "playlistA", name: "Playlist A", description: null, images: [],
