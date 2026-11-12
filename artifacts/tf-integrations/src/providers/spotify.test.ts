@@ -412,6 +412,75 @@ describe("SpotifyProvider", () => {
     ).rejects.toMatchObject({ code: "provider_rejected" });
   });
 
+  it("reads Development Mode playlist items without treating metadata-only playlists as empty", async () => {
+    const owned = {
+      id: "owned", name: "Owned", description: null, images: [],
+      owner: { display_name: null, id: "spotify-owner" },
+    };
+    const followed = Array.from({ length: 50 }, (_, index) => ({
+      ...owned, id: `followed-${index}`, name: "Followed",
+    }));
+    const { provider, requests } = makeProvider([
+      jsonResponse({ items: followed, total: 51 }),
+      jsonResponse({ items: [{ ...owned, items: { total: 5 } }], total: 51 }),
+      jsonResponse({ items: [
+        { item: { ...spotifyTrack("first"), type: "track" } },
+        { item: null },
+        { item: { id: "episode", type: "episode" } },
+        { is_local: true, item: { type: "track" } },
+        { item: { ...spotifyTrack("last"), type: "track" } },
+      ], total: 5 }),
+    ], { playlistApi: "items" });
+
+    await expect(provider.playlists({ accessToken: "access" })).resolves.toEqual({
+      playlists: [{ id: "owned", name: "Owned", description: "", trackCount: 5,
+        owner: "spotify-owner", thumbnailUrl: null }], total: 51,
+    });
+    expect(new URL(requests[1]!.url).searchParams.get("offset")).toBe("50");
+    const page = await provider.playlistTracks({
+      accessToken: "access", playlistId: "owned", offset: 0, limit: 5,
+    });
+    expect(page.tracks.map(({ id }) => id)).toEqual(["first", "last"]);
+    expect(page).toMatchObject({ offset: 0, limit: 5, total: 5 });
+    const url = new URL(requests[2]!.url);
+    expect(url.pathname).toBe("/v1/playlists/owned/items");
+    expect(url.searchParams.get("fields")).toContain("item(id,name,type,");
+  });
+
+  it.each([
+    {},
+    { id: "legacy", name: "Legacy", description: "", images: [],
+      owner: { display_name: "Owner" }, tracks: { total: 1 } },
+  ])("rejects malformed or wrong-profile playlists instead of reporting an empty library (%j)", async (item) => {
+    const { provider, requests } = makeProvider([
+      jsonResponse({ items: [item], total: 1 }),
+    ], { playlistApi: "items" });
+    await expect(provider.playlists({ accessToken: "access" }))
+      .rejects.toMatchObject({ code: "invalid_provider_response" });
+    expect(requests).toHaveLength(1);
+  });
+
+  it("does not present a zero-progress playlist page as an empty library", async () => {
+    const { provider, requests } = makeProvider([
+      jsonResponse({ items: [], total: 51 }),
+    ], { playlistApi: "items" });
+    await expect(provider.playlists({ accessToken: "access" }))
+      .rejects.toMatchObject({ code: "provider_unavailable" });
+    expect(requests).toHaveLength(1);
+  });
+
+  it("does not fall back to the legacy endpoint after a playlist access refusal", async () => {
+    const { provider, requests } = makeProvider([
+      jsonResponse({ error: { status: 403 } }, 403),
+    ], { playlistApi: "items" });
+    await expect(provider.playlistTracks({
+      accessToken: "access", playlistId: "followed", offset: 0, limit: 1,
+    })).rejects.toMatchObject({ code: "provider_rejected" });
+    expect(requests.map(({ url }) => new URL(url).pathname)).toEqual([
+      "/v1/playlists/followed/items",
+    ]);
+  });
+
   it("forwards the command abort signal to every fixed Spotify request", async () => {
     const controller = new AbortController();
     const { provider, requests } = makeProvider([

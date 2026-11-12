@@ -347,6 +347,8 @@ describe("tf-integrations deployment contract", () => {
           "/run/secrets/tf_integrations_internal_auth_secret",
         TF_INTEGRATIONS_SPOTIFY_CALLBACK_URI:
           "${TF_INTEGRATIONS_SPOTIFY_CALLBACK_URI:-https://api.tf.apollot.ru/api/spotify/callback}",
+        TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API:
+          "${TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API:-tracks}",
         TF_INTEGRATIONS_SPOTIFY_CLIENT_ID_FILE:
           "/run/secrets/tf_integrations_spotify_client_id",
         TF_INTEGRATIONS_SPOTIFY_CLIENT_SECRET_FILE:
@@ -366,6 +368,12 @@ describe("tf-integrations deployment contract", () => {
         );
       }
     }
+  });
+
+  it("forwards the Spotify playlist profile to the TF integrations service in Coolify", async () => {
+    const template = parse(await readFile(join(repositoryRoot, "deploy/coolify/apollo-tf.compose.yml"), "utf8")) as ComposeTemplate;
+    expect(service(template, "tf-integrations").environment?.TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API)
+      .toBe("${TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API:-tracks}");
   });
 
   it("passes no provider secret value through environment variables", () => {

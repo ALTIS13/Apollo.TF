@@ -19,10 +19,13 @@ const MAX_TOKEN_LENGTH = 8_192;
 const MAX_IDENTIFIER_LENGTH = 512;
 const MAX_OFFSET = 1_000_000;
 const MAX_ITEMS = 50;
+const MAX_PLAYLIST_PAGES = 5;
 const MAX_TOTAL = 1_000_000;
 const MAX_DURATION_MS = 86_400_000;
-const PLAYLIST_FIELDS =
-  "items(track(id,name,artists,album,duration_ms,external_urls)),total";
+const PLAYLIST_FIELDS = {
+  tracks: "items(track(id,name,artists,album,duration_ms,external_urls)),total",
+  items: "items(is_local,item(id,name,type,is_local,artists,album,duration_ms,external_urls)),total",
+} as const;
 const SPOTIFY_SCOPES = [
   "user-library-read",
   "playlist-read-private",
@@ -78,10 +81,13 @@ export interface SpotifyProviderOptions {
   readonly clientId: string;
   readonly clientSecret: string;
   readonly callbackUri: string;
+  readonly playlistApi?: SpotifyPlaylistApi;
   readonly fetch: typeof fetch;
   readonly now?: () => number;
   readonly logger?: ProviderLogger;
 }
+
+export type SpotifyPlaylistApi = "tracks" | "items";
 
 export interface SpotifyAccount {
   readonly id: string;
@@ -338,6 +344,7 @@ function trackPage(
   value: unknown,
   offset: number,
   limit: number,
+  entryKey: "track" | "item" = "track",
 ): TracksPage {
   if (
     !isObject(value) ||
@@ -348,17 +355,26 @@ function trackPage(
   }
   const tracks: NormalizedTrack[] = [];
   for (const item of value.items) {
-    if (!isObject(item) || !("track" in item)) {
+    if (!isObject(item) || !(entryKey in item)) {
       throw new ProviderError("invalid_provider_response");
     }
-    if (item.track !== null) {
-      tracks.push(normalizedTrack(item.track));
+    const entry = item[entryKey];
+    if (
+      entry === null || item.is_local === true ||
+      (isObject(entry) && (entry.is_local === true ||
+        (typeof entry.type === "string" && entry.type !== "track")))
+    ) {
+      continue;
     }
+    tracks.push(normalizedTrack(entry));
   }
   return { offset, limit, total: pageTotal(value.total), tracks };
 }
 
-function playlistsResult(value: unknown): SpotifyPlaylistsResult {
+function playlistsResult(
+  value: unknown,
+  playlistApi: SpotifyPlaylistApi,
+): SpotifyPlaylistsResult & { readonly itemCount: number } {
   if (
     !isObject(value) ||
     !Array.isArray(value.items) ||
@@ -366,10 +382,10 @@ function playlistsResult(value: unknown): SpotifyPlaylistsResult {
   ) {
     throw new ProviderError("invalid_provider_response");
   }
-  const playlists = value.items.map((item): SpotifyPlaylist => {
+  const playlists: SpotifyPlaylist[] = [];
+  for (const item of value.items) {
     if (
       !isObject(item) ||
-      !isObject(item.tracks) ||
       !Array.isArray(item.images) ||
       item.images.length > MAX_ITEMS ||
       !isObject(item.owner)
@@ -378,13 +394,11 @@ function playlistsResult(value: unknown): SpotifyPlaylistsResult {
     }
     const id = boundedText(item.id, MAX_IDENTIFIER_LENGTH);
     const name = boundedText(item.name, 500);
-    const description =
-      typeof item.description === "string" &&
-      item.description.trim().length <= 4_096
-        ? item.description.trim()
-        : undefined;
-    const trackCount = boundedInteger(item.tracks.total, 0, MAX_TOTAL);
-    const owner = boundedText(item.owner.display_name, 500);
+    const description = item.description === null ? "" : (
+      typeof item.description === "string" && item.description.trim().length <= 4_096
+        ? item.description.trim() : undefined
+    );
+    const owner = boundedText(item.owner.display_name ?? item.owner.id, 500);
     const thumbnailUrl =
       item.images.length === 0
         ? null
@@ -395,22 +409,29 @@ function playlistsResult(value: unknown): SpotifyPlaylistsResult {
       id === undefined ||
       name === undefined ||
       description === undefined ||
-      trackCount === undefined ||
       owner === undefined ||
       thumbnailUrl === undefined
     ) {
       throw new ProviderError("invalid_provider_response");
     }
-    return {
+    const contents = item[playlistApi];
+    // Development Mode may omit contents, but not the playlist metadata.
+    if (playlistApi === "items" && contents === undefined && !("tracks" in item)) {
+      continue;
+    }
+    const trackCount = isObject(contents)
+      ? boundedInteger(contents.total, 0, MAX_TOTAL) : undefined;
+    if (trackCount === undefined) throw new ProviderError("invalid_provider_response");
+    playlists.push({
       id,
       name,
       description,
       trackCount,
       thumbnailUrl,
       owner,
-    };
-  });
-  return { playlists, total: pageTotal(value.total) };
+    });
+  }
+  return { playlists, total: pageTotal(value.total), itemCount: value.items.length };
 }
 
 function topTracksResult(value: unknown): SpotifyTracksResult {
@@ -428,6 +449,7 @@ export class SpotifyProvider {
   readonly #clientId: string;
   readonly #clientSecret: string;
   readonly #callbackUri: string;
+  readonly #playlistApi: SpotifyPlaylistApi;
   readonly #fetch: typeof fetch;
   readonly #now: () => number;
   readonly #logger?: ProviderLogger;
@@ -441,6 +463,7 @@ export class SpotifyProvider {
     this.#clientId = options.clientId;
     this.#clientSecret = options.clientSecret;
     this.#callbackUri = options.callbackUri;
+    this.#playlistApi = options.playlistApi ?? "tracks";
     this.#fetch = options.fetch;
     this.#now = options.now ?? Date.now;
     this.#logger = options.logger;
@@ -594,15 +617,29 @@ export class SpotifyProvider {
   }): Promise<SpotifyPlaylistsResult> {
     assertTokenInput(input.accessToken);
     const url = new URL(`${API_ROOT}/me/playlists`);
-    url.search = new URLSearchParams({ limit: String(MAX_ITEMS) }).toString();
-    return playlistsResult(
-      await this.#apiGet(
-        "playlists.list",
-        input.accessToken,
-        url,
-        input.signal,
-      ),
-    );
+    url.searchParams.set("limit", String(MAX_ITEMS));
+    const selected = new Map<string, SpotifyPlaylist>();
+    let offset = 0;
+    let total = 0;
+    for (let pageIndex = 0; pageIndex < MAX_PLAYLIST_PAGES; pageIndex++) {
+      if (offset > 0) url.searchParams.set("offset", String(offset));
+      const page = playlistsResult(await this.#apiGet(
+        "playlists.list", input.accessToken, url, input.signal,
+      ), this.#playlistApi);
+      if (this.#playlistApi === "tracks") return { playlists: page.playlists, total: page.total };
+      for (const playlist of page.playlists) {
+        if (!selected.has(playlist.id)) selected.set(playlist.id, playlist);
+      }
+      total = page.total;
+      offset += page.itemCount;
+      if (selected.size >= MAX_ITEMS || offset >= total) {
+        return { playlists: [...selected.values()].slice(0, MAX_ITEMS), total };
+      }
+      if (page.itemCount === 0) throw new ProviderError("provider_unavailable");
+    }
+    // An exhausted scan budget cannot establish that the library is empty.
+    if (selected.size === 0) throw new ProviderError("provider_unavailable");
+    return { playlists: [...selected.values()], total };
   }
 
   async playlistTracks(input: {
@@ -616,7 +653,7 @@ export class SpotifyProvider {
     assertTextInput(input.playlistId, MAX_IDENTIFIER_LENGTH);
     assertPagination(input.offset, input.limit);
     const playlistId = encodeURIComponent(input.playlistId);
-    const pathname = `/v1/playlists/${playlistId}/tracks`;
+    const pathname = `/v1/playlists/${playlistId}/${this.#playlistApi}`;
     const url = new URL(pathname, API_ORIGIN);
     if (url.pathname !== pathname) {
       throw new ProviderError("provider_rejected");
@@ -624,7 +661,7 @@ export class SpotifyProvider {
     url.search = new URLSearchParams({
       offset: String(input.offset),
       limit: String(input.limit),
-      fields: PLAYLIST_FIELDS,
+      fields: PLAYLIST_FIELDS[this.#playlistApi],
     }).toString();
     return trackPage(
       await this.#apiGet(
@@ -635,6 +672,7 @@ export class SpotifyProvider {
       ),
       input.offset,
       input.limit,
+      this.#playlistApi === "items" ? "item" : "track",
     );
   }
 

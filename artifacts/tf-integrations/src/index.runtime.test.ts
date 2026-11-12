@@ -56,6 +56,7 @@ describe("TF integrations runtime command cancellation", () => {
             spotifyClientSecret: "spotify-secret",
             spotifyCallbackUri:
               "https://api.example.test/api/spotify/callback",
+            spotifyPlaylistApi: "tracks",
             heartbeatApiOrigin: "https://api.example.test",
             version: "test",
             smokeFixtures: false,

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { TextDecoder } from "node:util";
+import type { SpotifyPlaylistApi } from "./providers/spotify.js";
 
 import {
   parseProviderTokenKeyring,
@@ -15,6 +16,7 @@ export interface TfIntegrationsConfig {
   readonly spotifyClientId: string;
   readonly spotifyClientSecret: string;
   readonly spotifyCallbackUri: string;
+  readonly spotifyPlaylistApi: SpotifyPlaylistApi;
   readonly heartbeatApiOrigin: string;
   readonly version: string;
   readonly deployedAt?: string;
@@ -191,6 +193,10 @@ export async function parseTfIntegrationsConfig(
   readSecret: SecretReader = defaultSecretReader,
 ): Promise<TfIntegrationsConfig> {
   const port = parsePort(requiredValue(env, "PORT"));
+  const spotifyPlaylistApi = env["TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API"] ?? "tracks";
+  if (spotifyPlaylistApi !== "tracks" && spotifyPlaylistApi !== "items") {
+    return invalidConfiguration();
+  }
   const [
     internalAuthSecret,
     heartbeatSecret,
@@ -256,6 +262,7 @@ export async function parseTfIntegrationsConfig(
     spotifyClientId,
     spotifyClientSecret,
     spotifyCallbackUri,
+    spotifyPlaylistApi,
     heartbeatApiOrigin,
     version,
     ...(deployedAt === undefined ? {} : { deployedAt }),

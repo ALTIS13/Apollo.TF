@@ -74,6 +74,7 @@ const defaultDependencies: TfIntegrationsRuntimeDependencies = {
             clientId: config.spotifyClientId,
             clientSecret: config.spotifyClientSecret,
             callbackUri: config.spotifyCallbackUri,
+            playlistApi: config.spotifyPlaylistApi,
             fetch: globalThis.fetch,
           }),
           yandex: new YandexProvider({ fetch: globalThis.fetch }),

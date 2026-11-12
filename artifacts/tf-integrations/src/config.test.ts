@@ -90,6 +90,18 @@ describe("TF integrations runtime configuration", () => {
     ).rejects.toThrow("invalid runtime configuration");
   });
 
+  it("selects the documented Spotify playlist contract explicitly and preserves legacy defaults", async () => {
+    const read = reader(fileValues());
+    await expect(parseTfIntegrationsConfig(environment(), read))
+      .resolves.toMatchObject({ spotifyPlaylistApi: "tracks" });
+    await expect(parseTfIntegrationsConfig(environment({
+      TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API: "items",
+    }), read)).resolves.toMatchObject({ spotifyPlaylistApi: "items" });
+    await expect(parseTfIntegrationsConfig(environment({
+      TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API: "auto",
+    }), read)).rejects.toThrow("invalid runtime configuration");
+  });
+
   it("accepts local HTTP only with the explicit flag and a private service hostname", async () => {
     const read = reader(fileValues());
     await expect(
