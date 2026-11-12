@@ -28,11 +28,12 @@ const MAX_IDENTIFIER_LENGTH = 512;
 const MAX_OFFSET = 1_000_000;
 const MAX_ITEMS = 50;
 const MAX_PLAYLIST_PAGES = 5;
+const MAX_TRACK_FRAGMENTS = 4;
 const MAX_TOTAL = 1_000_000;
 const MAX_DURATION_MS = 86_400_000;
 const PLAYLIST_FIELDS = {
-  tracks: "items(track(id,name,artists,album,duration_ms,external_urls)),total",
-  items: "items(is_local,item(id,name,type,is_local,artists,album,duration_ms,external_urls)),total",
+  tracks: "items(track(id,name,artists,album,duration_ms,external_urls)),total,next",
+  items: "items(is_local,item(id,name,type,is_local,artists,album,duration_ms,external_urls)),total,next",
 } as const;
 const SPOTIFY_SCOPES = [
   "user-library-read",
@@ -396,25 +397,12 @@ function spotifyAlbumCover(images: readonly unknown[]): string | null {
   return null;
 }
 
-function trackPage(
-  value: unknown,
-  offset: number,
-  limit: number,
+function wrappedTrackRows(
+  items: readonly unknown[],
   entryKey: "track" | "item" = "track",
-): TracksPage {
-  if (
-    !isObject(value) ||
-    !Array.isArray(value.items) ||
-    value.items.length > limit
-  ) {
-    throw new ProviderError("invalid_provider_response");
-  }
-  const total = pageTotal(value.total);
-  if (value.items.length === 0 && offset < total) {
-    throw new ProviderError("provider_unavailable");
-  }
+): NormalizedTrack[] {
   const tracks: NormalizedTrack[] = [];
-  for (const item of value.items) {
+  for (const item of items) {
     if (!isObject(item) || !(entryKey in item)) {
       throw new ProviderError("invalid_provider_response");
     }
@@ -434,7 +422,33 @@ function trackPage(
     }
     tracks.push(normalizedTrack(entry));
   }
-  return { offset, limit, total, tracks };
+  return tracks;
+}
+
+function trackContinuation(
+  value: unknown, request: URL, offset: number, limit: number, total: number, itemCount: number,
+): number | null {
+  if (value === null || value === undefined) {
+    if (itemCount < Math.min(limit, Math.max(0, total - offset)) || (value === null && offset + limit < total)) {
+      throw new ProviderError("provider_unavailable");
+    }
+    return null;
+  }
+  const invalid = () => new ProviderError("invalid_provider_response");
+  if (typeof value !== "string" || value.length > 8_192) throw invalid();
+  let continuation: URL;
+  try { continuation = new URL(value); }
+  catch { throw invalid(); }
+  const offsets = continuation.searchParams.getAll("offset");
+  if (continuation.origin !== request.origin || continuation.pathname !== request.pathname ||
+      continuation.username || continuation.password || continuation.hash ||
+      offsets.length !== 1 || !/^[0-9]+$/.test(offsets[0]!)) {
+    throw invalid();
+  }
+  const next = boundedInteger(Number(offsets[0]), offset + Math.max(1, itemCount),
+    Math.min(offset + limit, total - 1, MAX_OFFSET));
+  if (next === undefined) throw invalid();
+  return next;
 }
 
 function playlistsResult(
@@ -666,23 +680,8 @@ export class SpotifyProvider {
     readonly limit: number;
     readonly signal?: AbortSignal;
   }): Promise<TracksPage> {
-    assertTokenInput(input.accessToken);
-    assertPagination(input.offset, input.limit);
     const url = new URL(`${API_ROOT}/me/tracks`);
-    url.search = new URLSearchParams({
-      offset: String(input.offset),
-      limit: String(input.limit),
-    }).toString();
-    return trackPage(
-      await this.#apiGet(
-        "liked.list",
-        input.accessToken,
-        url,
-        input.signal,
-      ),
-      input.offset,
-      input.limit,
-    );
+    return this.#readTrackWindow("liked.list", url, input, wrappedTrackRows);
   }
 
   async playlists(input: {
@@ -737,9 +736,7 @@ export class SpotifyProvider {
     readonly limit: number;
     readonly signal?: AbortSignal;
   }): Promise<TracksPage> {
-    assertTokenInput(input.accessToken);
     assertTextInput(input.playlistId, MAX_IDENTIFIER_LENGTH);
-    assertPagination(input.offset, input.limit);
     const playlistId = encodeURIComponent(input.playlistId);
     const pathname = `/v1/playlists/${playlistId}/${this.#playlistApi}`;
     const url = new URL(pathname, API_ORIGIN);
@@ -751,17 +748,8 @@ export class SpotifyProvider {
       limit: String(input.limit),
       fields: PLAYLIST_FIELDS[this.#playlistApi],
     }).toString();
-    return trackPage(
-      await this.#apiGet(
-        "playlist-tracks.list",
-        input.accessToken,
-        url,
-        input.signal,
-      ),
-      input.offset,
-      input.limit,
-      this.#playlistApi === "items" ? "item" : "track",
-    );
+    const key = this.#playlistApi === "items" ? "item" : "track";
+    return this.#readTrackWindow("playlist-tracks.list", url, input, (items) => wrappedTrackRows(items, key));
   }
 
   async topTracks(input: {
@@ -815,8 +803,8 @@ export class SpotifyProvider {
     if (!spotifyCatalogIdSchema.safeParse(input.albumId).success) {
       throw new ProviderError("provider_rejected");
     }
-    const { items, ...page } = await this.#readCatalogPage("album-tracks.list", `/albums/${input.albumId}/tracks`, input);
-    const tracks = items.flatMap((item): SpotifyAlbumTracksPage["tracks"] => {
+    const url = new URL(`${API_ROOT}/albums/${input.albumId}/tracks`);
+    return this.#readTrackWindow("album-tracks.list", url, input, (items) => items.flatMap((item): SpotifyAlbumTracksPage["tracks"] => {
       if (!isObject(item)) throw new ProviderError("invalid_provider_response");
       if (item.is_local === true) return [];
       const durationMs = boundedInteger(item.duration_ms, 0, MAX_DURATION_MS);
@@ -826,12 +814,50 @@ export class SpotifyProvider {
         throw new ProviderError("invalid_provider_response");
       }
       return [{ ...catalogMetadata(item, "track"), duration: Math.floor(durationMs / 1_000), discNumber, trackNumber }];
-    });
-    return { ...page, tracks };
+    }));
+  }
+
+  async #readTrackWindow<T>(
+    operation: "liked.list" | "playlist-tracks.list" | "album-tracks.list",
+    url: URL,
+    { accessToken, offset: start, limit: windowSize, signal }: SpotifyCatalogRequest,
+    normalize: (items: readonly unknown[]) => T[],
+  ) {
+    assertTokenInput(accessToken);
+    assertPagination(start, windowSize);
+    const end = start + windowSize;
+    let offset = start;
+    let total: number | undefined;
+    const tracks: T[] = [];
+    for (let fragment = 0; fragment < MAX_TRACK_FRAGMENTS; fragment++) {
+      const limit = end - offset;
+      url.searchParams.set("offset", String(offset));
+      url.searchParams.set("limit", String(limit));
+      const page = await this.#apiGet(operation, accessToken, url, signal);
+      if (!isObject(page) || !Array.isArray(page.items) || page.items.length > limit ||
+          ((operation === "album-tracks.list" || page.offset !== undefined) && page.offset !== offset) ||
+          ((operation === "album-tracks.list" || page.limit !== undefined) && page.limit !== limit)) {
+        throw new ProviderError("invalid_provider_response");
+      }
+      const reportedTotal = pageTotal(page.total);
+      if (page.items.length > Math.max(0, reportedTotal - offset)) {
+        throw new ProviderError("invalid_provider_response");
+      }
+      if ((total !== undefined && reportedTotal !== total) || (page.items.length === 0 && offset < reportedTotal)) {
+        throw new ProviderError("provider_unavailable");
+      }
+      total = reportedTotal;
+      const next = trackContinuation(page.next, url, offset, limit, total, page.items.length);
+      tracks.push(...normalize(page.items));
+      if (next === null || next === end) return { offset: start, limit: windowSize, total, tracks };
+      // Rebuild the request to the original endpoint; never follow the returned URL.
+      offset = next;
+    }
+    throw new ProviderError("provider_unavailable");
   }
 
   async #readCatalogPage(
-    operation: "albums.list" | "album-tracks.list" | "playlists.page",
+    operation: "albums.list" | "playlists.page",
     path: string,
     { accessToken, offset, limit, signal }: SpotifyCatalogRequest,
   ) {

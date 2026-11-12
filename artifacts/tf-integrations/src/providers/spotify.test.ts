@@ -350,7 +350,7 @@ describe("SpotifyProvider", () => {
 
   it("calls only fixed Spotify HTTPS endpoints with bounded query values", async () => {
     const { provider, requests } = makeProvider([
-      jsonResponse({ items: [{ track: spotifyTrack("liked") }], total: 1 }),
+      jsonResponse({ items: [], total: 1, next: null }),
       jsonResponse({
         items: [
           {
@@ -391,7 +391,7 @@ describe("SpotifyProvider", () => {
     expect(requests.map(({ url }) => url)).toEqual([
       "https://api.spotify.com/v1/me/tracks?offset=1000000&limit=50",
       "https://api.spotify.com/v1/me/playlists?limit=50",
-      "https://api.spotify.com/v1/playlists/playlist%20%2F%20identifier/tracks?offset=0&limit=1&fields=items%28track%28id%2Cname%2Cartists%2Calbum%2Cduration_ms%2Cexternal_urls%29%29%2Ctotal",
+      "https://api.spotify.com/v1/playlists/playlist%20%2F%20identifier/tracks?offset=0&limit=1&fields=items%28track%28id%2Cname%2Cartists%2Calbum%2Cduration_ms%2Cexternal_urls%29%29%2Ctotal%2Cnext",
       "https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=long_term",
     ]);
     expectRedirectError(requests);
@@ -510,6 +510,71 @@ describe("SpotifyProvider", () => {
 
     await expect(provider.likedTracks({ accessToken: "access", offset: 0, limit: 1 }))
       .rejects.toMatchObject({ code: "invalid_provider_response" });
+  });
+
+  it("fills a short playlist window using only the validated Spotify continuation offset", async () => {
+    const { provider, requests } = makeProvider([
+      jsonResponse({ items: [{ item: spotifyTrack("FirstTrack") }, { item: null }], total: 8,
+        next: "https://api.spotify.com/v1/playlists/owned/items?offset=2&limit=50&market=US" }),
+      jsonResponse({ items: [{ item: spotifyTrack("LastTrack") }], total: 8,
+        next: "https://api.spotify.com/v1/playlists/owned/items?offset=4&limit=2" }),
+    ], { playlistApi: "items" });
+
+    const result = await provider.playlistTracks({ accessToken: "access", playlistId: "owned", offset: 0, limit: 4 });
+    expect(result).toMatchObject({ offset: 0, limit: 4, total: 8 });
+    expect(result.tracks.map(({ id }) => id)).toEqual(["FirstTrack", "LastTrack"]);
+    expect(requests.map(({ url }) => {
+      const request = new URL(url);
+      return [request.pathname, request.searchParams.get("offset"), request.searchParams.get("limit"), request.searchParams.has("market")];
+    })).toEqual([["/v1/playlists/owned/items", "0", "4", false], ["/v1/playlists/owned/items", "2", "2", false]]);
+  });
+
+  it("does not return partial liked tracks when the provider continuation is foreign", async () => {
+    const { provider, requests } = makeProvider([jsonResponse({
+      items: [{ track: spotifyTrack("FirstTrack") }], total: 8,
+      next: "https://example.invalid/v1/me/tracks?offset=1",
+    })]);
+
+    await expect(provider.likedTracks({ accessToken: "access", offset: 0, limit: 4 }))
+      .rejects.toMatchObject({ code: "invalid_provider_response" });
+    expect(requests).toHaveLength(1);
+  });
+
+  it("bounds fragmented liked-track windows without accepting a partial result", async () => {
+    const { provider, requests } = makeProvider(Array.from({ length: 4 }, (_, offset) => jsonResponse({
+      items: [{ track: spotifyTrack(`Track${offset}`) }], total: 12,
+      next: `https://api.spotify.com/v1/me/tracks?offset=${offset + 1}`,
+    })));
+
+    await expect(provider.likedTracks({ accessToken: "access", offset: 0, limit: 8 }))
+      .rejects.toMatchObject({ code: "provider_unavailable" });
+    expect(requests).toHaveLength(4);
+  });
+
+  it("rejects an album changing total between fragments of the same track window", async () => {
+    const track = { ...spotifyTrack("AlbumTrack"), disc_number: 1, track_number: 1 };
+    const { provider, requests } = makeProvider([
+      jsonResponse({ offset: 0, limit: 4, total: 8, items: [track], next: "https://api.spotify.com/v1/albums/album1/tracks?offset=1" }),
+      jsonResponse({ offset: 1, limit: 3, total: 9, items: [{ ...track, id: "OtherTrack" }], next: "https://api.spotify.com/v1/albums/album1/tracks?offset=4" }),
+    ]);
+
+    await expect(provider.albumTracks({ accessToken: "access", albumId: "album1", offset: 0, limit: 4 }))
+      .rejects.toMatchObject({ code: "provider_unavailable" });
+    expect(requests).toHaveLength(2);
+  });
+
+  it.each([
+    { total: 2, limit: 2, count: 1, code: "provider_unavailable" },
+    { total: 1, limit: 2, count: 2, code: "invalid_provider_response" },
+  ])("rejects terminal track pages with $count raw rows for $total positions", async ({ total, limit, count, code }) => {
+    const { provider } = makeProvider([jsonResponse({
+      items: Array.from({ length: count }, (_, index) => ({ track: spotifyTrack(`Track${index}`) })),
+      total,
+      next: null,
+    })]);
+
+    await expect(provider.likedTracks({ accessToken: "access", offset: 0, limit }))
+      .rejects.toMatchObject({ code });
   });
 
   describe("playlist catalog pages", () => {
@@ -841,7 +906,7 @@ describe("SpotifyProvider", () => {
       }),
     ).resolves.toMatchObject({ total: 1 });
     expect(requests[0]!.url).toBe(
-      "https://api.spotify.com/v1/playlists/playlist..safe/tracks?offset=0&limit=1&fields=items%28track%28id%2Cname%2Cartists%2Calbum%2Cduration_ms%2Cexternal_urls%29%29%2Ctotal",
+      "https://api.spotify.com/v1/playlists/playlist..safe/tracks?offset=0&limit=1&fields=items%28track%28id%2Cname%2Cartists%2Calbum%2Cduration_ms%2Cexternal_urls%29%29%2Ctotal%2Cnext",
     );
   });
 
@@ -856,7 +921,7 @@ describe("SpotifyProvider", () => {
       providerUrl: "https://open.spotify.com/track/track-1",
     };
     const { provider } = makeProvider([
-      jsonResponse({ items: [{ track: spotifyTrack() }], total: 7 }),
+      jsonResponse({ items: [{ track: spotifyTrack() }, { track: null }], total: 7, next: null }),
       jsonResponse({
         items: [
           {
@@ -870,7 +935,7 @@ describe("SpotifyProvider", () => {
         ],
         total: 1,
       }),
-      jsonResponse({ items: [{ track: spotifyTrack() }], total: 7 }),
+      jsonResponse({ items: [{ track: spotifyTrack() }, { track: null }], total: 7, next: null }),
       jsonResponse({ items: [spotifyTrack()] }),
     ]);
 
