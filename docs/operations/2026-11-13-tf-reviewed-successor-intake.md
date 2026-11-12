@@ -16,6 +16,26 @@ The source tar's embedded Git commit matches the selection. A second `git -c tar
 
 REA 6.7.0 selected the compiled entry (`ev_fb2115f199d9c34d4d467c43191772facd005447eaa575fd590aa086260e04d4`) but skipped it during semantic analysis: zero JavaScript files parsed. The build, entrypoint and archive checks above are independent; the REA receipt is not evidence of analyzed behavior.
 
+## Build-Only Verification
+
+The verified source archive unpacks without `.ops-private` and its inert [Coolify build-check profile](../../deploy/coolify/apollo-tf.build-check.compose.yml) resolves all nine build services. Local Docker Desktop did not start: its Ingest listener could not remove `sailor-ingest.sock` and the Linux engine pipe never became available. The socket and Docker data were not changed. No OCI builds, image uploads, or deployment attempts were made. A team-scoped read of the available Coolify Applications returned no matching TF build Application; do not assume another team's connection is a TF destination.
+
+Node package builds of `@workspace/api-server` and `@workspace/tf-integrations` passed from the same tracked source (only intake documents differed in the checkout). The API `dist/index.mjs` SHA-256 is `92563a8a1fbfc491dfbd1a06dae7a2bca657ccee4d0de3ce2131e8a210945da1`. The integrations `dist/index.mjs` SHA-256 is `1c5622976971f32502d0512fb0175cd8cfdb5f1ed2a1e35e72d027d219f08453`. REA 6.7.0 parsed that integrations bundle: 131,611 bytes, one parsed file, 18,849 visited AST nodes, 45 static observations, `ev_42f6828c812ee2fa3d44d035f5c9c2ceeafc8a94e2c7f288bb2d5bba682eb983`. These are local bundle checks, not Linux image, live OAuth, or provider reachability proof.
+
+## Licensed Acceptance Fixture
+
+The transport artifact `tf-reviewed-audio-fixture-20261113.tar` (3,200,000 bytes, SHA-256 `748ba9ccde0f87b4f895183c53ead5285260aab29d6c87951c9e36d46c85a84a`) contains exactly three regular files, each read back and compared byte-for-byte. It carries only the [previously played recording](2026-11-12-tf-reviewed-acceptance.md#licensed-recording-receipt) and public metadata. No runtime configuration, credentials or account data are included.
+
+| Member | SHA-256 |
+| --- | --- |
+| `catalog.json` | `07de1d352d24cb436ea78a27530f65cb8415a437cbc07be8b1b67743451e56a2` |
+| `media/ae4e304cde343904b881983502c88fbd4464251301f9dcbe382f28b655a6a803.ogg` | `ae4e304cde343904b881983502c88fbd4464251301f9dcbe382f28b655a6a803` |
+| [`cylinder-five.ATTRIBUTION.txt`](../../deploy/coolify/fixtures/cylinder-five.ATTRIBUTION.txt) | `b65f0b8bf3fe20caea37010d0dabae32ca266fa0023e2c4e150bc0c397e5bca1` |
+
+The current API catalog reader resolves the sample as `original` and `full`, with separate `permitted` file access and the same media binding for both operations. Selection revision: `dd5928855f32dacfc1d5378759debf483d4ad4e0c07c878c9750108760dc5470`. The original source SHA-1 also matches the earlier receipt. The catalog decision does not grant account access; live Platform checks still apply. On the approved destination, verify archive and member hashes, extract only these files under a new owner-controlled fixture root without restoring archive owners or modes, and verify actual `10001` readability before binding the catalog and media separately as read-only. Keep attribution alongside the fixture. Nothing was transferred or mounted this turn.
+
+## Compose Validation
+
 The [reviewed Compose profile](2026-11-12-tf-reviewed-acceptance.md) requires an explicit Spotify playlist API mode. 51 focused checks and scripts typecheck passed, including real Compose renders for both reviewed variants. A separate render with dummy digests and `items` reported 14 definitions, 10 networks, five volumes, `compose-config-only`, `activationAllowed: false`, and topology SHA-256 `904d9f96ef47c1a0560c3e6cf311ec3cbef87a6aebc7f824da7bf8dadd9b6188`. The dummy mode is not confirmation that the registered Spotify client has that mode.
 
 ## Current external gate
