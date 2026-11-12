@@ -5,6 +5,8 @@ import { isAbsolute } from "node:path";
 
 import { z } from "zod";
 
+import type { RecordingMediaBinding } from "./recording-media.js";
+
 export interface RecordingCatalogCandidate {
   readonly id: string;
   readonly evidenceRevision: string;
@@ -18,17 +20,31 @@ export interface RecordingCatalogCandidate {
   readonly download: "permitted" | "not_permitted" | "unverified";
   readonly sourceLabel: string;
   readonly sourceUrl: string | null;
+  readonly mediaBound?: true;
 }
 
+type CatalogEntry = {
+  readonly artist: string;
+  readonly title: string;
+  readonly durationSeconds: number | null;
+};
+
 export interface RecordingCatalog {
-  candidates(entry: {
-    readonly artist: string;
-    readonly title: string;
-    readonly durationSeconds: number | null;
-  }): Promise<{
+  candidates(entry: CatalogEntry): Promise<{
     status: "ready" | "unconfigured";
     candidates: RecordingCatalogCandidate[];
   }>;
+  mediaBinding?(
+    entry: CatalogEntry,
+    selection: {
+      readonly candidateId: string;
+      readonly evidenceRevision: string;
+    },
+    operation: "audio" | "file",
+  ): Promise<
+    | { status: "ready"; binding: RecordingMediaBinding }
+    | { status: "stale" | "not_permitted" | "unconfigured" }
+  >;
 }
 
 export class RecordingCatalogError extends Error {
@@ -119,6 +135,13 @@ const recording = z
     evidence: evidence.nullable(),
     sourceLabel: text(160),
     sourceUrl: z.string().max(4_096).refine(isHttpsSourceUrl).nullable(),
+    media: z
+      .object({
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        format: z.enum(["wav", "mp3", "ogg", "flac", "m4a"]),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -209,6 +232,14 @@ function normalizedMatch(value: string): string {
   return value.trim().replace(/\s+/gu, " ").toLowerCase().normalize("NFC");
 }
 
+function matchesEntry(entry: CatalogEntry): (record: Recording) => boolean {
+  const artist = normalizedMatch(entry.artist);
+  const title = normalizedMatch(entry.title);
+  return (record) =>
+    normalizedMatch(record.artist) === artist &&
+    normalizedMatch(record.matchTitle) === title;
+}
+
 function recordingAccess(
   record: Recording,
 ): RecordingCatalogCandidate["access"] {
@@ -233,6 +264,14 @@ function recordingAccess(
   return Math.abs(expected - measured) <= tolerance ? "full" : "unverified";
 }
 
+function evidenceRevision(record: Recording): string {
+  // The schema reconstructs keys in a fixed order before hashing the record.
+  return createHash("sha256")
+    .update("tf-recording-catalog-v1\0")
+    .update(JSON.stringify(record))
+    .digest("hex");
+}
+
 function candidate(record: Recording): RecordingCatalogCandidate {
   const access = recordingAccess(record);
   const download =
@@ -246,11 +285,7 @@ function candidate(record: Recording): RecordingCatalogCandidate {
 
   return {
     id: record.id,
-    // The schema reconstructs keys in a fixed order before hashing the record.
-    evidenceRevision: createHash("sha256")
-      .update("tf-recording-catalog-v1\0")
-      .update(JSON.stringify(record))
-      .digest("hex"),
+    evidenceRevision: evidenceRevision(record),
     artist: record.artist,
     title: record.title,
     edition: record.edition,
@@ -261,6 +296,9 @@ function candidate(record: Recording): RecordingCatalogCandidate {
     download,
     sourceLabel: record.sourceLabel,
     sourceUrl: record.sourceUrl,
+    ...(access === "full" && record.media !== undefined
+      ? { mediaBound: true }
+      : {}),
   };
 }
 
@@ -275,33 +313,50 @@ function compareCandidates(
   );
 }
 
+async function currentManifest(): Promise<Manifest | null> {
+  const path = process.env["TF_RECORDING_CATALOG_FILE"];
+  if (path === undefined) return null;
+  try {
+    const manifest = isLocalPath(path) ? await readManifest(path) : null;
+    if (manifest !== null) return manifest;
+  } catch {
+    // Never expose operator paths, private evidence, or parser diagnostics.
+  }
+  throw new RecordingCatalogError();
+}
+
 export const defaultRecordingCatalog: RecordingCatalog = {
   async candidates(entry) {
-    const path = process.env["TF_RECORDING_CATALOG_FILE"];
-    if (path === undefined) return { status: "unconfigured", candidates: [] };
-    try {
-      if (isLocalPath(path)) {
-        const current = await readManifest(path);
-        if (current !== null) {
-          const artist = normalizedMatch(entry.artist);
-          const title = normalizedMatch(entry.title);
-          return {
-            status: "ready",
-            candidates: current.entries
-              .filter(
-                (record) =>
-                  normalizedMatch(record.artist) === artist &&
-                  normalizedMatch(record.matchTitle) === title,
-              )
-              .map(candidate)
-              .sort(compareCandidates)
-              .slice(0, MAX_CANDIDATES),
-          };
-        }
-      }
-    } catch {
-      // Never expose operator paths, private evidence, or parser diagnostics.
+    const current = await currentManifest();
+    if (current === null) return { status: "unconfigured", candidates: [] };
+    return {
+      status: "ready",
+      candidates: current.entries
+        .filter(matchesEntry(entry))
+        .map(candidate)
+        .sort(compareCandidates)
+        .slice(0, MAX_CANDIDATES),
+    };
+  },
+  async mediaBinding(entry, selection, operation) {
+    const current = await currentManifest();
+    if (current === null) return { status: "unconfigured" };
+    const record = current.entries.find(
+      ({ id }) => id === selection.candidateId,
+    );
+    if (
+      !record ||
+      !matchesEntry(entry)(record) ||
+      evidenceRevision(record) !== selection.evidenceRevision
+    ) {
+      return { status: "stale" };
     }
-    throw new RecordingCatalogError();
+    if (
+      !record.media ||
+      recordingAccess(record) !== "full" ||
+      (operation === "file" && record.downloadPermission !== "permitted")
+    )
+      return { status: "not_permitted" };
+    return { status: "ready", binding: record.media };
   },
 };

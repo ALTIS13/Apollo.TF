@@ -33,7 +33,9 @@ const webOrigin = "https://tf.example.test";
 const normalized = {
   name: "Draft",
   source: "spotify_album" as const,
-  entries: [{ artist: "Artist", title: "Track \u{1F3B5}", durationSeconds: null }],
+  entries: [
+    { artist: "Artist", title: "Track \u{1F3B5}", durationSeconds: null },
+  ],
 };
 const { entries, ...metadata } = normalized;
 const summary = {
@@ -45,13 +47,33 @@ const summary = {
 const draft = { ...summary, entries };
 const entryPath = `${draftPath}/entries/0`;
 const streamOnlyCandidate = {
-  id: "fixture-full", evidenceRevision: "b".repeat(64), artist: "Artist", title: "Track",
-  edition: "original", releaseDate: "2024-08-03", expectedDurationSeconds: 210,
-  measuredDurationSeconds: 209, access: "full", download: "not_permitted",
-  sourceLabel: "Fixture catalog", sourceUrl: null,
+  id: "fixture-full",
+  evidenceRevision: "b".repeat(64),
+  artist: "Artist",
+  title: "Track",
+  edition: "original",
+  releaseDate: "2024-08-03",
+  expectedDurationSeconds: 210,
+  measuredDurationSeconds: 209,
+  access: "full",
+  download: "not_permitted",
+  sourceLabel: "Fixture catalog",
+  sourceUrl: null,
 } as const;
-const previewCandidate = { ...streamOnlyCandidate, id: "fixture-preview", access: "preview", measuredDurationSeconds: 30 } as const;
-const selection = { candidateId: streamOnlyCandidate.id, evidenceRevision: streamOnlyCandidate.evidenceRevision, selectedAt: summary.createdAt };
+const previewCandidate = {
+  ...streamOnlyCandidate,
+  id: "fixture-preview",
+  access: "preview",
+  measuredDurationSeconds: 30,
+} as const;
+const selection = {
+  candidateId: streamOnlyCandidate.id,
+  evidenceRevision: streamOnlyCandidate.evidenceRevision,
+  selectedAt: summary.createdAt,
+};
+const binding = { sha256: "c".repeat(64), format: "wav" } as const;
+const audioPath = `${entryPath}/audio/${selection.evidenceRevision}`;
+const filePath = `${entryPath}/file/${selection.evidenceRevision}`;
 const servers: Server[] = [];
 
 async function startApp(entitlements = ["tf.collections"]) {
@@ -61,8 +83,29 @@ async function startApp(entitlements = ["tf.collections"]) {
     put: vi.fn().mockResolvedValue({ status: "created", draft }),
     remove: vi.fn().mockResolvedValue(true),
   };
-  const catalog = { candidates: vi.fn().mockResolvedValue({ status: "ready", candidates: [streamOnlyCandidate, previewCandidate] }) };
-  const selections = { get: vi.fn().mockResolvedValue(null), put: vi.fn().mockResolvedValue(selection) };
+  const catalog = {
+    candidates: vi
+      .fn()
+      .mockResolvedValue({
+        status: "ready",
+        candidates: [streamOnlyCandidate, previewCandidate],
+      }),
+    mediaBinding: vi.fn().mockResolvedValue({ status: "not_permitted" }),
+  };
+  const selections = {
+    get: vi.fn().mockResolvedValue(null),
+    put: vi.fn().mockResolvedValue(selection),
+  };
+  const release = vi.fn();
+  const media = {
+    open: vi
+      .fn()
+      .mockResolvedValue({
+        bytes: Buffer.from("0123456789"),
+        mimeType: "audio/wav",
+        release,
+      }),
+  };
   const opaque = () => randomBytes(32).toString("base64url");
   const transactionHandle = opaque();
   const handle = opaque();
@@ -170,7 +213,7 @@ async function startApp(entitlements = ["tf.collections"]) {
   };
   const app = createApiApp({
     auth: { platform, sessionStore, webOrigin, secureCookies: true },
-    playlistImports: { store, catalog, selections },
+    playlistImports: { store, catalog, selections, media },
   });
   const server = app.listen(0, "127.0.0.1");
   servers.push(server);
@@ -207,11 +250,18 @@ async function startApp(entitlements = ["tf.collections"]) {
     store,
     catalog,
     selections,
+    media,
+    release,
     introspected,
     revokeCollections: () => {
       liveEntitlements = ["tf.search"];
     },
-    revokeSearch: () => { liveEntitlements = ["tf.collections"]; },
+    revokeSearch: () => {
+      liveEntitlements = ["tf.collections"];
+    },
+    revokeDownloads: () => {
+      liveEntitlements = ["tf.collections", "tf.search"];
+    },
   };
 }
 
@@ -233,41 +283,356 @@ async function expectJson(response: Response, status: number, body: unknown) {
   await expect(response.json()).resolves.toEqual(body);
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe("reviewed recording media", () => {
+  it("checks live capabilities, including downloads only for the file route", async () => {
+    const {
+      request,
+      store,
+      selections,
+      catalog,
+      media,
+      revokeDownloads,
+      revokeSearch,
+      introspected,
+    } = await startApp(["tf.collections", "tf.search", "tf.downloads"]);
+    revokeDownloads();
+    await expectJson(await request(filePath), 403, {
+      error: "module_access_denied",
+    });
+    expect(store.get).not.toHaveBeenCalled();
+    expect(selections.get).not.toHaveBeenCalled();
+    expect(catalog.mediaBinding).not.toHaveBeenCalled();
+    expect(media.open).not.toHaveBeenCalled();
+    selections.get.mockResolvedValue(selection);
+    catalog.mediaBinding.mockResolvedValue({ status: "ready", binding });
+    const audio = await request(audioPath);
+    expect(audio.status).toBe(200);
+    expect(await audio.text()).toBe("0123456789");
+    revokeSearch();
+    await expectJson(
+      await request(audioPath, { headers: { range: "bytes=0-1" } }),
+      403,
+      { error: "module_access_denied" },
+    );
+    expect(media.open).toHaveBeenCalledOnce();
+    expect(introspected).toHaveLength(4);
+  });
+
+  it("fails closed for missing, stale, and unbound selections before opening media", async () => {
+    const { request, store, selections, catalog, media } = await startApp([
+      "tf.collections",
+      "tf.search",
+    ]);
+    await expectJson(
+      await request(`${entryPath}/audio/${"B".repeat(64)}`),
+      400,
+      { error: "bad_request" },
+    );
+    await expectJson(
+      await request(`${entryPath}/audio/%62${"b".repeat(63)}`),
+      400,
+      { error: "bad_request" },
+    );
+    expect(store.get).not.toHaveBeenCalled();
+    store.get.mockResolvedValueOnce(null);
+    await expectJson(await request(audioPath), 404, {
+      error: "import_entry_not_found",
+    });
+    await expectJson(await request(audioPath), 404, {
+      error: "recording_selection_not_found",
+    });
+    selections.get.mockResolvedValue(selection);
+    await expectJson(
+      await request(`${entryPath}/audio/${"d".repeat(64)}`),
+      409,
+      { error: "recording_selection_changed" },
+    );
+    expect(catalog.mediaBinding).not.toHaveBeenCalled();
+    catalog.mediaBinding.mockResolvedValueOnce({ status: "stale" });
+    await expectJson(await request(audioPath), 409, {
+      error: "recording_selection_changed",
+    });
+    await expectJson(await request(audioPath), 409, {
+      error: "recording_media_not_permitted",
+    });
+    catalog.mediaBinding.mockRejectedValueOnce(
+      new Error("private catalog path"),
+    );
+    await expectJson(await request(audioPath), 503, {
+      error: "recording_catalog_unavailable",
+    });
+    expect(catalog.candidates).not.toHaveBeenCalled();
+    expect(selections.get).toHaveBeenLastCalledWith(accountId, importId, 0);
+    expect(catalog.mediaBinding).toHaveBeenLastCalledWith(
+      entries[0],
+      {
+        candidateId: selection.candidateId,
+        evidenceRevision: selection.evidenceRevision,
+      },
+      "audio",
+    );
+    expect(media.open).not.toHaveBeenCalled();
+  });
+
+  it("serves only authorized bytes, single ranges and suffixes, with attachment only for files", async () => {
+    const { request, selections, catalog, media, release } = await startApp([
+      "tf.collections",
+      "tf.search",
+      "tf.downloads",
+    ]);
+    const preflight = await request(audioPath, { method: "OPTIONS", headers: {
+      "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "Range",
+    } });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe(webOrigin);
+    expect(preflight.headers.get("access-control-allow-headers")?.toLowerCase().split(",")).toContain("range");
+    expect(preflight.headers.get("access-control-expose-headers")?.toLowerCase().split(",")).toEqual(
+      expect.arrayContaining(["accept-ranges", "content-range", "content-disposition"]),
+    );
+    expect(media.open).not.toHaveBeenCalled();
+    selections.get.mockResolvedValue(selection);
+    catalog.mediaBinding.mockImplementation(
+      async (_entry, _selection, operation: string) =>
+        operation === "audio"
+          ? { status: "ready", binding }
+          : { status: "not_permitted" },
+    );
+    await expectJson(await request(filePath), 409, {
+      error: "recording_media_not_permitted",
+    });
+    expect(media.open).not.toHaveBeenCalled();
+
+    for (const [range, status, contentRange, body] of [
+      [undefined, 200, null, "0123456789"],
+      ["bytes=2-4", 206, "bytes 2-4/10", "234"],
+      ["bytes=-3", 206, "bytes 7-9/10", "789"],
+      ["bytes=8-", 206, "bytes 8-9/10", "89"],
+      ["bytes=8-99", 206, "bytes 8-9/10", "89"],
+      ["bytes=20-", 416, "bytes */10", ""],
+      ["bytes=0-1,3-4", 416, "bytes */10", ""],
+      ["bytes=-0", 416, "bytes */10", ""],
+    ] as const) {
+      const response = await request(audioPath, {
+        headers: range === undefined ? {} : { range },
+      });
+      expect(response.status).toBe(status);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("accept-ranges")).toBe("bytes");
+      expect(response.headers.get("content-range")).toBe(contentRange);
+      expect(response.headers.get("content-length")).toBe(String(body.length));
+      expect(response.headers.get("content-disposition")).toBeNull();
+      if (status !== 416) {
+        expect(response.headers.get("content-type")).toBe("audio/wav");
+        expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      }
+      expect(await response.text()).toBe(body);
+    }
+
+    catalog.mediaBinding.mockResolvedValueOnce({ status: "stale" });
+    await expectJson(
+      await request(audioPath, { headers: { range: "bytes=0-1" } }),
+      409,
+      { error: "recording_selection_changed" },
+    );
+    expect(media.open).toHaveBeenCalledTimes(8);
+    expect(release).toHaveBeenCalledTimes(8);
+    catalog.mediaBinding.mockResolvedValueOnce({ status: "ready", binding });
+    const file = await request(filePath, { headers: { range: "bytes=0-1" } });
+    expect(file.status).toBe(206);
+    expect(file.headers.get("content-disposition")).toBe(
+      'attachment; filename="fixture-full.wav"',
+    );
+    expect(await file.text()).toBe("01");
+    expect(catalog.mediaBinding).toHaveBeenLastCalledWith(
+      entries[0],
+      {
+        candidateId: selection.candidateId,
+        evidenceRevision: selection.evidenceRevision,
+      },
+      "file",
+    );
+    expect(release).toHaveBeenCalledTimes(9);
+  });
+
+  it("sanitizes media failures and aborts and releases a late handle on disconnect", async () => {
+    const { request, selections, catalog, media, release } = await startApp([
+      "tf.collections",
+      "tf.search",
+    ]);
+    selections.get.mockResolvedValue(selection);
+    catalog.mediaBinding.mockResolvedValue({ status: "ready", binding });
+    media.open.mockRejectedValueOnce(new Error("private asset filename"));
+    await expectJson(await request(audioPath), 503, {
+      error: "recording_media_unavailable",
+    });
+
+    const opened = deferred<AbortSignal>();
+    const handle = deferred<{
+      bytes: Buffer;
+      mimeType: string;
+      release(): void;
+    }>();
+    media.open.mockImplementationOnce((_binding, signal: AbortSignal) => {
+      opened.resolve(signal);
+      return handle.promise;
+    });
+    const client = new AbortController();
+    const pending = request(audioPath, { signal: client.signal });
+    const consumed = expect(pending).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    const signal = await Promise.race([
+      opened.promise,
+      pending.then((response) => {
+        throw new Error(`unexpected ${response.status}`);
+      }),
+    ]);
+    client.abort();
+    await consumed;
+    await vi.waitFor(() => expect(signal.aborted).toBe(true));
+    handle.resolve({
+      bytes: Buffer.from("0123456789"),
+      mimeType: "audio/wav",
+      release,
+    });
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+  });
+
+  it("bounds the lifetime of a pending media reservation", async () => {
+    const { request, selections, catalog, media, release } = await startApp([
+      "tf.collections",
+      "tf.search",
+    ]);
+    selections.get.mockResolvedValue(selection);
+    catalog.mediaBinding.mockResolvedValue({ status: "ready", binding });
+    const opened = deferred<AbortSignal>();
+    const handle = deferred<{
+      bytes: Buffer;
+      mimeType: string;
+      release(): void;
+    }>();
+    media.open.mockImplementationOnce((_binding, signal: AbortSignal) => {
+      opened.resolve(signal);
+      return handle.promise;
+    });
+    const client = new AbortController();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const pending = request(audioPath, { signal: client.signal });
+    const disconnected = pending.then(
+      () => false,
+      () => true,
+    );
+    try {
+      const signal = await Promise.race([
+        opened.promise,
+        pending.then((response) => {
+          throw new Error(`unexpected ${response.status}`);
+        }),
+      ]);
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(signal.aborted).toBe(true);
+      await expect(disconnected).resolves.toBe(true);
+    } finally {
+      client.abort();
+      handle.resolve({
+        bytes: Buffer.from("0123456789"),
+        mimeType: "audio/wav",
+        release,
+      });
+      vi.useRealTimers();
+    }
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+  });
+});
+
 describe("playlist import drafts HTTP", () => {
   it("returns catalog evidence and rechecks the revision and full access on confirmation", async () => {
-    const { request, store, catalog, selections } = await startApp(["tf.collections", "tf.search"]);
+    const { request, store, catalog, selections } = await startApp([
+      "tf.collections",
+      "tf.search",
+    ]);
     const page = await request(`${entryPath}/candidates`);
-    expect(ListImportRecordingCandidatesResponse.safeParse(await page.clone().json()).success).toBe(true);
+    expect(
+      ListImportRecordingCandidatesResponse.safeParse(await page.clone().json())
+        .success,
+    ).toBe(true);
     await expectJson(page, 200, {
-      status: "ready", candidates: [streamOnlyCandidate, previewCandidate], selection: null,
+      status: "ready",
+      candidates: [streamOnlyCandidate, previewCandidate],
+      selection: null,
     });
     expect(selections.put).not.toHaveBeenCalled();
     expect(catalog.candidates).toHaveBeenCalledExactlyOnceWith(entries[0]);
-    expect(selections.get).toHaveBeenCalledExactlyOnceWith(accountId, importId, 0);
-    const put = (candidateId: string, evidenceRevision: string) => request(`${entryPath}/selection`, {
-      method: "PUT", body: JSON.stringify({ candidateId, evidenceRevision }),
+    expect(selections.get).toHaveBeenCalledExactlyOnceWith(
+      accountId,
+      importId,
+      0,
+    );
+    const put = (candidateId: string, evidenceRevision: string) =>
+      request(`${entryPath}/selection`, {
+        method: "PUT",
+        body: JSON.stringify({ candidateId, evidenceRevision }),
+      });
+    await expectJson(await put(streamOnlyCandidate.id, "a".repeat(64)), 409, {
+      error: "recording_selection_changed",
     });
-    await expectJson(await put(streamOnlyCandidate.id, "a".repeat(64)), 409, { error: "recording_selection_changed" });
-    await expectJson(await put(previewCandidate.id, previewCandidate.evidenceRevision), 409, { error: "recording_not_full" });
+    await expectJson(
+      await put(previewCandidate.id, previewCandidate.evidenceRevision),
+      409,
+      { error: "recording_not_full" },
+    );
     expect(selections.put).not.toHaveBeenCalled();
-    await expectJson(await put(streamOnlyCandidate.id, streamOnlyCandidate.evidenceRevision), 200, { selection });
-    expect(selections.put).toHaveBeenCalledExactlyOnceWith(accountId, importId, 0, {
-      candidateId: streamOnlyCandidate.id, evidenceRevision: streamOnlyCandidate.evidenceRevision,
-    }, entries[0]);
+    await expectJson(
+      await put(streamOnlyCandidate.id, streamOnlyCandidate.evidenceRevision),
+      200,
+      { selection },
+    );
+    expect(selections.put).toHaveBeenCalledExactlyOnceWith(
+      accountId,
+      importId,
+      0,
+      {
+        candidateId: streamOnlyCandidate.id,
+        evidenceRevision: streamOnlyCandidate.evidenceRevision,
+      },
+      entries[0],
+    );
     selections.put.mockResolvedValueOnce(null);
-    await expectJson(await put(streamOnlyCandidate.id, streamOnlyCandidate.evidenceRevision), 404, { error: "import_entry_not_found" });
+    await expectJson(
+      await put(streamOnlyCandidate.id, streamOnlyCandidate.evidenceRevision),
+      404,
+      { error: "import_entry_not_found" },
+    );
     expect(store.get.mock.calls).toEqual(Array(5).fill([accountId, importId]));
   });
 
   it("does not read catalog evidence for a revoked search entitlement or a missing occurrence", async () => {
-    const { request, catalog, store, selections, revokeSearch } = await startApp(["tf.collections", "tf.search"]);
-    const candidates = (position: string) => request(`${draftPath}/entries/${position}/candidates`);
+    const { request, catalog, store, selections, revokeSearch } =
+      await startApp(["tf.collections", "tf.search"]);
+    const candidates = (position: string) =>
+      request(`${draftPath}/entries/${position}/candidates`);
     await expectJson(await candidates("00"), 400, { error: "bad_request" });
-    await expectJson(await candidates("1"), 404, { error: "import_entry_not_found" });
+    await expectJson(await candidates("1"), 404, {
+      error: "import_entry_not_found",
+    });
     store.get.mockResolvedValueOnce(null);
-    await expectJson(await candidates("0"), 404, { error: "import_entry_not_found" });
+    await expectJson(await candidates("0"), 404, {
+      error: "import_entry_not_found",
+    });
     revokeSearch();
-    await expectJson(await candidates("0"), 403, { error: "module_access_denied" });
+    await expectJson(await candidates("0"), 403, {
+      error: "module_access_denied",
+    });
     expect(store.get).toHaveBeenCalledTimes(2);
     expect(catalog.candidates).not.toHaveBeenCalled();
     expect(selections.get).not.toHaveBeenCalled();

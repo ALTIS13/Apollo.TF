@@ -12,6 +12,7 @@ import pinoHttp from "pino-http";
 
 import { adminRequestTelemetry } from "./lib/admin-telemetry.js";
 import { logger } from "./lib/logger.js";
+import { requiredPolicyForRequest } from "./lib/tf-policy.js";
 import {
   requireTfBrowserMutation,
   hasFamilyCookie,
@@ -187,18 +188,24 @@ export function createApiApp(options: ApiAppOptions = {}): Express {
   app.use("/api", moduleHeartbeatRouter);
 
   app.use(
-    cors({
-      origin: (origin, callback) => {
-        if (!origin) return callback(null, true);
-        if (origin === allowedOrigin) return callback(null, true);
-        if (nodeEnv !== "production" && isExactLoopbackOrigin(origin)) {
-          return callback(null, true);
-        }
-        return callback(null, false);
-      },
-      credentials: true,
-      allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token"],
-      exposedHeaders: ["Apollo-TF-Session-Profile"],
+    cors<Request>((request, finish) => {
+      const method = request.method === "OPTIONS" ? request.get("Access-Control-Request-Method") ?? "" : request.method;
+      const path = request.originalUrl.startsWith("/api/collections/imports/")
+        ? requiredPolicyForRequest(method, request.originalUrl)?.path
+        : undefined;
+      const reviewedMedia = path === "/api/collections/imports/:importId/entries/:position/audio/:revision" ||
+        path === "/api/collections/imports/:importId/entries/:position/file/:revision";
+      finish(null, {
+        origin: (origin, callback) => {
+          if (!origin || origin === allowedOrigin || (nodeEnv !== "production" && isExactLoopbackOrigin(origin))) {
+            return callback(null, true);
+          }
+          return callback(null, false);
+        },
+        credentials: true,
+        allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token", ...(reviewedMedia ? ["Range"] : [])],
+        exposedHeaders: ["Apollo-TF-Session-Profile", ...(reviewedMedia ? ["Accept-Ranges", "Content-Range", "Content-Disposition"] : [])],
+      });
     }),
   );
 

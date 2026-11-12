@@ -1,4 +1,5 @@
 import type { TrackResult, TrackSource, TrackType } from "@workspace/api-client-react";
+import { isReviewedTrack } from "@/lib/reviewed-recording";
 
 const VERSION = 1;
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -62,7 +63,7 @@ export function writeQueueSnapshot(
   now = Date.now(),
 ): boolean {
   try {
-    if (queue.length === 0) {
+    if (queue.length === 0 || queue.some(isReviewedTrack)) {
       storage.removeItem(key(identity));
       return true;
     }
@@ -102,6 +103,10 @@ export function readQueueSnapshot(
       typeof snapshot.positionSeconds !== "number" || !Number.isFinite(snapshot.positionSeconds) ||
       snapshot.positionSeconds < 0 || snapshot.positionSeconds > 86_400
     ) return null;
+    if (snapshot.queue.some((track: unknown) => typeof track === "object" && track !== null && isReviewedTrack(track))) {
+      storage.removeItem(key(identity));
+      return null;
+    }
     const queue = snapshot.queue.map(safeTrack);
     if (queue.some((track) => track === null)) return null;
     return {

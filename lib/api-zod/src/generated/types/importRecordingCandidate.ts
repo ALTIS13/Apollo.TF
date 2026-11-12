@@ -53,4 +53,6 @@ export interface ImportRecordingCandidate {
    * @pattern ^https://
    */
   sourceUrl: string | null;
+  /** Present only when the full recording has a reviewed local media binding. This is not a playback or download grant. */
+  mediaBound?: boolean;
 }

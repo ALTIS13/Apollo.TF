@@ -39,6 +39,7 @@ export interface TfRoutePolicy {
   readonly path: string;
   readonly pattern: RegExp;
   readonly capability: TfCapability;
+  readonly additionalCapabilities?: readonly TfCapability[];
   readonly live: boolean;
 }
 
@@ -287,6 +288,22 @@ export const TF_ROUTE_POLICIES: readonly TfRoutePolicy[] = Object.freeze([
     path: "/api/collections/imports/:importId/entries/:position/selection",
     pattern: /^\/api\/collections\/imports\/[^/]+\/entries\/[^/]+\/selection$/,
     capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "GET",
+    path: "/api/collections/imports/:importId/entries/:position/audio/:revision",
+    pattern: /^\/api\/collections\/imports\/[^/]+\/entries\/[^/]+\/audio\/[^/]+$/,
+    capability: "tf.collections",
+    additionalCapabilities: ["tf.search"],
+    live: true,
+  },
+  {
+    method: "GET",
+    path: "/api/collections/imports/:importId/entries/:position/file/:revision",
+    pattern: /^\/api\/collections\/imports\/[^/]+\/entries\/[^/]+\/file\/[^/]+$/,
+    capability: "tf.collections",
+    additionalCapabilities: ["tf.search", "tf.downloads"],
     live: true,
   },
   {
@@ -591,6 +608,11 @@ function checkedNow(now: () => number): number {
   return value;
 }
 
+function grantsPolicy(session: TfSession, policy: TfRoutePolicy): boolean {
+  return session.entitlements.includes(policy.capability) &&
+    (policy.additionalCapabilities?.every((capability) => session.entitlements.includes(capability)) ?? true);
+}
+
 export function requireTfCapability(
   dependencies: TfPolicyDependencies,
 ): RequestHandler {
@@ -625,7 +647,7 @@ export function requireTfCapability(
           return;
         }
         const session = await dependencies.renewal.authorize(handle);
-        if (!session.entitlements.includes(policy.capability)) {
+        if (!grantsPolicy(session, policy)) {
           response.status(403).json({ error: "module_access_denied" });
           return;
         }
@@ -720,7 +742,7 @@ export function requireTfCapability(
         authorizedSession = resolvedPolicyView(resolved, introspection);
       }
 
-      if (!authorizedSession.entitlements.includes(policy.capability)) {
+      if (!grantsPolicy(authorizedSession, policy)) {
         response.status(403).json({ error: "module_access_denied" });
         return;
       }

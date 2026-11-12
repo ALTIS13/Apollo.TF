@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { ExternalLink } from "lucide-react";
+import { Download, ExternalLink, Play } from "lucide-react";
 import type { ImportRecordingCandidate, ImportRecordingCandidatesResponse, ImportRecordingSelectionResponse, PutImportRecordingSelectionRequest } from "@workspace/api-client-react";
 import { useTfAuth } from "@/auth/tf-auth";
 import { Button } from "@/components/ui/button";
+import { useOptionalPlayer } from "@/hooks/use-player";
+import { apiUrl } from "@/lib/api-config";
 import type { ImportDraftEntry } from "@/lib/playlist-imports";
+import { reviewedMediaPath, reviewedTrackId } from "@/lib/reviewed-recording";
 import { canUseTfProtectedActivity, isCurrentTfSecurityGeneration, subscribeTfActivitySuspension, TfApiError, tfFetch } from "@/lib/tf-session-client";
 import { formatDuration } from "@/lib/utils";
 
@@ -123,7 +126,7 @@ function useDraftRecordingReview({ draftId, position, generation, onInvalidated 
     });
   }
 
-  return { load, reload, choice, choose, saving, saveError, refreshRequired, confirm };
+  return { load, reload, choice, choose, saving, saveError, refreshRequired, confirm, canRequest };
 }
 
 function duration(seconds: number | null) {
@@ -148,11 +151,26 @@ function sourceHref(sourceUrl: string | null): string | null {
 
 export function DraftRecordingReview({ entry, ...scope }: ReviewScope & { entry: ImportDraftEntry }) {
   const review = useDraftRecordingReview(scope);
+  const player = useOptionalPlayer();
+  const { hasEntitlement } = useTfAuth();
   const radioGroup = useId();
   const page = review.load.kind === "loaded" ? review.load.page : null;
   const selection = page?.selection;
   const saved = selection && page?.candidates.find((candidate) =>
     candidate.id === selection.candidateId && candidate.evidenceRevision === selection.evidenceRevision);
+  const mediaId = saved?.access === "full" && saved.mediaBound === true && !review.saving && !review.refreshRequired
+    ? reviewedTrackId(scope.draftId, scope.position, saved.evidenceRevision) : null;
+  const filePath = mediaId && saved?.download === "permitted" && hasEntitlement("tf.downloads")
+    ? reviewedMediaPath(mediaId, "file") : null;
+
+  function playSaved() {
+    if (!mediaId || !saved || !player || !review.canRequest()) return;
+    void player.playTrack({
+      id: mediaId, source: "reviewed", type: "original", title: saved.title, artist: saved.artist,
+      duration: saved.measuredDurationSeconds ?? saved.expectedDurationSeconds ?? 0,
+      thumbnailUrl: null, quality: [], score: 0,
+    });
+  }
 
   return (
     <section aria-label={`Подбор записи: ${entry.title} (позиция ${scope.position + 1})`} className="min-w-0 border-t border-white/10 px-2 py-3 sm:px-3">
@@ -168,6 +186,17 @@ export function DraftRecordingReview({ entry, ...scope }: ReviewScope & { entry:
       {selection && <p role="status" className="mb-3 break-words text-sm text-white/75">
         {saved ? `Сохранённый выбор: ${saved.title}` : "Сохранённый выбор устарел."}
       </p>}
+      {mediaId && (player || filePath) && <div className="mb-3 flex flex-wrap items-center gap-2">
+        {player && <Button type="button" size="sm" variant="outline" className="min-h-10 whitespace-normal" onClick={playSaved}
+          onKeyDown={(event) => { if (event.code === "Space" || event.key === " ") event.stopPropagation(); }}>
+          <Play className="size-4" /> Воспроизвести выбранную запись
+        </Button>}
+        {filePath && <Button asChild size="sm" variant="ghost" className="min-h-10 whitespace-normal">
+          <a href={apiUrl(filePath)} target="_blank" rel="noopener noreferrer" onClick={(event) => {
+            if (!review.canRequest() || !hasEntitlement("tf.downloads")) event.preventDefault();
+          }}><Download className="size-4" /> Скачать выбранную запись</a>
+        </Button>}
+      </div>}
       {page?.status === "unconfigured" && <p className="text-sm text-white/60">Каталог проверенных записей не настроен.</p>}
       {page?.status === "ready" && (page.candidates.length ? <>
         <fieldset className="min-w-0">

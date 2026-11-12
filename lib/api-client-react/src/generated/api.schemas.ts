@@ -35,6 +35,7 @@ export const TrackSource = {
   soundcloud: "soundcloud",
   bandcamp: "bandcamp",
   deezer: "deezer",
+  reviewed: "reviewed",
 } as const;
 
 export interface TrackResult {
@@ -655,6 +656,8 @@ export type ImportRecordingCandidateId = string;
  */
 export type ImportRecordingEvidenceRevision = string;
 
+export type ImportRecordingMediaBinary = Blob;
+
 export type ImportRecordingCandidateEdition =
   (typeof ImportRecordingCandidateEdition)[keyof typeof ImportRecordingCandidateEdition];
 
@@ -726,6 +729,8 @@ export interface ImportRecordingCandidate {
    * @pattern ^https://
    */
   sourceUrl: string | null;
+  /** Present only when the full recording has a reviewed local media binding. This is not a playback or download grant. */
+  mediaBound?: boolean;
 }
 
 export interface PutImportRecordingSelectionRequest {
@@ -763,9 +768,12 @@ export type ImportRecordingErrorResponseError =
 
 export const ImportRecordingErrorResponseError = {
   import_entry_not_found: "import_entry_not_found",
+  recording_selection_not_found: "recording_selection_not_found",
   recording_selection_changed: "recording_selection_changed",
   recording_not_full: "recording_not_full",
+  recording_media_not_permitted: "recording_media_not_permitted",
   recording_catalog_unavailable: "recording_catalog_unavailable",
+  recording_media_unavailable: "recording_media_unavailable",
   policy_unavailable: "policy_unavailable",
 } as const;
 
@@ -924,6 +932,32 @@ export type ImportRecordingCatalogUnavailableResponse =
   ImportRecordingErrorResponse;
 
 /**
+ * Complete verified recording or the requested single byte range
+ */
+export type ImportRecordingMediaBytesResponse = Blob;
+
+/**
+ * The owned import occurrence or its saved selection does not exist
+ */
+export type ImportRecordingMediaNotFoundResponse = ImportRecordingErrorResponse;
+
+/**
+ * The saved revision is stale or current recording rights do not permit this operation
+ */
+export type ImportRecordingMediaConflictResponse = ImportRecordingErrorResponse;
+
+/**
+ * The requested byte range is invalid, unsatisfiable, or contains multiple ranges
+ */
+export type ImportRecordingRangeNotSatisfiableResponse = void;
+
+/**
+ * Live policy, catalog, selection storage, or verified media is unavailable
+ */
+export type ImportRecordingMediaUnavailableResponse =
+  ImportRecordingErrorResponse;
+
+/**
  * Invalid playlist input
  */
 export type CollectionBadRequestResponse = CollectionErrorResponse;
@@ -947,6 +981,11 @@ export type PlaylistNotFoundResponse = CollectionErrorResponse;
  * Live Platform policy could not be confirmed
  */
 export type CollectionUnavailableResponse = CollectionErrorResponse;
+
+/**
+ * One byte range, including an open end or a suffix range. Multiple ranges are not supported.
+ */
+export type ImportRecordingByteRangeParameter = string;
 
 export type GetTrackSuggestionsParams = {
   /**

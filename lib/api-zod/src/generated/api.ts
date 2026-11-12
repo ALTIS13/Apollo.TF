@@ -84,7 +84,13 @@ export const FreeSearchTracksResponse = zod.object({
       artist: zod.string(),
       type: zod.enum(["original", "remix", "live", "cover"]),
       duration: zod.number().describe("Duration in seconds"),
-      source: zod.enum(["youtube", "soundcloud", "bandcamp", "deezer"]),
+      source: zod.enum([
+        "youtube",
+        "soundcloud",
+        "bandcamp",
+        "deezer",
+        "reviewed",
+      ]),
       thumbnailUrl: zod.string().nullish(),
       quality: zod
         .array(zod.string())
@@ -191,7 +197,13 @@ export const SearchTracksResponse = zod.object({
       artist: zod.string(),
       type: zod.enum(["original", "remix", "live", "cover"]),
       duration: zod.number().describe("Duration in seconds"),
-      source: zod.enum(["youtube", "soundcloud", "bandcamp", "deezer"]),
+      source: zod.enum([
+        "youtube",
+        "soundcloud",
+        "bandcamp",
+        "deezer",
+        "reviewed",
+      ]),
       thumbnailUrl: zod.string().nullish(),
       quality: zod
         .array(zod.string())
@@ -1244,6 +1256,12 @@ export const ListImportRecordingCandidatesResponse = zod
               )
               .nullable()
               .describe("HTTPS attribution page, never a media URL or grant."),
+            mediaBound: zod
+              .literal(true)
+              .optional()
+              .describe(
+                "Present only when the full recording has a reviewed local media binding. This is not a playback or download grant.",
+              ),
           })
           .strict(),
       )
@@ -1330,6 +1348,74 @@ export const PutImportRecordingSelectionResponse = zod
       .strict(),
   })
   .strict();
+
+/**
+ * Requires live tf.collections and tf.search, a current saved revision, and reviewed full playback permission. Every request rechecks rights, including requests for a byte range.
+ * @summary Play the verified recording selected for one owned import occurrence
+ */
+export const streamImportRecordingAudioPathImportIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+export const streamImportRecordingAudioPathPositionRegExp = new RegExp(
+  "^(?:[0-9]|[1-9][0-9]|1[0-9]{2})$",
+);
+export const streamImportRecordingAudioPathRevisionRegExp = new RegExp(
+  "^[a-f0-9]{64}$",
+);
+
+export const StreamImportRecordingAudioParams = zod
+  .object({
+    importId: zod.string().regex(streamImportRecordingAudioPathImportIdRegExp),
+    position: zod
+      .string()
+      .regex(streamImportRecordingAudioPathPositionRegExp)
+      .describe("Zero-based occurrence in the immutable import draft."),
+    revision: zod.string().regex(streamImportRecordingAudioPathRevisionRegExp),
+  })
+  .strict();
+
+export const StreamImportRecordingAudioHeader = zod.object({
+  Range: zod
+    .string()
+    .optional()
+    .describe(
+      "One byte range, including an open end or a suffix range. Multiple ranges are not supported.",
+    ),
+});
+
+/**
+ * Requires live tf.collections, tf.search, and tf.downloads plus explicit current download permission. Returns an attachment directly, without creating a download job.
+ * @summary Download the verified recording selected for one owned import occurrence
+ */
+export const downloadImportRecordingFilePathImportIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+export const downloadImportRecordingFilePathPositionRegExp = new RegExp(
+  "^(?:[0-9]|[1-9][0-9]|1[0-9]{2})$",
+);
+export const downloadImportRecordingFilePathRevisionRegExp = new RegExp(
+  "^[a-f0-9]{64}$",
+);
+
+export const DownloadImportRecordingFileParams = zod
+  .object({
+    importId: zod.string().regex(downloadImportRecordingFilePathImportIdRegExp),
+    position: zod
+      .string()
+      .regex(downloadImportRecordingFilePathPositionRegExp)
+      .describe("Zero-based occurrence in the immutable import draft."),
+    revision: zod.string().regex(downloadImportRecordingFilePathRevisionRegExp),
+  })
+  .strict();
+
+export const DownloadImportRecordingFileHeader = zod.object({
+  Range: zod
+    .string()
+    .optional()
+    .describe(
+      "One byte range, including an open end or a suffix range. Multiple ranges are not supported.",
+    ),
+});
 
 /**
  * @summary List playlists owned by the current TF account

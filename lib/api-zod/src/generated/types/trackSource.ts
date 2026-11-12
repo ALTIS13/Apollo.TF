@@ -13,4 +13,5 @@ export const TrackSource = {
   soundcloud: "soundcloud",
   bandcamp: "bandcamp",
   deezer: "deezer",
+  reviewed: "reviewed",
 } as const;

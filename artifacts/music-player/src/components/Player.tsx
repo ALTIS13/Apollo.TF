@@ -1,4 +1,5 @@
 import { usePlayer } from "@/hooks/use-player";
+import { isReviewedTrack } from "@/lib/reviewed-recording";
 import { formatDuration } from "@/lib/utils";
 import {
   Play, Pause, SkipBack, SkipForward,
@@ -30,10 +31,11 @@ export function Player() {
   } = usePlayer();
 
   const [lyricsOpen, setLyricsOpen] = useState(false);
+  const lyricsAvailable = currentTrack !== null && !isReviewedTrack(currentTrack);
 
   useEffect(() => {
-    if (!currentTrack) setLyricsOpen(false);
-  }, [currentTrack]);
+    if (!lyricsAvailable) setLyricsOpen(false);
+  }, [lyricsAvailable]);
 
   const hasNext = queueIndex < queue.length - 1 || (repeatMode === "all" && queue.length > 0);
   const hasPrev = queueIndex > 0 || progress > 3;
@@ -161,7 +163,7 @@ export function Player() {
             type="button"
             onClick={() => setLyricsOpen(true)}
             onKeyDown={keepSpaceOnButton}
-            disabled={!currentTrack}
+            disabled={!lyricsAvailable}
             aria-label="Текст песни"
             title="Текст песни"
             aria-haspopup="dialog"
@@ -205,7 +207,7 @@ export function Player() {
         </div>
 
       </div>
-      {currentTrack && lyricsOpen && (
+      {currentTrack && lyricsAvailable && lyricsOpen && (
         <LyricsPanel
           track={currentTrack}
           progress={progress}

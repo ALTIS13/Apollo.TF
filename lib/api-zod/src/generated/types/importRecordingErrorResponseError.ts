@@ -11,8 +11,11 @@ export type ImportRecordingErrorResponseError =
 
 export const ImportRecordingErrorResponseError = {
   import_entry_not_found: "import_entry_not_found",
+  recording_selection_not_found: "recording_selection_not_found",
   recording_selection_changed: "recording_selection_changed",
   recording_not_full: "recording_not_full",
+  recording_media_not_permitted: "recording_media_not_permitted",
   recording_catalog_unavailable: "recording_catalog_unavailable",
+  recording_media_unavailable: "recording_media_unavailable",
   policy_unavailable: "policy_unavailable",
 } as const;

@@ -66,6 +66,87 @@ afterEach(async () => {
 });
 
 describe("reviewed recording catalog", () => {
+  it("publishes only a full recording's binding flag and resolves current per-operation rights", async () => {
+    const media = { sha256: "a".repeat(64), format: "wav" };
+    const stream = recording({ id: "stream", media });
+    const downloadable = recording({
+      id: "downloadable",
+      media,
+      downloadPermission: "permitted",
+    });
+    const preview = recording({
+      id: "preview",
+      media,
+      mediaKind: "preview",
+      measuredDurationSeconds: 30,
+      downloadPermission: "permitted",
+    });
+    const unmeasured = recording({
+      id: "unmeasured",
+      media,
+      measuredDurationSeconds: null,
+    });
+    const file = await configure(
+      manifest([stream, downloadable, preview, unmeasured, recording()]),
+    );
+    const result = await defaultRecordingCatalog.candidates(entry);
+    expect(result.status).toBe("ready");
+    expect(
+      result.candidates
+        .filter(({ mediaBound }) => mediaBound)
+        .map(({ id }) => id),
+    ).toEqual(["downloadable", "stream"]);
+    expect(JSON.stringify(result)).not.toContain(media.sha256);
+    expect(JSON.stringify(result)).not.toContain('"media"');
+
+    const saved = (id: string) => ({
+      candidateId: id,
+      evidenceRevision: result.candidates.find((value) => value.id === id)!
+        .evidenceRevision,
+    });
+    const resolve = (id: string, operation: "audio" | "file") =>
+      defaultRecordingCatalog.mediaBinding!(entry, saved(id), operation);
+    await expect(resolve("stream", "audio")).resolves.toEqual({
+      status: "ready",
+      binding: media,
+    });
+    await expect(resolve("stream", "file")).resolves.toEqual({
+      status: "not_permitted",
+    });
+    await expect(resolve("downloadable", "file")).resolves.toEqual({
+      status: "ready",
+      binding: media,
+    });
+    await expect(resolve("preview", "audio")).resolves.toEqual({
+      status: "not_permitted",
+    });
+    await expect(resolve("unmeasured", "file")).resolves.toEqual({
+      status: "not_permitted",
+    });
+    await expect(resolve("original-recording", "audio")).resolves.toEqual({
+      status: "not_permitted",
+    });
+    await expect(
+      defaultRecordingCatalog.mediaBinding!(
+        { ...entry, title: "Other" },
+        saved("stream"),
+        "audio",
+      ),
+    ).resolves.toEqual({ status: "stale" });
+
+    await writeFile(
+      file,
+      manifest([{ ...stream, media: { ...media, sha256: "b".repeat(64) } }]),
+    );
+    await expect(resolve("stream", "audio")).resolves.toEqual({
+      status: "stale",
+    });
+    const changed = await defaultRecordingCatalog.candidates(entry);
+    expect(changed.candidates[0]?.evidenceRevision).not.toBe(
+      saved("stream").evidenceRevision,
+    );
+  });
+
   it("matches only normalized artist and explicit match title and ranks curator editions", async () => {
     const contents = manifest([
       recording({
@@ -422,6 +503,30 @@ describe("reviewed recording catalog", () => {
       manifest([recording({ matchTitle: undefined })]),
     ],
     ["uppercase ID", manifest([recording({ id: "UpperCase" })])],
+    [
+      "invalid media digest",
+      manifest([
+        recording({ media: { sha256: "A".repeat(64), format: "wav" } }),
+      ]),
+    ],
+    [
+      "invalid media format",
+      manifest([
+        recording({ media: { sha256: "a".repeat(64), format: "aiff" } }),
+      ]),
+    ],
+    [
+      "media URL supplied alongside binding",
+      manifest([
+        recording({
+          media: {
+            sha256: "a".repeat(64),
+            format: "wav",
+            url: "https://example.test/media",
+          },
+        }),
+      ]),
+    ],
     ["overlong ID", manifest([recording({ id: "a".repeat(65) })])],
     [
       "overlong source label",

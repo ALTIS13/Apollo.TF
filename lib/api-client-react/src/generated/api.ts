@@ -41,6 +41,11 @@ import type {
   ImportRecordingCatalogUnavailableResponse,
   ImportRecordingEntryNotFoundResponse,
   ImportRecordingErrorResponse,
+  ImportRecordingMediaBytesResponse,
+  ImportRecordingMediaConflictResponse,
+  ImportRecordingMediaNotFoundResponse,
+  ImportRecordingMediaUnavailableResponse,
+  ImportRecordingRangeNotSatisfiableResponse,
   ImportRecordingSelectionResponse,
   LikedOrderConflictResponse,
   LikedOrderMutationResponse,
@@ -2324,6 +2329,290 @@ export const usePutImportRecordingSelection = <
 > => {
   return useMutation(getPutImportRecordingSelectionMutationOptions(options));
 };
+
+/**
+ * Requires live tf.collections and tf.search, a current saved revision, and reviewed full playback permission. Every request rechecks rights, including requests for a byte range.
+ * @summary Play the verified recording selected for one owned import occurrence
+ */
+export const getStreamImportRecordingAudioUrl = (
+  importId: string,
+  position: string,
+  revision: string,
+) => {
+  return `/api/collections/imports/${importId}/entries/${position}/audio/${revision}`;
+};
+
+export const streamImportRecordingAudio = async (
+  importId: string,
+  position: string,
+  revision: string,
+  options?: RequestInit,
+): Promise<ImportRecordingMediaBytesResponse> => {
+  return customFetch<ImportRecordingMediaBytesResponse>(
+    getStreamImportRecordingAudioUrl(importId, position, revision),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getStreamImportRecordingAudioQueryKey = (
+  importId: string,
+  position: string,
+  revision: string,
+) => {
+  return [
+    `/api/collections/imports/${importId}/entries/${position}/audio/${revision}`,
+  ] as const;
+};
+
+export const getStreamImportRecordingAudioQueryOptions = <
+  TData = Awaited<ReturnType<typeof streamImportRecordingAudio>>,
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | ImportRecordingMediaNotFoundResponse
+    | ImportRecordingMediaConflictResponse
+    | ImportRecordingRangeNotSatisfiableResponse
+    | ImportRecordingMediaUnavailableResponse
+  >,
+>(
+  importId: string,
+  position: string,
+  revision: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof streamImportRecordingAudio>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getStreamImportRecordingAudioQueryKey(importId, position, revision);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof streamImportRecordingAudio>>
+  > = ({ signal }) =>
+    streamImportRecordingAudio(importId, position, revision, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!(importId && position && revision),
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof streamImportRecordingAudio>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type StreamImportRecordingAudioQueryResult = NonNullable<
+  Awaited<ReturnType<typeof streamImportRecordingAudio>>
+>;
+export type StreamImportRecordingAudioQueryError = ErrorType<
+  | PlaylistImportBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | ImportRecordingMediaNotFoundResponse
+  | ImportRecordingMediaConflictResponse
+  | ImportRecordingRangeNotSatisfiableResponse
+  | ImportRecordingMediaUnavailableResponse
+>;
+
+/**
+ * @summary Play the verified recording selected for one owned import occurrence
+ */
+
+export function useStreamImportRecordingAudio<
+  TData = Awaited<ReturnType<typeof streamImportRecordingAudio>>,
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | ImportRecordingMediaNotFoundResponse
+    | ImportRecordingMediaConflictResponse
+    | ImportRecordingRangeNotSatisfiableResponse
+    | ImportRecordingMediaUnavailableResponse
+  >,
+>(
+  importId: string,
+  position: string,
+  revision: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof streamImportRecordingAudio>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getStreamImportRecordingAudioQueryOptions(
+    importId,
+    position,
+    revision,
+    options,
+  );
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Requires live tf.collections, tf.search, and tf.downloads plus explicit current download permission. Returns an attachment directly, without creating a download job.
+ * @summary Download the verified recording selected for one owned import occurrence
+ */
+export const getDownloadImportRecordingFileUrl = (
+  importId: string,
+  position: string,
+  revision: string,
+) => {
+  return `/api/collections/imports/${importId}/entries/${position}/file/${revision}`;
+};
+
+export const downloadImportRecordingFile = async (
+  importId: string,
+  position: string,
+  revision: string,
+  options?: RequestInit,
+): Promise<ImportRecordingMediaBytesResponse> => {
+  return customFetch<ImportRecordingMediaBytesResponse>(
+    getDownloadImportRecordingFileUrl(importId, position, revision),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getDownloadImportRecordingFileQueryKey = (
+  importId: string,
+  position: string,
+  revision: string,
+) => {
+  return [
+    `/api/collections/imports/${importId}/entries/${position}/file/${revision}`,
+  ] as const;
+};
+
+export const getDownloadImportRecordingFileQueryOptions = <
+  TData = Awaited<ReturnType<typeof downloadImportRecordingFile>>,
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | ImportRecordingMediaNotFoundResponse
+    | ImportRecordingMediaConflictResponse
+    | ImportRecordingRangeNotSatisfiableResponse
+    | ImportRecordingMediaUnavailableResponse
+  >,
+>(
+  importId: string,
+  position: string,
+  revision: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof downloadImportRecordingFile>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getDownloadImportRecordingFileQueryKey(importId, position, revision);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof downloadImportRecordingFile>>
+  > = ({ signal }) =>
+    downloadImportRecordingFile(importId, position, revision, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!(importId && position && revision),
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof downloadImportRecordingFile>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type DownloadImportRecordingFileQueryResult = NonNullable<
+  Awaited<ReturnType<typeof downloadImportRecordingFile>>
+>;
+export type DownloadImportRecordingFileQueryError = ErrorType<
+  | PlaylistImportBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | ImportRecordingMediaNotFoundResponse
+  | ImportRecordingMediaConflictResponse
+  | ImportRecordingRangeNotSatisfiableResponse
+  | ImportRecordingMediaUnavailableResponse
+>;
+
+/**
+ * @summary Download the verified recording selected for one owned import occurrence
+ */
+
+export function useDownloadImportRecordingFile<
+  TData = Awaited<ReturnType<typeof downloadImportRecordingFile>>,
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | ImportRecordingMediaNotFoundResponse
+    | ImportRecordingMediaConflictResponse
+    | ImportRecordingRangeNotSatisfiableResponse
+    | ImportRecordingMediaUnavailableResponse
+  >,
+>(
+  importId: string,
+  position: string,
+  revision: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof downloadImportRecordingFile>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getDownloadImportRecordingFileQueryOptions(
+    importId,
+    position,
+    revision,
+    options,
+  );
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
 
 /**
  * @summary List playlists owned by the current TF account
