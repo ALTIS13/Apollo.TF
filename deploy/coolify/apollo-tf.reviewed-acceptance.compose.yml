@@ -1,0 +1,55 @@
+# Source-only overlay after base, canary, and canary renewal v2. Do not deploy alone.
+name: apollo-tf-reviewed-acceptance
+
+services:
+  tf-api:
+    environment:
+      TF_RECORDING_CATALOG_FILE: /run/tf-reviewed/catalog.json
+      TF_RECORDING_MEDIA_DIR: /run/tf-reviewed/media
+    volumes:
+      - type: bind
+        source: ${TF_REVIEWED_CATALOG_FILE:?}
+        target: /run/tf-reviewed/catalog.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TF_REVIEWED_MEDIA_DIR:?}
+        target: /run/tf-reviewed/media
+        read_only: true
+        bind:
+          create_host_path: false
+
+volumes:
+  tf-postgres-data:
+    name: apollo-tf-reviewed-acceptance-postgres
+  tf-redis-data:
+    name: apollo-tf-reviewed-acceptance-redis
+  tf-integrations-postgres-data:
+    name: apollo-tf-reviewed-acceptance-integrations-postgres
+  tf-download-redis-data:
+    name: apollo-tf-reviewed-acceptance-download-redis
+  tf-downloads:
+    name: apollo-tf-reviewed-acceptance-downloads
+
+networks:
+  tf-data:
+    name: apollo-tf-reviewed-acceptance-data
+  tf-edge:
+    name: apollo-tf-reviewed-acceptance-edge
+  tf-integrations-control:
+    name: apollo-tf-reviewed-acceptance-integrations-control
+  tf-integrations-data:
+    name: apollo-tf-reviewed-acceptance-integrations-data
+  tf-integrations-egress:
+    name: apollo-tf-reviewed-acceptance-integrations-egress
+  tf-search-control:
+    name: apollo-tf-reviewed-acceptance-search-control
+  tf-search-egress:
+    name: apollo-tf-reviewed-acceptance-search-egress
+  tf-download-queue:
+    name: apollo-tf-reviewed-acceptance-download-queue
+  tf-download-control:
+    name: apollo-tf-reviewed-acceptance-download-control
+  tf-download-egress:
+    name: apollo-tf-reviewed-acceptance-download-egress
