@@ -1,0 +1,11 @@
+# Spotify import ranges
+
+The previous Web importer rejected an entire library, playlist or album above 200 Spotify positions. The import dialog now previews and saves one range at a time: up to 200 provider positions and four 50-row requests per preview. Large sources show the position range and total before confirmation. Moving to another range is explicit; a successful save does not trigger another read or write. Small sources retain their ordinary one-draft flow.
+
+The existing API queries are the documented offset/limit operations for [saved tracks](https://developer.spotify.com/documentation/web-api/reference/get-users-saved-tracks), [playlist items](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items), and [album tracks](https://developer.spotify.com/documentation/web-api/reference/get-an-albums-tracks). There is no new OAuth scope, provider route or quota change. Only user-selected metadata reaches a TF draft. The account draft limit and per-draft storage limits remain unchanged.
+
+Source order and repeated occurrences are preserved. Unavailable positions count toward the range; they do not become phantom tracks or appear as the next range. An entirely unavailable range can still be navigated, but cannot be saved. TF rejects inconsistent totals across the requested pages or between range selections and asks the listener to restart the preview. Offset pagination cannot establish a transactionally consistent Spotify snapshot when tracks reorder or change without a count change. The preview is the exact metadata TF proposes to save, not a promise of a full account backup.
+
+No audio, artwork URL, provider token, or Spotify download permission enters the draft. Matching, verified full-recording selection, playback and independent download permission still use the existing [reviewed recording flow](2026-11-12-tf-reviewed-audio.md).
+
+Chrome fixture: a 202-position saved library showed positions 1-200, then 201-202 on request. Position 201 was unavailable; one explicit confirmation wrote a single draft with only Track 202. The fixture observed no additional writes, audio, or download requests. This was a production Web build against synthetic local API responses, not live Spotify OAuth or persistence on HomeNode. The fixture was stopped after verification.
