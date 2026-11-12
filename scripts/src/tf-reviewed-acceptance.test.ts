@@ -30,6 +30,7 @@ function environment() {
     env[variable] = `ghcr.io/fixture/${service}@sha256:${"a1".repeat(32)}`;
   }
   return Object.assign(env, {
+    TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API: "items",
     TF_REVIEWED_DATA_ROOT: dataRoot,
     TF_REVIEWED_CATALOG_FILE: `${dataRoot}/catalog.json`,
     TF_REVIEWED_MEDIA_DIR: `${dataRoot}/media`,
@@ -134,6 +135,7 @@ function fixture() {
   };
   services["tf-integrations"]!.environment = {
     TF_INTEGRATIONS_SPOTIFY_CALLBACK_URI: `${api}/api/spotify/callback`,
+    TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API: env.TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API,
   };
   const networks: Record<
     string,
@@ -207,6 +209,15 @@ describe("reviewed acceptance topology", () => {
     expect(() =>
       validateTfReviewedAcceptanceTopology(env, baseline, reviewed),
     ).not.toThrow();
+  });
+
+  it("rejects a different rendered playlist API even when baseline and reviewed models agree", () => {
+    const { env, baseline, reviewed } = fixture();
+    for (const model of [baseline, reviewed]) {
+      model.services["tf-integrations"]!.environment!.TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API = "tracks";
+    }
+    expect(() => validateTfReviewedAcceptanceTopology(env, baseline, reviewed))
+      .toThrow("reviewed_spotify_playlist_api_mismatch");
   });
 
   it.each<[string, (data: ReturnType<typeof fixture>) => void]>([
@@ -482,6 +493,7 @@ describe("reviewed acceptance Compose evidence", () => {
       serviceCount: 14,
       networkCount: 10,
       volumeCount: 5,
+      spotifyPlaylistApi: "items",
     });
     expect(() =>
       validateTfReviewedAcceptance(env, (files) => ({
@@ -499,25 +511,21 @@ describe("reviewed acceptance Compose evidence", () => {
     ).toThrow("invalid_reviewed_environment");
   });
 
-  it("emits only a compact sanitized failure through the CLI", () => {
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    const path = resolve(root, "deploy/coolify/canary-renewal.v2.env.example");
-    const exit = runTfReviewedAcceptanceCli(
-      ["--env-file", path],
-      () => {
-        throw new Error("private-leak-canary");
-      },
-      {
-        stdout: (value) => stdout.push(value),
-        stderr: (value) => stderr.push(value),
-      },
-    );
-    expect(exit).toBe(1);
-    expect(stdout).toEqual([]);
-    expect(stderr).toEqual([
-      '{"ok":false,"error":"reviewed_compose_render_failed"}\n',
-    ]);
+  it("does not expose renderer diagnostics", () => {
+    expect(() => validateTfReviewedAcceptance(environment(), () => {
+      throw new Error("private-leak-canary");
+    })).toThrow(new Error("reviewed_compose_render_failed"));
+  });
+
+  it.each([
+    ["local", undefined], ["remote-search", undefined], ["local", "ITEMS"], ["remote-search", ""],
+  ] as const)("requires an explicit playlist API before rendering %s (value: %s)", (mode, value) => {
+    const env: Record<string, string> = { ...environment(), TF_SEARCH_ORIGIN: searchOrigin };
+    if (value === undefined) delete env.TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API;
+    else env.TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API = value;
+    const render = vi.fn();
+    expect(() => validateTfReviewedAcceptance(env, render, mode)).toThrow("reviewed_spotify_playlist_api_invalid");
+    expect(render).not.toHaveBeenCalled();
   });
 
   it.each([undefined, "http://search.private.internal", "https://search.private.internal/", "https://user@search.private.internal"])(
@@ -541,21 +549,22 @@ describe("reviewed acceptance Compose evidence", () => {
     expect(render).not.toHaveBeenCalled();
   });
 
-  it("accepts the remote CLI declarations flag without changing the legacy invocation", () => {
+  it.each([["--env-file"], ["--remote-search", "--declarations-file"]])("fails closed through the CLI using %s", (...flags) => {
     const stdout = vi.fn();
     const stderr = vi.fn();
     const render = vi.fn();
     const path = resolve(root, "deploy/coolify/canary-renewal.v2.env.example");
-    expect(runTfReviewedAcceptanceCli(["--remote-search", "--declarations-file", path], render, { stdout, stderr })).toBe(1);
+    expect(runTfReviewedAcceptanceCli([...flags, path], render, { stdout, stderr })).toBe(1);
     expect(render).not.toHaveBeenCalled();
     expect(stdout).not.toHaveBeenCalled();
-    expect(stderr).toHaveBeenCalledExactlyOnceWith('{"ok":false,"error":"reviewed_remote_search_origin_invalid"}\n');
+    expect(stderr).toHaveBeenCalledExactlyOnceWith('{"ok":false,"error":"reviewed_spotify_playlist_api_invalid"}\n');
   });
 
   it.each([
-    [false, "reviewed_remote_search_source_drift"],
-    [true, "reviewed_remote_search_resolved_drift"],
-  ] as const)("rejects a collateral volume change (interpolated: %s)", (interpolated, error) => {
+    ["volume", false, "reviewed_remote_search_source_drift"],
+    ["volume", true, "reviewed_remote_search_resolved_drift"],
+    ["Spotify playlist API", true, "reviewed_remote_search_resolved_drift"],
+  ] as const)("rejects a remote-only %s change (interpolated: %s)", (change, interpolated, error) => {
     const { env, baseline, reviewed } = fixture();
     env.TF_SEARCH_ORIGIN = searchOrigin;
     for (const model of [baseline, reviewed]) {
@@ -592,7 +601,10 @@ describe("reviewed acceptance Compose evidence", () => {
         Object.assign(api.environment!, {
           TF_SEARCH_ORIGIN: interpolate ? searchOrigin : "${TF_SEARCH_ORIGIN:?}", TF_SEARCH_ALLOW_INSECURE_HTTP: "false",
         });
-        if (interpolated === interpolate) model.volumes["tf-postgres-data"]!.name = "unapproved-postgres";
+        if (interpolated === interpolate) {
+          if (change === "volume") model.volumes["tf-postgres-data"]!.name = "unapproved-postgres";
+          else model.services["tf-integrations"]!.environment!.TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API = "tracks";
+        }
       }
       if (interpolate) return model;
       const environment = Object.entries(api.environment!).map(([key, value]) => `${key}=${value}`);
@@ -602,10 +614,12 @@ describe("reviewed acceptance Compose evidence", () => {
   });
 
   it.each([
-    ["local", 14, 10],
-    ["remote-search", 13, 8],
-  ] as const)("renders the real %s profile with isolated dummy inputs using config only", (mode, serviceCount, networkCount) => {
-    const result = validateTfReviewedAcceptance({ ...environment(), TF_SEARCH_ORIGIN: searchOrigin }, undefined, mode);
+    ["local", "items", 14, 10],
+    ["remote-search", "tracks", 13, 8],
+  ] as const)("renders the real %s profile with the declared %s API using config only", (mode, spotifyPlaylistApi, serviceCount, networkCount) => {
+    const result = validateTfReviewedAcceptance({
+      ...environment(), TF_SEARCH_ORIGIN: searchOrigin, TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API: spotifyPlaylistApi,
+    }, undefined, mode);
     expect(result).toMatchObject({
       status: "validated",
       evidenceLevel: "compose-config-only",
@@ -614,6 +628,7 @@ describe("reviewed acceptance Compose evidence", () => {
       serviceCount,
       networkCount,
       volumeCount: 5,
+      spotifyPlaylistApi,
     });
   }, 30_000);
 });

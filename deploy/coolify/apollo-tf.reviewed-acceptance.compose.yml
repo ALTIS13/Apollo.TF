@@ -20,6 +20,10 @@ services:
         bind:
           create_host_path: false
 
+  tf-integrations:
+    environment:
+      TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API: ${TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API:?}
+
 volumes:
   tf-postgres-data:
     name: apollo-tf-reviewed-acceptance-postgres

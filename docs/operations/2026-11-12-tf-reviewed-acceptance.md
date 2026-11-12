@@ -32,6 +32,8 @@ Do not use the old example environment to activate this Application. It is a nam
 
 Keep the legacy environment variable names required by the source layers, but give them reviewed-specific paths. `TF_CANARY_SECRET_DIRECTORY` must equal `TF_SECRET_DIRECTORY`, and `TF_CANARY_ADMIN_CREDENTIAL_DIRECTORY` must equal `TF_ADMIN_CREDENTIAL_DIRECTORY`. The validator requires both dedicated paths to contain the reviewed project namespace and rejects any overlap with the media root or with the other control path. It does not dereference the declared remote paths; verify them on the chosen host before activation.
 
+Declare `TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API` explicitly in the reviewed Application. Use `items` for a client admitted to the [current Development Mode playlist contract](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide#playlist-endpoint-renames); select `tracks` only when the owner has confirmed the legacy route for the actual client. No implicit fallback, mixed-profile reads, or added OAuth scope. Both reviewed variants require this value and compare the effective module setting to it. This check does not prove the registered Spotify client's mode, playlist access or OAuth callback. The frozen profiles are unchanged.
+
 From the repository root, run the no-write topology check against the operator environment:
 
 ```powershell

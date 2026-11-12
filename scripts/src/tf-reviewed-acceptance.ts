@@ -131,6 +131,12 @@ function assertEnvironment(env: Environment): void {
   }
 }
 
+function requireSpotifyPlaylistApi(env: Environment): "items" | "tracks" {
+  const value = env.TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API;
+  if (value !== "items" && value !== "tracks") fail("reviewed_spotify_playlist_api_invalid");
+  return value;
+}
+
 function readBounded(path: string, limit: number): string {
   const listed = lstatSync(path);
   if (!listed.isFile() || listed.size > limit) throw new Error();
@@ -507,6 +513,7 @@ export function validateTfReviewedAcceptanceTopology(
   reviewed: unknown,
 ): void {
   assertEnvironment(env);
+  const spotifyPlaylistApi = requireSpotifyPlaylistApi(env);
   const original = object(baseline);
   const resolved = object(reviewed);
   if (original.name !== baselineProject || resolved.name !== project) fail();
@@ -517,6 +524,10 @@ export function validateTfReviewedAcceptanceTopology(
   const binds = expectedBinds(env, object(resolved.secrets));
   assertServices(env, services, binds);
   assertOrigins(env, services);
+  const integrationsEnv = object(object(services["tf-integrations"]).environment);
+  if (integrationsEnv.TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API !== spotifyPlaylistApi) {
+    fail("reviewed_spotify_playlist_api_mismatch");
+  }
 
   // Remove only verified deltas before checking the rest of the resolved model.
   const projected = structuredClone(resolved);
@@ -685,6 +696,7 @@ export function validateTfReviewedAcceptance(
 ) {
   assertEnvironment(env);
   if (mode !== "local" && mode !== "remote-search") fail("invalid_arguments");
+  const spotifyPlaylistApi = requireSpotifyPlaylistApi(env);
   const remoteOrigin =
     mode === "remote-search" ? requireRemoteSearchOrigin(env) : null;
   function checkedRender(
@@ -734,6 +746,7 @@ export function validateTfReviewedAcceptance(
     serviceCount: Object.keys(images).length - (remoteSource ? 1 : 0),
     networkCount: Object.keys(networks).length - (remoteSource ? 2 : 0),
     volumeCount: volumes.length,
+    spotifyPlaylistApi,
   } as const;
 }
 

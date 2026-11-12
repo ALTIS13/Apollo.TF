@@ -543,7 +543,7 @@ services:
       - TF_INTEGRATIONS_SPOTIFY_CALLBACK_URI=${TF_CANARY_API_PUBLIC_ORIGIN:?}/api/spotify/callback
       - TF_INTEGRATIONS_SPOTIFY_CLIENT_ID_FILE=/run/secrets/tf_integrations_spotify_client_id
       - TF_INTEGRATIONS_SPOTIFY_CLIENT_SECRET_FILE=/run/secrets/tf_integrations_spotify_client_secret
-      - TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API=${TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API:-tracks}
+      - TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API=${TF_INTEGRATIONS_SPOTIFY_PLAYLIST_API:?}
       - TF_INTEGRATIONS_TOKEN_KEYRING_FILE=/run/secrets/tf_integrations_token_keyring
     healthcheck:
       interval: 5s
