@@ -1,7 +1,8 @@
 # Reviewed TF successor intake
 
-Status: **SOURCE_ARCHIVE_VERIFIED / STATIC_WEB_BUILD_VERIFIED / NOT_RUNTIME_ADMITTED**.
+Status: **SOURCE_ARCHIVE_VERIFIED / LOCAL_OCI_VERIFIED / NOT_RUNTIME_ADMITTED**.
 This selects a new input for the reviewed acceptance Application; it does not supersede or republish the frozen October candidate. No release ID or tag has been claimed.
+The [OCI build handoff](2026-11-13-tf-reviewed-oci-build.md) records nine verified local images and the exact Web container smoke.
 
 | Artifact | Exact input or evidence |
 | --- | --- |
@@ -10,7 +11,7 @@ This selects a new input for the reviewed acceptance Application; it does not su
 | Static Web tar | `tf-reviewed-web-20261113-7e991b09.tar`, 2,016,256 bytes, SHA-256 `863655c33bce0b64d22e60999ab30bb538ea61bb52cd640d0f7edd79324daf7d` |
 | Compiled Web entry | `assets/index-Dwj_l5IB.js`, SHA-256 `ce9e686b22eef079d57cf02ab826af9cca9b95ec1ae31c5e637f1fc2081c5436` |
 | Web build inputs | `VITE_API_URL=https://api.tf.canary.apollot.ru`, `BASE_PATH=/`, successor WebSocket disabled; Node 24.15.0 and pnpm 10.33.2 on the local host |
-| Build targets | Existing TF-only profile: nine custom Linux/amd64 images and external pinned Redis. No new OCI image digest or registry claim. |
+| Build targets | Nine local custom Linux/amd64 OCI archives; the existing runtime profile also requires external pinned Redis. No registry claim. |
 
 The source tar's embedded Git commit matches the selection. A second `git -c tar.umask=0002 archive --format=tar <source>` on Git 2.54.0 for Windows reproduced its bytes. The archived Web entry was read back and matched the built file; the HTML points to that single module and the entry contains the canary API origin without either production API origin. This is a local static package, not the runner image. Use the actual source archive for intake; the native publisher must verify custody, archive digest and its own build environment, not assume a different Git implementation emits identical bytes. Neither tar contains runtime secrets or private operational receipts.
 
@@ -18,7 +19,7 @@ REA 6.7.0 selected the compiled entry (`ev_fb2115f199d9c34d4d467c43191772facd005
 
 ## Build-Only Verification
 
-The verified source archive unpacks without `.ops-private` and its inert [Coolify build-check profile](../../deploy/coolify/apollo-tf.build-check.compose.yml) resolves all nine build services. Local Docker Desktop did not start: its Ingest listener could not remove `sailor-ingest.sock` and the Linux engine pipe never became available. The socket and Docker data were not changed. No OCI builds, image uploads, or deployment attempts were made. A team-scoped read of the available Coolify Applications returned no matching TF build Application; do not assume another team's connection is a TF destination.
+The verified source archive unpacks without `.ops-private` and its inert [Coolify build-check profile](../../deploy/coolify/apollo-tf.build-check.compose.yml) resolves all nine build services. The initial Docker Desktop attempt failed: its Ingest listener could not remove `sailor-ingest.sock`. The socket and Docker data were not changed. The isolated local BuildKit run linked above succeeded afterward. A team-scoped read of the available Coolify Applications returned no matching TF build Application; do not assume another team's connection is a TF destination.
 
 Node package builds of `@workspace/api-server` and `@workspace/tf-integrations` passed from the same tracked source (only intake documents differed in the checkout). The API `dist/index.mjs` SHA-256 is `92563a8a1fbfc491dfbd1a06dae7a2bca657ccee4d0de3ce2131e8a210945da1`. The integrations `dist/index.mjs` SHA-256 is `1c5622976971f32502d0512fb0175cd8cfdb5f1ed2a1e35e72d027d219f08453`. REA 6.7.0 parsed that integrations bundle: 131,611 bytes, one parsed file, 18,849 visited AST nodes, 45 static observations, `ev_42f6828c812ee2fa3d44d035f5c9c2ceeafc8a94e2c7f288bb2d5bba682eb983`. These are local bundle checks, not Linux image, live OAuth, or provider reachability proof.
 
