@@ -341,6 +341,50 @@ describe("TfIntegrationsService", () => {
     });
   }
 
+  it.each([
+    { stage: "refresh", header: "0", retryAfterSeconds: 0 },
+    { stage: "library", header: "invalid-delay", retryAfterSeconds: undefined },
+  ])("reports throttling during Spotify $stage without changing stored credentials", async ({
+    stage, header, retryAfterSeconds,
+  }) => {
+    const tokenVault = vault();
+    const repository = new MemoryRepository();
+    const record = storedRecord(tokenVault, "spotify");
+    repository.records.set(`${accountId}:spotify`, record);
+    const requests: string[] = [];
+    let cancelled = 0;
+    const provider = new SpotifyProvider({
+      clientId: "fixture-client",
+      clientSecret: "fixture-secret",
+      callbackUri: "https://api.tf.apollot.ru/api/spotify/callback",
+      now: () => Date.parse(stage === "refresh" ? "2026-07-25T14:00:00Z" : "2026-07-25T12:00:00Z"),
+      fetch: async (input) => {
+        requests.push(String(input));
+        return new Response(new ReadableStream({
+          cancel() { cancelled++; },
+        }), { status: 429, headers: { "Retry-After": header } });
+      },
+    });
+    const target = service(repository, tokenVault, provider);
+    const input = command("spotify.liked.list", { offset: 0, limit: 1 });
+
+    expect(await target.execute(input)).toStrictEqual({
+      schemaVersion: 1,
+      requestId,
+      accountId,
+      operation: input.operation,
+      error: retryAfterSeconds === undefined
+        ? { code: "provider_rate_limited" }
+        : { code: "provider_rate_limited", retryAfterSeconds },
+    });
+    expect(requests).toEqual([stage === "refresh"
+      ? "https://accounts.spotify.com/api/token"
+      : "https://api.spotify.com/v1/me/tracks?offset=0&limit=1"]);
+    expect(cancelled).toBe(1);
+    expect(repository.mutationContexts).toEqual([]);
+    expect(repository.records.get(`${accountId}:spotify`)).toBe(record);
+  });
+
   it("discards invalid_grant credentials, reports disconnected and never refreshes them again", async () => {
     const tokenVault = vault();
     const repository = new MemoryRepository();

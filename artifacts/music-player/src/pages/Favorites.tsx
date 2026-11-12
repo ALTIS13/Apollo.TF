@@ -22,6 +22,7 @@ import {
   useSpotifyTopTracks,
   useSpotifyAlbums,
   useSpotifyAlbumTracks,
+  useSpotifyRateLimit,
   type SpotifyAlbum,
   type SpotifyAlbumOwner,
   type SpotifyTrack,
@@ -268,12 +269,14 @@ function SpotifyItemLink({ item, kind }: {
   );
 }
 
-function SpotifyAlbumPageError({ message, retry, previous }: { message: string; retry: () => void; previous?: () => void }) {
+function SpotifyReadError({ error, message, retry, previous }: { error: Error; message?: string; retry: () => void; previous?: () => void }) {
+  const quota = useSpotifyRateLimit(error);
+  if (!quota && !message) return <ErrorState message={error.message} />;
   return (
     <div role="alert" className="py-8 text-sm text-amber-300">
-      <p>{message}</p>
+      <p>{quota?.message ?? message}</p>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
-        <button type="button" onClick={retry} className="min-h-10 underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-white">Повторить</button>
+        <button type="button" onClick={retry} disabled={quota?.waiting} className="min-h-10 underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-white disabled:opacity-50">Повторить</button>
         {previous && <button type="button" onClick={previous} className="min-h-10 underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-white">Предыдущая страница</button>}
       </div>
     </div>
@@ -286,10 +289,10 @@ function SpotifyAlbumGrid({ owner, offset, onPageChange, onSelect }: {
   onPageChange: (offset: number) => void;
   onSelect: (album: SpotifyAlbum) => void;
 }) {
-  const { data, isFetching, isError, refetch } = useSpotifyAlbums(owner, offset, SPOTIFY_ALBUM_PAGE_SIZE);
+  const { data, isFetching, error, refetch } = useSpotifyAlbums(owner, offset, SPOTIFY_ALBUM_PAGE_SIZE);
   if (owner === null) return <p className="py-8 text-sm text-muted-foreground">Не удалось подтвердить аккаунт Spotify.</p>;
   if (isFetching) return <div role="status"><LoadingState label="Загружаем альбомы…" color={SPOTIFY_GREEN} /></div>;
-  if (isError) return <SpotifyAlbumPageError message="Не удалось загрузить альбомы Spotify." retry={() => void refetch()} previous={offset > 0 ? () => onPageChange(Math.max(0, offset - SPOTIFY_ALBUM_PAGE_SIZE)) : undefined} />;
+  if (error) return <SpotifyReadError error={error} message="Не удалось загрузить альбомы Spotify." retry={() => void refetch()} previous={offset > 0 ? () => onPageChange(Math.max(0, offset - SPOTIFY_ALBUM_PAGE_SIZE)) : undefined} />;
   if (!data) return null;
 
   return (
@@ -319,7 +322,7 @@ function SpotifyAlbumGrid({ owner, offset, onPageChange, onSelect }: {
 
 function SpotifyAlbumDetail({ owner, album, onBack }: { owner: SpotifyAlbumOwner | null; album: SpotifyAlbum; onBack: () => void }) {
   const [offset, setOffset] = useState(0);
-  const { data, isFetching, isError, refetch } = useSpotifyAlbumTracks(owner, album.id, offset, SPOTIFY_ALBUM_TRACK_PAGE_SIZE);
+  const { data, isFetching, error, refetch } = useSpotifyAlbumTracks(owner, album.id, offset, SPOTIFY_ALBUM_TRACK_PAGE_SIZE);
 
   return (
     <div>
@@ -336,7 +339,7 @@ function SpotifyAlbumDetail({ owner, album, onBack }: { owner: SpotifyAlbumOwner
       </div>
       {album.trackCount > 0 && <SpotifyImportAction owner={owner} selection={{ kind: "album", id: album.id, name: album.title }} />}
       {isFetching ? <div role="status"><LoadingState label="Загружаем треки…" color={SPOTIFY_GREEN} /></div> :
-        isError ? <SpotifyAlbumPageError message="Не удалось загрузить треки альбома." retry={() => void refetch()} previous={offset > 0 ? () => setOffset(Math.max(0, offset - SPOTIFY_ALBUM_TRACK_PAGE_SIZE)) : undefined} /> :
+        error ? <SpotifyReadError error={error} message="Не удалось загрузить треки альбома." retry={() => void refetch()} previous={offset > 0 ? () => setOffset(Math.max(0, offset - SPOTIFY_ALBUM_TRACK_PAGE_SIZE)) : undefined} /> :
         data && <>
           {data.tracks.length ? (
             <ol className="divide-y divide-white/8">
@@ -374,7 +377,7 @@ function SpotifyLikedTab({ owner, onSearchVariants }: { owner: SpotifyAlbumOwner
   useEffect(() => { refetch(); }, []);
 
   if (isFetching) return <LoadingState label="Loading liked songs..." color={SPOTIFY_GREEN} />;
-  if (error) return <ErrorState message={(error as Error).message} />;
+  if (error) return <SpotifyReadError error={error} retry={() => void refetch()} />;
   if (!data) return null;
 
   const tracks: GenericTrack[] = data.tracks.map((t: SpotifyTrack) => ({
@@ -420,7 +423,7 @@ function SpotifyPlaylistsTab({ owner, onSearchVariants }: { owner: SpotifyAlbumO
         </div>
         {selected.trackCount > 0 && <SpotifyImportAction owner={owner} selection={{ kind: "playlist", id: selected.id, name: selected.name }} />}
         {loadingT ? <LoadingState label="Loading tracks..." color={SPOTIFY_GREEN} /> :
-          tErr ? <ErrorState message={(tErr as Error).message} /> : (
+          tErr ? <SpotifyReadError error={tErr} retry={() => void refetchT()} /> : (
             <>
               <TrackList tracks={tracks} offset={offset} accentColor={SPOTIFY_GREEN} onSearchVariants={onSearchVariants} />
               {tData && <Pagination offset={offset} limit={50} total={tData.total} onPageChange={setOffset} />}
@@ -431,7 +434,7 @@ function SpotifyPlaylistsTab({ owner, onSearchVariants }: { owner: SpotifyAlbumO
   }
 
   if (loadingP) return <LoadingState label="Loading playlists..." color={SPOTIFY_GREEN} />;
-  if (pErr) return <ErrorState message={(pErr as Error).message} />;
+  if (pErr) return <SpotifyReadError error={pErr} retry={() => void refetchP()} />;
   if (!pData) return null;
 
   return (
@@ -488,7 +491,7 @@ function SpotifyTopTab({ onSearchVariants }: { onSearchVariants: (title: string,
         ))}
       </div>
       {isFetching ? <LoadingState label="Loading top tracks..." color={SPOTIFY_GREEN} /> :
-        error ? <ErrorState message={(error as Error).message} /> :
+        error ? <SpotifyReadError error={error} retry={() => void refetch()} /> :
           <TrackList tracks={tracks} offset={0} accentColor={SPOTIFY_GREEN} onSearchVariants={onSearchVariants} />}
     </div>
   );

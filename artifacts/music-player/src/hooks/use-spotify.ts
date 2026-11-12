@@ -1,8 +1,12 @@
+import { useEffect, useReducer, useSyncExternalStore } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/api-config";
 import {
+  SpotifyRateLimitError,
   TfApiError,
+  getSpotifyReadCooldownUntil,
   isCurrentTfSecurityGeneration,
+  subscribeSpotifyReadCooldown,
   tfFetch,
 } from "@/lib/tf-session-client";
 
@@ -25,8 +29,41 @@ function useSpotifyLibraryFetch() {
 }
 
 function retrySpotifyLibrary(failureCount: number, error: Error): boolean {
-  return !(error instanceof TfApiError && error.kind === "provider") &&
+  return !(error instanceof SpotifyRateLimitError || (error instanceof TfApiError && error.kind === "provider")) &&
     failureCount < 1;
+}
+
+function refetchSpotifyOnReconnect(query: { state: { error: unknown } }): boolean {
+  return !(query.state.error instanceof SpotifyRateLimitError);
+}
+
+const spotifyRetryTime = new Intl.DateTimeFormat("ru-RU", { timeStyle: "medium" });
+
+export function useSpotifyRateLimit(error: unknown) {
+  const limited = error instanceof SpotifyRateLimitError && error.generation !== undefined &&
+    isCurrentTfSecurityGeneration(error.generation);
+  const deadline = useSyncExternalStore(subscribeSpotifyReadCooldown, () => limited ? getSpotifyReadCooldownUntil() : 0);
+  const [, refresh] = useReducer((count: number) => count + 1, 0);
+  useEffect(() => {
+    if (!deadline) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const update = () => {
+      const remaining = deadline - Date.now();
+      if (remaining > 0) timer = setTimeout(update, remaining);
+      else refresh();
+    };
+    update();
+    return () => clearTimeout(timer);
+  }, [deadline]);
+
+  if (!limited) return null;
+  const waiting = deadline > Date.now();
+  return {
+    waiting,
+    message: waiting
+      ? `Лимит запросов Spotify исчерпан. Можно повторить после ${spotifyRetryTime.format(Math.ceil(deadline / 1_000) * 1_000)}.`
+      : "Лимит запросов Spotify исчерпан. Можно повторить запрос.",
+  };
 }
 
 export interface SpotifyTrack {
@@ -108,6 +145,7 @@ export function useSpotifyLiked(offset = 0, limit = 50) {
       fetchLibrary(`/spotify/liked?offset=${offset}&limit=${limit}`),
     retry: retrySpotifyLibrary,
     enabled: false,
+    refetchOnReconnect: refetchSpotifyOnReconnect,
   });
 }
 
@@ -118,6 +156,7 @@ export function useSpotifyPlaylists() {
     queryFn: () => fetchLibrary("/spotify/playlists"),
     retry: retrySpotifyLibrary,
     enabled: false,
+    refetchOnReconnect: refetchSpotifyOnReconnect,
   });
 }
 
@@ -128,6 +167,7 @@ export function useSpotifyAlbums(owner: SpotifyAlbumOwner | null, offset: number
     queryFn: ({ signal }) => fetchLibrary(`/spotify/albums?offset=${offset}&limit=${limit}`, signal),
     enabled: owner !== null,
     retry: false,
+    refetchOnReconnect: refetchSpotifyOnReconnect,
   });
 }
 
@@ -138,6 +178,7 @@ export function useSpotifyAlbumTracks(owner: SpotifyAlbumOwner | null, albumId: 
     queryFn: ({ signal }) => fetchLibrary(`/spotify/albums/${encodeURIComponent(albumId)}/tracks?offset=${offset}&limit=${limit}`, signal),
     enabled: owner !== null && albumId.trim().length > 0,
     retry: false,
+    refetchOnReconnect: refetchSpotifyOnReconnect,
   });
 }
 
@@ -149,6 +190,7 @@ export function useSpotifyPlaylistTracks(playlistId: string | null, offset = 0, 
       fetchLibrary(`/spotify/playlists/${playlistId}/tracks?offset=${offset}&limit=${limit}`),
     retry: retrySpotifyLibrary,
     enabled: !!playlistId,
+    refetchOnReconnect: refetchSpotifyOnReconnect,
   });
 }
 
@@ -159,6 +201,7 @@ export function useSpotifyTopTracks(timeRange: "short_term" | "medium_term" | "l
     queryFn: () => fetchLibrary(`/spotify/top-tracks?time_range=${timeRange}`),
     retry: retrySpotifyLibrary,
     enabled: false,
+    refetchOnReconnect: refetchSpotifyOnReconnect,
   });
 }
 

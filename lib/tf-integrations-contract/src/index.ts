@@ -561,7 +561,9 @@ const tfIntegrationsSuccessResponseObjectSchema = z.discriminatedUnion(
   ],
 );
 
-export const tfIntegrationErrorCodeSchema = z.enum([
+export const TF_INTEGRATIONS_MAX_RETRY_AFTER_SECONDS = 86_400;
+
+const otherIntegrationErrorCodeSchema = z.enum([
   "not_connected",
   "provider_rejected",
   "provider_unavailable",
@@ -569,11 +571,29 @@ export const tfIntegrationErrorCodeSchema = z.enum([
   "invalid_provider_response",
 ]);
 
+export const tfIntegrationErrorCodeSchema = z.enum([
+  ...otherIntegrationErrorCodeSchema.options,
+  "provider_rate_limited",
+]);
+
 const tfIntegrationsErrorResponseObjectSchema = z
   .object({
     ...responseBaseSchema,
     operation: tfIntegrationOperationSchema,
-    error: z.object({ code: tfIntegrationErrorCodeSchema }).strict(),
+    error: z.discriminatedUnion("code", [
+      z.object({ code: otherIntegrationErrorCodeSchema }).strict(),
+      z
+        .object({
+          code: z.literal(tfIntegrationErrorCodeSchema.enum.provider_rate_limited),
+          retryAfterSeconds: z
+            .number()
+            .int()
+            .min(0)
+            .max(TF_INTEGRATIONS_MAX_RETRY_AFTER_SECONDS)
+            .optional(),
+        })
+        .strict(),
+    ]),
   })
   .strict();
 

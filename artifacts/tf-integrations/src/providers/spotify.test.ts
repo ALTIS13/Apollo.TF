@@ -549,6 +549,57 @@ describe("SpotifyProvider", () => {
     expect(requests[0]?.init.signal).toBe(controller.signal);
   });
 
+  it.each([
+    ["0", 0],
+    ["00042", 42],
+    ["86400", 86_400],
+    ["86401", undefined],
+    ["+3", undefined],
+    ["-1", undefined],
+    ["3.0", undefined],
+    ["1e2", undefined],
+    ["4, 5", undefined],
+    ["Wed, 21 Oct 2015 07:28:00 GMT", undefined],
+    ["", undefined],
+    [null, undefined],
+  ] as const)("handles Spotify 429 with Retry-After %j without retrying or reading its body", async (header, seconds) => {
+    const response = new Response("private provider body", {
+      status: 429,
+      headers: header === null ? undefined : { "Retry-After": header },
+    });
+    const cancel = vi.spyOn(response.body!, "cancel");
+    const getReader = vi.spyOn(response.body!, "getReader");
+    const { provider, requests } = makeProvider([response]);
+    const error = await provider.likedTracks({ accessToken: "access", offset: 0, limit: 1 })
+      .catch((failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error).toMatchObject({ code: "provider_rate_limited", retryAfterSeconds: seconds });
+    expect(JSON.stringify(error)).not.toContain("private provider body");
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(getReader).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+  });
+
+  it.each(["token exchange", "profile lookup"])("keeps Spotify OAuth %s 429 as a provider rejection", async (stage) => {
+    const throttled = new Response("private provider body", {
+      status: 429,
+      headers: { "Retry-After": "5" },
+    });
+    const cancel = vi.spyOn(throttled.body!, "cancel");
+    const responses = stage === "token exchange" ? [throttled] : [
+      jsonResponse({ access_token: "access", refresh_token: "refresh", expires_in: 3_600 }),
+      throttled,
+    ];
+    const { provider, requests } = makeProvider(responses);
+
+    await expect(provider.exchangeCode({ code: "code", callbackUri })).rejects.toMatchObject({
+      code: "provider_rejected",
+    });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(responses.length);
+  });
+
   it("cancels non-OK and oversized declared response bodies before throwing", async () => {
     const nonOk = new Response("provider-error-body", { status: 503 });
     const nonOkCancel = vi.spyOn(nonOk.body!, "cancel");

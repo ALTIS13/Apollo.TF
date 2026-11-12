@@ -851,6 +851,27 @@ describe("TF integrations private HTTP runtime", () => {
     expect(await thrown.text()).toBe('{"error":"internal_error"}');
   });
 
+  it("returns a correlated rate-limit DTO over the signed command path without an HTTP Retry-After", async () => {
+    const input = { ...command, operation: "spotify.albums.list", input: { offset: 0, limit: 10 } } as const;
+    const body = Buffer.from(JSON.stringify(input), "utf8");
+    const failure = {
+      schemaVersion: 1,
+      requestId,
+      accountId,
+      operation: input.operation,
+      error: { code: "provider_rate_limited", retryAfterSeconds: 30 },
+    } as const;
+    const result = await request(app({ execute: async () => failure }), "/v1/commands", {
+      method: "POST",
+      headers: signedHeaders("/v1/commands", body, 90),
+      body,
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.headers.get("retry-after")).toBeNull();
+    expect(await result.json()).toEqual(failure);
+  });
+
   it("does not make readiness depend on Spotify or Yandex availability", async () => {
     const execute = vi.fn<TestService["execute"]>(async () => {
       throw new Error("spotify and yandex unavailable");

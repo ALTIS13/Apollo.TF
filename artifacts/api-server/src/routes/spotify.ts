@@ -148,6 +148,18 @@ function sendLibraryFailure(
   response: Response,
   failure: TfIntegrationsErrorResponse,
 ): void {
+  if (failure.error.code === "provider_rate_limited") {
+    const { retryAfterSeconds } = failure.error;
+    response.setHeader("Cache-Control", "no-store");
+    if (retryAfterSeconds !== undefined) {
+      response.setHeader("Retry-After", String(retryAfterSeconds));
+    }
+    response.status(429).json({
+      error: "spotify_rate_limited",
+      ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+    });
+    return;
+  }
   if (failure.error.code === "not_connected") {
     response.status(401).json({ error: "not_connected" });
     return;

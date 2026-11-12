@@ -1,5 +1,5 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TfSessionBoundary } from "@/auth/TfSessionBoundary";
@@ -56,7 +56,7 @@ function setup(respond: (url: string) => Response | Promise<Response>, entitled 
     return Promise.resolve(respond(String(url)));
   });
   vi.stubGlobal("fetch", http);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
   render(
     <QueryClientProvider client={client}>
       <TfAuthProvider>
@@ -84,6 +84,74 @@ afterEach(() => {
 });
 
 describe("Spotify saved albums in Favorites", () => {
+  it("shows a local Spotify quota error without automatic retry even when the hint is zero", async () => {
+    let reads = 0;
+    const topPath = "/api/spotify/top-tracks?time_range=medium_term";
+    const { user, http } = setup((url) => {
+      if (url === topPath) return ++reads === 1
+        ? json({ error: "spotify_rate_limited", retryAfterSeconds: 0 }, 429)
+        : json({ tracks: [], timeRange: "medium_term" });
+      return connected(url);
+    });
+    await user.click(await screen.findByRole("button", { name: "Spotify" }));
+    await user.click(await screen.findByRole("button", { name: "Топ" }));
+    const retry = await screen.findByRole("button", { name: "Повторить" });
+    expect(screen.getByRole("alert")).toHaveTextContent(/Лимит запросов Spotify/);
+    expect(retry).toBeEnabled();
+    expect(reads).toBe(1);
+    await user.click(retry);
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(reads).toBe(2);
+    expect(http.mock.calls.filter(([url]) => url === "/api/spotify/status")).toHaveLength(1);
+    expect(http.mock.calls.filter(([url]) => url === "/api/auth/me")).toHaveLength(1);
+  });
+
+  it("does not refetch an enabled album query on reconnect after a quota error", async () => {
+    let reads = 0;
+    const { user } = setup((url) => {
+      if (url === albumsPath) return ++reads === 1
+        ? json({ error: "spotify_rate_limited", retryAfterSeconds: 0 }, 429)
+        : json({ offset: 0, limit: 10, total: 1, albums: [album] });
+      return connected(url);
+    });
+    await openAlbums(user);
+    const retry = await screen.findByRole("button", { name: "Повторить" });
+    await act(async () => { onlineManager.setOnline(false); });
+    await act(async () => { onlineManager.setOnline(true); });
+    expect(reads).toBe(1);
+    expect(retry).toBeEnabled();
+    await user.click(retry);
+    expect(await screen.findByRole("button", { name: /Night Sessions/ })).toBeInTheDocument();
+    expect(reads).toBe(2);
+  });
+
+  it("pauses an import retry until the shared cooldown ends without fetching or saving automatically", async () => {
+    let trackReads = 0;
+    const { user, http } = setup((url) => {
+      if (url === albumsPath) return json({ offset: 0, limit: 10, total: 1, albums: [album] });
+      if (url === tracksPath) return ++trackReads === 2
+        ? json({ error: "spotify_rate_limited", retryAfterSeconds: 1 }, 429)
+        : json({ offset: 0, limit: 50, total: 1, tracks: [track] });
+      return connected(url);
+    }, true, true);
+    await openAlbums(user);
+    await user.click(await screen.findByRole("button", { name: /Night Sessions/ }));
+    await screen.findByText(track.title);
+    await user.click(screen.getByRole("button", { name: "Импортировать метаданные" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "Импорт из Spotify" }));
+    const retry = await dialog.findByRole("button", { name: "Повторить" });
+    expect(dialog.getByRole("alert")).toHaveTextContent(/Лимит запросов Spotify.*\d{2}:\d{2}:\d{2}/);
+    expect(retry).toBeDisabled();
+    await user.click(retry);
+    expect(trackReads).toBe(2);
+    await waitFor(() => expect(retry).toBeEnabled(), { timeout: 2_000 });
+    expect(trackReads).toBe(2);
+    await user.click(retry);
+    expect(await dialog.findByText(track.title)).toBeInTheDocument();
+    expect(trackReads).toBe(3);
+    expect(http.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+  });
+
   it("reviews the paged album and saves only ordered unresolved metadata after confirmation", async () => {
     const { user, http } = setup((url) => {
       if (url === albumsPath) return json({ offset: 0, limit: 10, total: 1, albums: [album] });

@@ -1,5 +1,6 @@
 import {
   SPOTIFY_SAVED_ALBUMS_PAGE_SIZE,
+  TF_INTEGRATIONS_MAX_RETRY_AFTER_SECONDS,
   spotifyCatalogIdSchema,
   type NormalizedTrack,
   type SpotifyAlbumTracksPage,
@@ -40,6 +41,7 @@ const SPOTIFY_SCOPES = [
 
 export type ProviderErrorCode =
   | "provider_rejected"
+  | "provider_rate_limited"
   | "provider_unavailable"
   | "invalid_provider_response";
 
@@ -81,6 +83,19 @@ export class SpotifyRefreshInvalidGrantError extends ProviderError {
     super("provider_rejected");
     this.name = "SpotifyRefreshInvalidGrantError";
   }
+}
+
+export class SpotifyRateLimitError extends ProviderError {
+  constructor(readonly retryAfterSeconds: number | undefined) {
+    super("provider_rate_limited");
+    this.name = "SpotifyRateLimitError";
+  }
+}
+
+function parseRetryAfterSeconds(header: string | null): number | undefined {
+  if (header === null || !/^[0-9]+$/.test(header)) return undefined;
+  const seconds = Number(header);
+  return seconds <= TF_INTEGRATIONS_MAX_RETRY_AFTER_SECONDS ? seconds : undefined;
 }
 
 export interface SpotifyProviderOptions {
@@ -830,6 +845,18 @@ export class SpotifyProvider {
       throw new ProviderError("provider_unavailable");
     }
     if (!response.ok) {
+      // Code exchange and its profile lookup keep the existing OAuth behavior.
+      if (
+        response.status === 429 &&
+        operation !== "oauth.exchange" &&
+        operation !== "account.profile"
+      ) {
+        cancelProviderResponseBody(response);
+        this.#log("provider_rate_limited", operation);
+        throw new SpotifyRateLimitError(
+          parseRetryAfterSeconds(response.headers.get("retry-after")),
+        );
+      }
       if (operation === "oauth.refresh" && response.status === 400) {
         let failure: unknown;
         try {

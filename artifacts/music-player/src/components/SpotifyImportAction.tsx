@@ -5,10 +5,10 @@ import { useTfAuth } from "@/auth/tf-auth";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useSavePlaylistImport } from "@/hooks/use-playlist-imports";
-import type { SpotifyAlbumOwner } from "@/hooks/use-spotify";
+import { useSpotifyRateLimit, type SpotifyAlbumOwner } from "@/hooks/use-spotify";
 import { MAX_IMPORT_ENTRIES } from "@/lib/playlist-imports";
 import { readSpotifyImport, SpotifyImportError, type SpotifyImportPreview, type SpotifyImportRangeRequest, type SpotifyImportSelection } from "@/lib/spotify-import";
-import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, reportTfAuthError, TfApiError } from "@/lib/tf-session-client";
+import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, reportTfAuthError, SpotifyRateLimitError, TfApiError } from "@/lib/tf-session-client";
 import { formatDuration } from "@/lib/utils";
 
 export function SpotifyImportAction({ owner, selection }: { owner: SpotifyAlbumOwner | null; selection: SpotifyImportSelection }) {
@@ -26,9 +26,11 @@ function SpotifyImportDialog({ selection }: { selection: SpotifyImportSelection 
   const [savedClosed, setSavedClosed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | SpotifyRateLimitError | null>(null);
   const [retryRange, setRetryRange] = useState<SpotifyImportRangeRequest | null>(null);
   const [preview, setPreview] = useState<(SpotifyImportPreview & { id: string | null; saved: boolean }) | null>(null);
+  const quota = useSpotifyRateLimit(error);
+  const errorMessage = quota?.message ?? (typeof error === "string" ? error : null);
 
   const stop = () => {
     operation.current?.controller.abort();
@@ -55,6 +57,11 @@ function SpotifyImportDialog({ selection }: { selection: SpotifyImportSelection 
       if (current(request)) setPreview({ ...result, id: result.input ? crypto.randomUUID() : null, saved: false });
     } catch (cause) {
       if (!current(request)) return;
+      if (cause instanceof SpotifyRateLimitError) {
+        setRetryRange(range);
+        setError(cause);
+        return;
+      }
       if (cause instanceof TfApiError && cause.kind === "provider") {
         void queryClient.invalidateQueries({ queryKey: ["spotify", "status"] });
       } else reportTfAuthError(cause);
@@ -144,13 +151,13 @@ function SpotifyImportDialog({ selection }: { selection: SpotifyImportSelection 
             </ol> : <p className="text-sm text-muted-foreground">{multipleRanges ? "В этом диапазоне нет доступных треков для импорта." : "В этой коллекции нет доступных треков для импорта."}</p>}
             {preview.saved && <p role="status" className="text-sm text-[#8ddbd4]">Диапазон сохранён как отдельный черновик.</p>}
           </>}
-          {error && <p role="alert" className="text-sm text-amber-300">{error}</p>}
+          {errorMessage && <p role="alert" className="text-sm text-amber-300">{errorMessage}</p>}
           <div className="flex flex-wrap justify-end gap-2">
             <DialogClose asChild><Button type="button" variant="outline" disabled={saving}>{preview?.saved ? "Закрыть" : "Отмена"}</Button></DialogClose>
             {preview?.input && <Button type="button" onClick={() => void confirm()} disabled={saving || preview.saved}>
               {saving ? "Сохраняем…" : multipleRanges ? "Сохранить диапазон как черновик" : "Сохранить черновик"}
             </Button>}
-            {retryRange && <Button type="button" onClick={() => void load(retryRange)}>Повторить</Button>}
+            {retryRange && <Button type="button" disabled={quota?.waiting} onClick={() => void load(retryRange)}>Повторить</Button>}
           </div>
         </DialogContent>
       </Dialog>

@@ -551,6 +551,31 @@ describe("tf integrations contract", () => {
     ).toBe(false);
   });
 
+  it("accepts a rate limit with no delay or a bounded integer delay only", () => {
+    const base = { schemaVersion: 1, requestId, accountId, operation: "spotify.liked.list" };
+    const parse = (error: Record<string, unknown>) =>
+      tfIntegrationsErrorResponseSchema.safeParse({ ...base, error });
+    const code = "provider_rate_limited";
+
+    for (const error of [{ code }, { code, retryAfterSeconds: 0 }, { code, retryAfterSeconds: 86_400 }]) {
+      expect(parse(error)).toMatchObject({ success: true, data: { error } });
+    }
+    for (const retryAfterSeconds of [-1, 86_401, 0.5, "60", null]) {
+      expect(parse({ code, retryAfterSeconds }).success).toBe(false);
+    }
+    expect(parse({ code, retryAfter: "60" }).success).toBe(false);
+    for (const otherCode of [
+      "not_connected",
+      "provider_rejected",
+      "provider_unavailable",
+      "storage_unavailable",
+      "invalid_provider_response",
+    ]) {
+      expect(parse({ code: otherCode }).success).toBe(true);
+      expect(parse({ code: otherCode, retryAfterSeconds: 60 }).success).toBe(false);
+    }
+  });
+
   it("cannot serialize provider tokens or credentials in any success or error result", () => {
     const success = {
       schemaVersion: 1,

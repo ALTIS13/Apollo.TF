@@ -26,7 +26,10 @@ import type {
   SpotifyTracksResult,
   TracksPage,
 } from "./providers/spotify.js";
-import { SpotifyRefreshInvalidGrantError } from "./providers/spotify.js";
+import {
+  SpotifyRateLimitError,
+  SpotifyRefreshInvalidGrantError,
+} from "./providers/spotify.js";
 import type {
   YandexAccount,
   YandexPlaylistsResult,
@@ -492,15 +495,24 @@ export class TfIntegrationsService {
         }
       }
     } catch (error) {
-      const code =
-        error instanceof ServiceError ? error.code : providerErrorCode(error);
-      this.#log(command.operation, code);
+      const failure: TfIntegrationsErrorResponse["error"] =
+        error instanceof SpotifyRateLimitError
+          ? {
+              code: "provider_rate_limited",
+              ...(error.retryAfterSeconds === undefined
+                ? {}
+                : { retryAfterSeconds: error.retryAfterSeconds }),
+            }
+          : {
+              code: error instanceof ServiceError ? error.code : providerErrorCode(error),
+            };
+      this.#log(command.operation, failure.code);
       return {
         schemaVersion: 1,
         requestId: command.requestId,
         accountId: command.accountId,
         operation: command.operation,
-        error: { code },
+        error: failure,
       };
     }
   }
@@ -798,7 +810,12 @@ export class TfIntegrationsService {
     try {
       result = await this.#providerLimiter.run(context.signal, operation);
     } catch (error) {
-      if (error instanceof SpotifyRefreshInvalidGrantError) throw error;
+      if (
+        error instanceof SpotifyRefreshInvalidGrantError ||
+        error instanceof SpotifyRateLimitError
+      ) {
+        throw error;
+      }
       throw new ServiceError(providerErrorCode(error));
     }
     requireActive(context);

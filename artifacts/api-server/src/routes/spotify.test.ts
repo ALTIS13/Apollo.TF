@@ -11,7 +11,7 @@ import express from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TfIntegrationsGateway } from "../lib/tf-integrations-client.js";
-import { TfIntegrationsUnavailableError } from "../lib/tf-integrations-client.js";
+import { HttpTfIntegrationsClient, TfIntegrationsUnavailableError } from "../lib/tf-integrations-client.js";
 import type { TfPrincipal } from "../lib/tf-policy.js";
 import {
   createSpotifyRouter,
@@ -577,6 +577,52 @@ describe("Spotify gateway routes", () => {
       expect(current.execute).toHaveBeenCalledTimes(2);
     },
   );
+
+  it("stops a paged read on Spotify rate limit without returning partial metadata", async () => {
+    const current = spotifyDependencies(async (command) => {
+      if (command.operation !== "spotify.liked.list") throw new Error("Unexpected operation");
+      return command.input.offset === 0
+        ? success(command, { tracks: [track], total: 101 })
+        : {
+            ...failure(command, "provider_rate_limited"),
+            error: { code: "provider_rate_limited", retryAfterSeconds: 17 },
+          };
+    });
+    const baseUrl = await startSpotifyServer(current.dependencies);
+
+    const response = await request(baseUrl, "/spotify/liked-all");
+    expect(response.status).toBe(429);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("retry-after")).toBe("17");
+    await expect(response.json()).resolves.toEqual({
+      error: "spotify_rate_limited",
+      retryAfterSeconds: 17,
+    });
+    expect(current.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns Spotify rate limit without inventing an upstream retry hint", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+      const { requestId, accountId, operation } = JSON.parse(String(init?.body));
+      return Response.json({
+        schemaVersion: 1,
+        requestId,
+        accountId,
+        operation,
+        error: { code: "provider_rate_limited" },
+      });
+    });
+    const gateway = new HttpTfIntegrationsClient(
+      { origin: "https://integrations.example.test", internalAuthSecret: "s".repeat(48), timeoutMs: 1000 },
+      { fetch },
+    );
+    const { dependencies } = spotifyDependencies();
+    const response = await request(await startSpotifyServer({ ...dependencies, gateway }), "/spotify/albums/Album123/tracks");
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBeNull();
+    await expect(response.json()).resolves.toEqual({ error: "spotify_rate_limited" });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
 
   describe.each([1, 2])("liked-all failure on page %i", (failedPage) => {
     it.each([
