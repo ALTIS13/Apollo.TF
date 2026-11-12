@@ -8,9 +8,9 @@ import {
 
 function useSpotifyLibraryFetch() {
   const queryClient = useQueryClient();
-  return async <T,>(path: string): Promise<T> => {
+  return async <T,>(path: string, signal?: AbortSignal): Promise<T> => {
     try {
-      return await tfFetch<T>(path);
+      return await tfFetch<T>(path, signal ? { signal } : undefined);
     } catch (error) {
       if (
         error instanceof TfApiError && error.kind === "provider" &&
@@ -47,6 +47,33 @@ export interface SpotifyPlaylist {
   thumbnailUrl: string | null;
   owner: string;
 }
+
+export interface SpotifyAlbum {
+  id: string;
+  title: string;
+  artist: string;
+  trackCount: number;
+  thumbnailUrl: string | null;
+  providerUrl: string | null;
+}
+
+export interface SpotifyAlbumTrack {
+  id: string;
+  title: string;
+  artist: string;
+  duration: number;
+  providerUrl: string | null;
+  discNumber: number;
+  trackNumber: number;
+}
+
+interface SpotifyPage {
+  offset: number;
+  limit: number;
+  total: number;
+}
+
+export type SpotifyAlbumOwner = readonly [accountId: string, installationId: string, spotifyUserId: string];
 
 export interface SpotifyStatus {
   connected: boolean;
@@ -91,6 +118,26 @@ export function useSpotifyPlaylists() {
     queryFn: () => fetchLibrary("/spotify/playlists"),
     retry: retrySpotifyLibrary,
     enabled: false,
+  });
+}
+
+export function useSpotifyAlbums(owner: SpotifyAlbumOwner | null, offset: number, limit: number) {
+  const fetchLibrary = useSpotifyLibraryFetch();
+  return useQuery<SpotifyPage & { albums: SpotifyAlbum[] }>({
+    queryKey: ["spotify", "albums", owner, offset, limit],
+    queryFn: ({ signal }) => fetchLibrary(`/spotify/albums?offset=${offset}&limit=${limit}`, signal),
+    enabled: owner !== null,
+    retry: false,
+  });
+}
+
+export function useSpotifyAlbumTracks(owner: SpotifyAlbumOwner | null, albumId: string, offset: number, limit: number) {
+  const fetchLibrary = useSpotifyLibraryFetch();
+  return useQuery<SpotifyPage & { tracks: SpotifyAlbumTrack[] }>({
+    queryKey: ["spotify", "album-tracks", owner, albumId, offset, limit],
+    queryFn: ({ signal }) => fetchLibrary(`/spotify/albums/${encodeURIComponent(albumId)}/tracks?offset=${offset}&limit=${limit}`, signal),
+    enabled: owner !== null && albumId.trim().length > 0,
+    retry: false,
   });
 }
 

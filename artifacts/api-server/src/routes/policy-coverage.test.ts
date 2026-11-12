@@ -3,13 +3,20 @@ import { once } from "node:events";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
+import { createSignedBodySignature } from "@workspace/module-runtime-contract";
+import { TF_INTEGRATIONS_COMMAND_PATH } from "@workspace/tf-integrations-contract";
 import type { Router } from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createApiApp } from "../app.js";
 import {
+  HttpTfIntegrationsClient,
+  type TfIntegrationsGateway,
+} from "../lib/tf-integrations-client.js";
+import {
   TF_ROUTE_POLICIES,
   assertProtectedRouteCoverage,
+  requiredPolicyForRequest,
   type TfProtectedRoute,
 } from "../lib/tf-policy.js";
 import { createSpotifyRouter } from "./spotify.js";
@@ -23,6 +30,51 @@ vi.hoisted(() => {
 });
 
 const servers: Server[] = [];
+const spotifyAlbumPages = [
+  {
+    path: "/api/spotify/albums",
+    policyPath: "/api/spotify/albums",
+    operation: "spotify.albums.list",
+    input: { offset: 2, limit: 5 },
+    result: {
+      offset: 2,
+      limit: 5,
+      total: 12,
+      albums: [
+        {
+          id: "Album123",
+          title: "Album",
+          artist: "Artist",
+          trackCount: 12,
+          thumbnailUrl: "https://images.example.test/album.jpg",
+          providerUrl: "https://open.spotify.com/album/Album123",
+        },
+      ],
+    },
+  },
+  {
+    path: "/api/spotify/albums/Album123/tracks",
+    policyPath: "/api/spotify/albums/:albumId/tracks",
+    operation: "spotify.album-tracks.list",
+    input: { albumId: "Album123", offset: 2, limit: 5 },
+    result: {
+      offset: 2,
+      limit: 5,
+      total: 12,
+      tracks: [
+        {
+          id: "Track123",
+          title: "Track",
+          artist: "Artist",
+          duration: 181,
+          providerUrl: "https://open.spotify.com/track/Track123",
+          discNumber: 2,
+          trackNumber: 1,
+        },
+      ],
+    },
+  },
+] as const;
 
 interface RouteLayer {
   readonly route?: {
@@ -96,6 +148,8 @@ function exactInventory(): TfProtectedRoute[] {
       method: "GET",
       path: "/api/spotify/playlists/:playlistId/tracks",
     },
+    { method: "GET", path: "/api/spotify/albums" },
+    { method: "GET", path: "/api/spotify/albums/:albumId/tracks" },
     { method: "GET", path: "/api/spotify/top-tracks" },
     { method: "POST", path: "/api/yandex/token" },
     { method: "GET", path: "/api/yandex/status" },
@@ -132,12 +186,12 @@ function policyAuthDependencies() {
   };
 }
 
-async function startApp(): Promise<{
+async function startApp(integrationsGateway?: TfIntegrationsGateway): Promise<{
   readonly origin: string;
   readonly dependencies: ReturnType<typeof policyAuthDependencies>;
 }> {
   const dependencies = policyAuthDependencies();
-  const app = createApiApp({ auth: dependencies });
+  const app = createApiApp({ auth: dependencies, integrationsGateway });
   const server = app.listen(0, "127.0.0.1");
   servers.push(server);
   await once(server, "listening");
@@ -185,7 +239,7 @@ describe("protected route policy coverage", () => {
     expect(trackRoutes).toHaveLength(21);
     expect(collectionRoutes).toHaveLength(5);
     expect(playlistRoutes).toHaveLength(7);
-    expect(spotifyRoutes).toHaveLength(9);
+    expect(spotifyRoutes).toHaveLength(11);
     expect(yandexRoutes).toHaveLength(6);
     expect(websocketTicketRoutes).toHaveLength(1);
     expect(
@@ -246,6 +300,125 @@ describe("protected route policy coverage", () => {
 });
 
 describe("direct protected endpoints", () => {
+  it.each(spotifyAlbumPages)(
+    "requires live tf.integrations and signs the verified account for $path",
+    async ({ path, policyPath, operation, input, result }) => {
+      const secret = "i".repeat(32);
+      const serviceOrigin = "https://tf-integrations.example.test";
+      const accountId = "10000000-0000-4000-8000-000000000001";
+      const requestId = "20000000-0000-4000-8000-000000000002";
+      const now = Date.now();
+      const session = {
+        id: "30000000-0000-4000-8000-000000000003",
+        accountId,
+        platformSessionId: "40000000-0000-4000-8000-000000000004",
+        installationId: "50000000-0000-4000-8000-000000000005",
+        entitlements: ["tf.integrations", "tf.search"],
+        assertionExpiresAt: new Date(now + 120_000).toISOString(),
+        expiresAt: new Date(now + 300_000).toISOString(),
+      };
+      const introspection = {
+        active: true,
+        accountId,
+        sessionId: session.platformSessionId,
+        installationId: session.installationId,
+        accountStatus: "active",
+        entitlements: session.entitlements,
+        expiresAt: session.expiresAt,
+      };
+      const serviceFetch = vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json({ schemaVersion: 1, requestId, accountId, operation, result }),
+      );
+      const gateway = new HttpTfIntegrationsClient(
+        { origin: serviceOrigin, internalAuthSecret: secret, timeoutMs: 1_000 },
+        { fetch: serviceFetch, randomUuid: () => requestId },
+      );
+      const { origin, dependencies } = await startApp(gateway);
+      const handle = randomBytes(32).toString("base64url");
+      const alias = "90000000-0000-4000-8000-000000000009";
+      const url = `${origin}${path}?offset=2&limit=5&accountId=${alias}&sid=${alias}&albumId=Ignored`;
+      const legacyHeaders = { "x-client-session": alias, "x-account-id": alias };
+      const headers = { ...legacyHeaders, cookie: `__Host-apollo_tf=${handle}` };
+
+      expect(requiredPolicyForRequest("GET", path)).toMatchObject({
+        path: policyPath,
+        capability: "tf.integrations",
+        live: true,
+      });
+
+      const anonymous = await fetch(url, { headers: legacyHeaders });
+      expect(anonymous.status).toBe(401);
+      expect(dependencies.sessionStore.observeSession).not.toHaveBeenCalled();
+
+      dependencies.sessionStore.observeSession.mockResolvedValue({
+        revision: randomBytes(32).toString("base64url"),
+        session,
+      });
+      dependencies.sessionStore.refreshSession.mockResolvedValue(session);
+      dependencies.platform.introspect
+        .mockResolvedValueOnce({ ...introspection, entitlements: ["tf.search"] })
+        .mockResolvedValueOnce(introspection);
+
+      const denied = await fetch(url, { headers });
+      expect(denied.status).toBe(403);
+      await expect(denied.json()).resolves.toEqual({
+        error: "module_access_denied",
+      });
+      expect(serviceFetch).not.toHaveBeenCalled();
+
+      const allowed = await fetch(url, { headers });
+      expect(allowed.status).toBe(200);
+      expect(allowed.headers.get("cache-control")).toBe("no-store");
+      await expect(allowed.json()).resolves.toEqual(result);
+      expect(dependencies.sessionStore.observeSession).toHaveBeenCalledWith(handle);
+      expect(dependencies.platform.introspect).toHaveBeenCalledTimes(2);
+      for (const [request] of dependencies.platform.introspect.mock.calls) {
+        expect(request).toEqual({
+          accountId,
+          sessionId: session.platformSessionId,
+          installationId: session.installationId,
+          audience: "apollo-tf",
+        });
+      }
+      expect(serviceFetch).toHaveBeenCalledOnce();
+      const [target, init] = serviceFetch.mock.calls[0]!;
+      expect(String(target)).toBe(`${serviceOrigin}${TF_INTEGRATIONS_COMMAND_PATH}`);
+      expect(init?.method).toBe("POST");
+      const rawBody = String(init?.body);
+      expect(JSON.parse(rawBody)).toEqual({
+        schemaVersion: 1,
+        requestId,
+        accountId,
+        operation,
+        input,
+      });
+      const signedHeaders = new Headers(init?.headers);
+      expect(signedHeaders.get("x-apollo-internal-signature")).toBe(
+        createSignedBodySignature({
+          method: "POST",
+          path: TF_INTEGRATIONS_COMMAND_PATH,
+          timestamp: signedHeaders.get("x-apollo-internal-timestamp")!,
+          nonce: signedHeaders.get("x-apollo-internal-nonce")!,
+          rawBody: Buffer.from(rawBody),
+          secret,
+        }),
+      );
+    },
+  );
+
+  it.each([
+    ["POST", "/api/spotify/albums"],
+    ["HEAD", "/api/spotify/albums"],
+    ["GET", "/api/spotify/Albums"],
+    ["GET", "/api/spotify/albums/"],
+    ["GET", "/api/spotify/albums/Album123"],
+    ["GET", "/api/spotify/albums/Album123/tracks/extra"],
+    ["POST", "/api/spotify/albums/Album123/tracks"],
+    ["GET", "/api/spotify/albums/Album123/tracks/"],
+  ])("does not grant the album policy to %s %s", (method, path) => {
+    expect(requiredPolicyForRequest(method, path)).toBeNull();
+  });
+
   it("denies direct track, collection, Spotify, and Yandex calls without the TF cookie", async () => {
     const { origin, dependencies } = await startApp();
     const canary = randomBytes(32).toString("base64url");

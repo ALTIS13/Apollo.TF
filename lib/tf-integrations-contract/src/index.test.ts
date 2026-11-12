@@ -59,6 +59,8 @@ const commands = [
     input: { playlistId: "playlist-1", offset: 0, limit: 50 },
   },
   { operation: "spotify.top-tracks.list", input: { timeRange: "medium_term" } },
+  { operation: "spotify.albums.list", input: { offset: 0, limit: 10 } },
+  { operation: "spotify.album-tracks.list", input: { albumId: "album1", offset: 50, limit: 50 } },
   { operation: "yandex.token.upsert", input: { token: "t".repeat(10) } },
   { operation: "yandex.status", input: {} },
   { operation: "yandex.disconnect", input: {} },
@@ -71,6 +73,18 @@ const commands = [
 ] as const;
 
 describe("tf integrations contract", () => {
+  it("admits only attributed album-track metadata, not a preview or a mismatched link", () => {
+    const item = { id: "track1", title: "Track", artist: "Artist", duration: 181,
+      discNumber: 2, trackNumber: 1, providerUrl: "https://open.spotify.com/track/track1" };
+    const receipt = (value: object) => tfIntegrationsSuccessResponseSchema.safeParse({
+      schemaVersion: 1, requestId, accountId, operation: "spotify.album-tracks.list",
+      result: { offset: 0, limit: 50, total: 1, tracks: [value] },
+    }).success;
+    expect(receipt(item)).toBe(true);
+    expect(receipt({ ...item, previewUrl: "https://p.scdn.co/preview" })).toBe(false);
+    expect(receipt({ ...item, providerUrl: "https://open.spotify.com/track/other" })).toBe(false);
+  });
+
   it("accepts every documented operation with canonical account and request IDs", () => {
     expect(TF_INTEGRATIONS_COMMAND_PATH).toBe("/v1/commands");
 
@@ -128,6 +142,7 @@ describe("tf integrations contract", () => {
         operation,
         input,
       }).success;
+    expect(command("spotify.albums.list", { offset: 0, limit: 11 })).toBe(false);
 
     expect(
       command("spotify.oauth.complete", {

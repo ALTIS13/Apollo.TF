@@ -21,6 +21,7 @@ import type {
   SpotifyAccount,
   SpotifyExchangeResult,
   SpotifyPlaylistsResult,
+  SpotifyProvider,
   SpotifyRefreshResult,
   SpotifyTracksResult,
   TracksPage,
@@ -38,6 +39,8 @@ import {
 } from "./token-keyring.js";
 
 export interface SpotifyProviderAdapter {
+  savedAlbums: SpotifyProvider["savedAlbums"];
+  albumTracks: SpotifyProvider["albumTracks"];
   authorizationUrl(input: {
     readonly state: string;
     readonly callbackUri: string;
@@ -387,6 +390,16 @@ export class TfIntegrationsService {
               signal: context.signal,
             }),
           );
+          return this.#success(command, result);
+        }
+
+        case "spotify.albums.list":
+        case "spotify.album-tracks.list": {
+          const secret = await this.#refreshedSpotifySecret(command.accountId, context);
+          const request = { accessToken: secret.accessToken, signal: context.signal };
+          const result = command.operation === "spotify.albums.list"
+            ? await this.#provider(context, () => this.#spotify.savedAlbums({ ...command.input, ...request }))
+            : await this.#provider(context, () => this.#spotify.albumTracks({ ...command.input, ...request }));
           return this.#success(command, result);
         }
 

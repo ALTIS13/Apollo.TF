@@ -501,6 +501,80 @@ describe("Spotify gateway routes", () => {
     );
   });
 
+  it.each([
+    {
+      path: "/spotify/albums",
+      operation: "spotify.albums.list",
+      input: {},
+      maxLimit: 10,
+    },
+    {
+      path: `/spotify/albums/${"a".repeat(64)}/tracks`,
+      operation: "spotify.album-tracks.list",
+      input: { albumId: "a".repeat(64) },
+      maxLimit: 50,
+    },
+  ])(
+    "bounds $operation pagination before forwarding",
+    async ({ path, operation, input, maxLimit }) => {
+      const current = spotifyDependencies(async (command) =>
+        failure(command, "not_connected"),
+      );
+      const baseUrl = await startSpotifyServer(current.dependencies);
+
+      for (const [query, offset, limit] of [
+        ["", 0, maxLimit],
+        ["?offset=1000001&limit=0", 1_000_000, 1],
+        ["?offset=-1&limit=51", 0, maxLimit],
+        ["?offset=2.5&limit=not-a-number", 0, maxLimit],
+      ] as const) {
+        const response = await request(baseUrl, `${path}${query}`);
+        expect(response.status).toBe(401);
+        await expect(response.json()).resolves.toEqual({
+          error: "not_connected",
+        });
+        expect(current.execute).toHaveBeenLastCalledWith({
+          accountId: ACCOUNT_ID,
+          operation,
+          input: { ...input, offset, limit },
+        });
+      }
+      expect(current.execute).toHaveBeenCalledTimes(4);
+    },
+  );
+
+  it.each(["bad-id", "bad%2Fid", "bad%20id", "bad%0Aid", "a".repeat(65)])(
+    "rejects the invalid Spotify album ID %s before dispatch",
+    async (albumId) => {
+      const current = spotifyDependencies();
+      const baseUrl = await startSpotifyServer(current.dependencies);
+
+      const response = await request(baseUrl, `/spotify/albums/${albumId}/tracks`);
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "invalid_request" });
+      expect(current.execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["/spotify/albums", "/spotify/albums/Album123/tracks"])(
+    "sanitizes provider and transport errors for %s",
+    async (path) => {
+      const current = spotifyDependencies(async (command) =>
+        failure(command, "provider_rejected"),
+      );
+      current.execute.mockRejectedValueOnce(new TfIntegrationsUnavailableError());
+      const baseUrl = await startSpotifyServer(current.dependencies);
+
+      for (let i = 0; i < 2; i += 1) {
+        const response = await request(baseUrl, path);
+        expect(response.status).toBe(502);
+        await expect(response.json()).resolves.toEqual({ error: "spotify_error" });
+      }
+      expect(current.execute).toHaveBeenCalledTimes(2);
+    },
+  );
+
   describe.each([1, 2])("liked-all failure on page %i", (failedPage) => {
     it.each([
       { kind: "provider_rejected", status: 502, error: "spotify_error" },

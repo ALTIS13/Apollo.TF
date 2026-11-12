@@ -481,6 +481,58 @@ describe("SpotifyProvider", () => {
     ]);
   });
 
+  it("reads saved albums and ordered simplified tracks as attributed metadata only", async () => {
+    const signal = new AbortController().signal;
+    const { provider, requests } = makeProvider([
+      jsonResponse({ offset: 10, limit: 2, total: 12, items: [{ album: { id: "removed1", name: "" } }, { album: {
+        id: "album1", name: "Album", artists: [{ name: "Artist" }], total_tracks: 2,
+        images: [{ url: "https://i.scdn.co/image/cover", width: null }],
+        tracks: { items: [{ preview_url: "https://p.scdn.co/preview" }] },
+      } }] }),
+      jsonResponse({ offset: 0, limit: 2, total: 2, items: [
+        { id: "track2", name: "Second Disc", artists: [{ name: "Artist" }], duration_ms: 181250,
+          disc_number: 2, track_number: 1, preview_url: "https://p.scdn.co/preview" },
+        { id: "track1", name: "First Disc", artists: [{ name: "Artist" }], duration_ms: 193000,
+          disc_number: 1, track_number: 1 },
+      ] }),
+    ]);
+    await expect(provider.savedAlbums({ accessToken: "access", offset: 10, limit: 2, signal })).resolves.toEqual({
+      offset: 10, limit: 2, total: 12, albums: [{ id: "album1", title: "Album", artist: "Artist",
+        trackCount: 2, thumbnailUrl: "https://i.scdn.co/image/cover", providerUrl: "https://open.spotify.com/album/album1" }],
+    });
+    await expect(provider.albumTracks({ accessToken: "access", albumId: "album1", offset: 0, limit: 2, signal })).resolves.toEqual({
+      offset: 0, limit: 2, total: 2, tracks: [
+        { id: "track2", title: "Second Disc", artist: "Artist", duration: 181, discNumber: 2, trackNumber: 1,
+          providerUrl: "https://open.spotify.com/track/track2" },
+        { id: "track1", title: "First Disc", artist: "Artist", duration: 193, discNumber: 1, trackNumber: 1,
+          providerUrl: "https://open.spotify.com/track/track1" },
+      ],
+    });
+    expect(requests.map(({ url }) => url)).toEqual([
+      "https://api.spotify.com/v1/me/albums?offset=10&limit=2",
+      "https://api.spotify.com/v1/albums/album1/tracks?offset=0&limit=2",
+    ]);
+    expect(requests.every(({ init }) => init.signal === signal)).toBe(true);
+  });
+
+  it("bounds saved album pages before asking Spotify for embedded track data", async () => {
+    const { provider, requests } = makeProvider([]);
+    await expect(provider.savedAlbums({ accessToken: "access", offset: 0, limit: 11 }))
+      .rejects.toMatchObject({ code: "provider_rejected" });
+    expect(requests).toHaveLength(0);
+  });
+
+  it("does not fetch invalid album IDs or accept a mismatched upstream page", async () => {
+    const { provider, requests } = makeProvider([
+      jsonResponse({ offset: 50, limit: 1, total: 51, items: [] }),
+    ]);
+    await expect(provider.albumTracks({ accessToken: "access", albumId: "album%2F1", offset: 0, limit: 1 }))
+      .rejects.toMatchObject({ code: "provider_rejected" });
+    expect(requests).toHaveLength(0);
+    await expect(provider.savedAlbums({ accessToken: "access", offset: 0, limit: 1 }))
+      .rejects.toMatchObject({ code: "invalid_provider_response" });
+  });
+
   it("forwards the command abort signal to every fixed Spotify request", async () => {
     const controller = new AbortController();
     const { provider, requests } = makeProvider([

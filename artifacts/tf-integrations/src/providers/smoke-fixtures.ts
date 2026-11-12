@@ -56,6 +56,8 @@ export function createSmokeFixtureProviders(): {
       playlists: () => providerUnavailable(),
       playlistTracks: () => providerUnavailable(),
       topTracks: () => providerUnavailable(),
+      savedAlbums: () => providerUnavailable(),
+      albumTracks: () => providerUnavailable(),
     },
     yandex: {
       async validateToken() {

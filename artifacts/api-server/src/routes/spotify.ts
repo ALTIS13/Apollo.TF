@@ -1,6 +1,8 @@
-import type {
-  NormalizedTrack,
-  TfIntegrationsErrorResponse,
+import {
+  SPOTIFY_SAVED_ALBUMS_PAGE_SIZE,
+  spotifyCatalogIdSchema,
+  type NormalizedTrack,
+  type TfIntegrationsErrorResponse,
 } from "@workspace/tf-integrations-contract";
 import { Router, type IRouter, type Response } from "express";
 
@@ -117,16 +119,16 @@ function paginationValue(
     : fallback;
 }
 
-function pagination(query: Readonly<Record<string, unknown>>): {
+function pagination(
+  query: Readonly<Record<string, unknown>>,
+  maxPageSize = MAX_PAGE_SIZE,
+): {
   readonly offset: number;
   readonly limit: number;
 } {
   return {
     offset: paginationValue(query["offset"], 0, 1_000_000),
-    limit: Math.max(
-      1,
-      paginationValue(query["limit"], MAX_PAGE_SIZE, MAX_PAGE_SIZE),
-    ),
+    limit: Math.max(1, paginationValue(query["limit"], maxPageSize, maxPageSize)),
   };
 }
 
@@ -405,6 +407,47 @@ export function createSpotifyRouter(
       }
     },
   );
+
+  router.get("/spotify/albums", async (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    try {
+      const result = await dependencies.gateway.execute({
+        accountId: request.tfPrincipal!.accountId,
+        operation: "spotify.albums.list",
+        input: pagination(request.query, SPOTIFY_SAVED_ALBUMS_PAGE_SIZE),
+      });
+      if (isFailure(result)) {
+        sendLibraryFailure(response, result);
+        return;
+      }
+      response.json(result.result);
+    } catch {
+      response.status(502).json({ error: "spotify_error" });
+    }
+  });
+
+  router.get("/spotify/albums/:albumId/tracks", async (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    const albumId = spotifyCatalogIdSchema.safeParse(request.params.albumId);
+    if (!albumId.success) {
+      response.status(400).json({ error: "invalid_request" });
+      return;
+    }
+    try {
+      const result = await dependencies.gateway.execute({
+        accountId: request.tfPrincipal!.accountId,
+        operation: "spotify.album-tracks.list",
+        input: { albumId: albumId.data, ...pagination(request.query) },
+      });
+      if (isFailure(result)) {
+        sendLibraryFailure(response, result);
+        return;
+      }
+      response.json(result.result);
+    } catch {
+      response.status(502).json({ error: "spotify_error" });
+    }
+  });
 
   router.get("/spotify/top-tracks", async (request, response) => {
     const suppliedRange = request.query["time_range"];

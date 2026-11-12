@@ -347,6 +347,20 @@ export const TF_ROUTE_POLICIES: readonly TfRoutePolicy[] = Object.freeze([
   },
   {
     method: "GET",
+    path: "/api/spotify/albums",
+    pattern: /^\/api\/spotify\/albums$/,
+    capability: "tf.integrations",
+    live: true,
+  },
+  {
+    method: "GET",
+    path: "/api/spotify/albums/:albumId/tracks",
+    pattern: /^\/api\/spotify\/albums\/[^/]+\/tracks$/,
+    capability: "tf.integrations",
+    live: true,
+  },
+  {
+    method: "GET",
     path: "/api/spotify/top-tracks",
     pattern: /^\/api\/spotify\/top-tracks$/,
     capability: "tf.integrations",

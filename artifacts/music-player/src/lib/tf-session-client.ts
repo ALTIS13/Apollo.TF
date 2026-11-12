@@ -245,6 +245,8 @@ export function tfRequestInit(init: RequestInit = {}): RequestInit {
 }
 
 export async function tfFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const signal = init?.signal;
+  signal?.throwIfAborted();
   const generation = securityGeneration;
   const requestInit = tfRequestInit(init);
   let response: Response;
@@ -254,16 +256,19 @@ export async function tfFetch<T>(path: string, init?: RequestInit): Promise<T> {
   } catch (error) {
     throw normalizeTfApiError(error);
   }
+  signal?.throwIfAborted();
 
   if (!response.ok) {
     const body = await parseJson(response).catch(() => undefined);
+    signal?.throwIfAborted();
     const code =
       isRecord(body) && typeof body.error === "string"
         ? body.error
         : "invalid_response";
+    const spotifyAlbumRead = /^\/spotify\/albums(?:\/[^/?]+\/tracks)?(?:\?|$)/.test(path);
     const kind =
       response.status === 401 && code === "not_connected" &&
-      /^\/spotify\/(?:liked(?:-all)?|playlists(?:\/[^/?]+\/tracks)?|top-tracks)(?:\?|$)/.test(path)
+      (spotifyAlbumRead || /^\/spotify\/(?:liked(?:-all)?|playlists(?:\/[^/?]+\/tracks)?|top-tracks)(?:\?|$)/.test(path))
         ? "provider"
         : response.status === 401
           ? "unauthenticated"
@@ -276,12 +281,15 @@ export async function tfFetch<T>(path: string, init?: RequestInit): Promise<T> {
       isRecord(body) && "code" in body
         ? localRenewalError(response, body, generation)
         : new TfApiError(response.status, code, kind, false, generation);
-    reportTfAuthError(apiError);
+    if (!(spotifyAlbumRead && apiError.status === 502 && apiError.code === "spotify_error")) {
+      reportTfAuthError(apiError);
+    }
     throw apiError;
   }
 
   try {
     const body = (await parseJson(response)) as T;
+    signal?.throwIfAborted();
     if (!isCurrentTfSecurityGeneration(generation))
       throw new TfApiError(0, "stale_response", "invalid", false, generation);
     return body;

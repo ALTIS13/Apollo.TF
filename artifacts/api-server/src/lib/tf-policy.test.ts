@@ -174,14 +174,14 @@ describe("TF route policy map", () => {
     expect(requiredPolicyForRequest(method, `${path}/extra/path`)).toBeNull();
   });
 
-  it("contains the exact 49 anchored capability policies", () => {
-    expect(TF_ROUTE_POLICIES).toHaveLength(49);
+  it("contains the exact 51 anchored capability policies", () => {
+    expect(TF_ROUTE_POLICIES).toHaveLength(51);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === false),
     ).toHaveLength(8);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === true),
-    ).toHaveLength(41);
+    ).toHaveLength(43);
 
     expect(
       requiredPolicyForRequest("POST", "/api/tracks/search?ignored=1"),

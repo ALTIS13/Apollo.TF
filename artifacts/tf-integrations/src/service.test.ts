@@ -206,6 +206,12 @@ function spotifyAdapter(
     async topTracks() {
       return { tracks: [normalizedTrack] };
     },
+    async savedAlbums({ offset, limit }) {
+      return { offset, limit, total: 0, albums: [] };
+    },
+    async albumTracks({ offset, limit }) {
+      return { offset, limit, total: 0, tracks: [] };
+    },
     ...overrides,
   };
 }
@@ -1198,6 +1204,16 @@ describe("TfIntegrationsService", () => {
         providerCalls.push("spotify.top-tracks.list");
         return spotifyAdapter().topTracks(input);
       },
+      async savedAlbums(input) {
+        providerCalls.push("spotify.albums.list");
+        expect(input).toMatchObject({ accessToken: "stored-access", offset: 0, limit: 1 });
+        return spotifyAdapter().savedAlbums(input);
+      },
+      async albumTracks(input) {
+        providerCalls.push("spotify.album-tracks.list");
+        expect(input).toMatchObject({ accessToken: "stored-access", albumId: "album1", offset: 0, limit: 1 });
+        return spotifyAdapter().albumTracks(input);
+      },
     });
     const yandex = yandexAdapter({
       async validateToken() {
@@ -1245,6 +1261,8 @@ describe("TfIntegrationsService", () => {
         { playlistId: "playlist", offset: 0, limit: 1 },
       ],
       ["spotify.top-tracks.list", { timeRange: "medium_term" }],
+      ["spotify.albums.list", { offset: 0, limit: 1 }],
+      ["spotify.album-tracks.list", { albumId: "album1", offset: 0, limit: 1 }],
       ["yandex.token.upsert", { token: "yandex-token" }],
       ["yandex.status", {}],
       ["yandex.disconnect", {}],
@@ -1290,6 +1308,10 @@ describe("TfIntegrationsService", () => {
       "spotify.playlist-tracks.list",
       "spotify.refresh",
       "spotify.top-tracks.list",
+      "spotify.refresh",
+      "spotify.albums.list",
+      "spotify.refresh",
+      "spotify.album-tracks.list",
       "yandex.token.upsert",
       "yandex.liked.list",
       "yandex.playlists.list",
