@@ -111,6 +111,10 @@ export const TF_MIGRATION_MANIFEST: readonly MigrationManifestEntry[] =
       name: "0006_recommendation_hidden.sql",
       checksum: "3adeb13847afbe19eea037478e372db5ba44d9cfceb67f0d63299367d4a50a0d",
     },
+    {
+      name: "0007_playlist_import_drafts.sql",
+      checksum: "93095e5046a08299286a0190ef638d75aa55a890a9a480b8593f99724a423351",
+    },
   ]);
 
 function contractError(code: MigrationErrorCode, message: string): Error {

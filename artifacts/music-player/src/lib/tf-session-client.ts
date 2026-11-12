@@ -59,6 +59,7 @@ export interface TfBrowserSession {
 
 export type TfApiErrorKind =
   | "provider"
+  | "rejected"
   | "unauthenticated"
   | "forbidden"
   | "unavailable"
@@ -265,25 +266,33 @@ export async function tfFetch<T>(path: string, init?: RequestInit): Promise<T> {
       isRecord(body) && typeof body.error === "string"
         ? body.error
         : "invalid_response";
-    const spotifyAlbumRead = /^\/spotify\/albums(?:\/[^/?]+\/tracks)?(?:\?|$)/.test(path);
+    const spotifyRead = /^\/spotify\/(?:albums(?:\/[^/?]+\/tracks)?|liked(?:-all)?|playlists(?:\/[^/?]+\/tracks)?|top-tracks)(?:\?|$)/.test(path);
+    const importDraft = /^\/collections\/imports\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(path);
+    const expectedImportRejection = importDraft && (
+      (response.status === 404 && code === "import_not_found") ||
+      (requestInit.method === "PUT" && (
+        (response.status === 409 && (code === "import_conflict" || code === "import_limit")) ||
+        (response.status === 400 && (code === "bad_request" || code === "invalid_request")) ||
+        (response.status === 413 && code === "request_too_large")
+      ))
+    );
     const kind =
-      response.status === 401 && code === "not_connected" &&
-      (spotifyAlbumRead || /^\/spotify\/(?:liked(?:-all)?|playlists(?:\/[^/?]+\/tracks)?|top-tracks)(?:\?|$)/.test(path))
+      spotifyRead && response.status === 401 && code === "not_connected"
         ? "provider"
-        : response.status === 401
-          ? "unauthenticated"
-          : response.status === 403
-            ? "forbidden"
-            : response.status === 503
-              ? "unavailable"
-              : "invalid";
+        : expectedImportRejection || (spotifyRead && response.status === 502 && code === "spotify_error")
+          ? "rejected"
+          : response.status === 401
+            ? "unauthenticated"
+            : response.status === 403
+              ? "forbidden"
+              : response.status === 503
+                ? "unavailable"
+                : "invalid";
     const apiError =
       isRecord(body) && "code" in body
         ? localRenewalError(response, body, generation)
         : new TfApiError(response.status, code, kind, false, generation);
-    if (!(spotifyAlbumRead && apiError.status === 502 && apiError.code === "spotify_error")) {
-      reportTfAuthError(apiError);
-    }
+    reportTfAuthError(apiError);
     throw apiError;
   }
 

@@ -49,10 +49,16 @@ import type {
   MediaLinkMetadataResponse,
   MoveLikedTrackRequest,
   PlaylistDetailResponse,
+  PlaylistImportBadRequestResponse,
+  PlaylistImportDetailResponse,
+  PlaylistImportErrorResponse,
+  PlaylistImportListResponse,
+  PlaylistImportNotFoundResponse,
   PlaylistListResponse,
   PlaylistMutationResponse,
   PlaylistNotFoundResponse,
   PlaylistTrackMutationResponse,
+  PutPlaylistImportRequest,
   ReorderPlaylistTracksRequest,
   SaveLikedTrackRequest,
   SearchRequest,
@@ -1624,6 +1630,418 @@ export const useRemoveLikedTrack = <
   TContext
 > => {
   return useMutation(getRemoveLikedTrackMutationOptions(options));
+};
+
+/**
+ * @summary List the current account's metadata-only import drafts
+ */
+export const getListPlaylistImportsUrl = () => {
+  return `/api/collections/imports`;
+};
+
+export const listPlaylistImports = async (
+  options?: RequestInit,
+): Promise<PlaylistImportListResponse> => {
+  return customFetch<PlaylistImportListResponse>(getListPlaylistImportsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListPlaylistImportsQueryKey = () => {
+  return [`/api/collections/imports`] as const;
+};
+
+export const getListPlaylistImportsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listPlaylistImports>>,
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | CollectionUnavailableResponse
+  >,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listPlaylistImports>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListPlaylistImportsQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listPlaylistImports>>
+  > = ({ signal }) => listPlaylistImports({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listPlaylistImports>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListPlaylistImportsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listPlaylistImports>>
+>;
+export type ListPlaylistImportsQueryError = ErrorType<
+  | PlaylistImportBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | CollectionUnavailableResponse
+>;
+
+/**
+ * @summary List the current account's metadata-only import drafts
+ */
+
+export function useListPlaylistImports<
+  TData = Awaited<ReturnType<typeof listPlaylistImports>>,
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | CollectionUnavailableResponse
+  >,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listPlaylistImports>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListPlaylistImportsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Get an import draft with its ordered metadata entries
+ */
+export const getGetPlaylistImportUrl = (importId: string) => {
+  return `/api/collections/imports/${importId}`;
+};
+
+export const getPlaylistImport = async (
+  importId: string,
+  options?: RequestInit,
+): Promise<PlaylistImportDetailResponse> => {
+  return customFetch<PlaylistImportDetailResponse>(
+    getGetPlaylistImportUrl(importId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetPlaylistImportQueryKey = (importId: string) => {
+  return [`/api/collections/imports/${importId}`] as const;
+};
+
+export const getGetPlaylistImportQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPlaylistImport>>,
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistImportNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+>(
+  importId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPlaylistImport>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetPlaylistImportQueryKey(importId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getPlaylistImport>>
+  > = ({ signal }) =>
+    getPlaylistImport(importId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!importId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPlaylistImport>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetPlaylistImportQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPlaylistImport>>
+>;
+export type GetPlaylistImportQueryError = ErrorType<
+  | PlaylistImportBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | PlaylistImportNotFoundResponse
+  | CollectionUnavailableResponse
+>;
+
+/**
+ * @summary Get an import draft with its ordered metadata entries
+ */
+
+export function useGetPlaylistImport<
+  TData = Awaited<ReturnType<typeof getPlaylistImport>>,
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistImportNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+>(
+  importId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPlaylistImport>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetPlaylistImportQueryOptions(importId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * The existing TF session and browser CSRF checks apply. The source is a provenance label, not proof of access to a provider. The normalized JSON body must fit within 90 KiB of UTF-8.
+ * @summary Create or replay an import draft at a client-selected UUID
+ */
+export const getPutPlaylistImportUrl = (importId: string) => {
+  return `/api/collections/imports/${importId}`;
+};
+
+export const putPlaylistImport = async (
+  importId: string,
+  putPlaylistImportRequest: PutPlaylistImportRequest,
+  options?: RequestInit,
+): Promise<PlaylistImportDetailResponse> => {
+  return customFetch<PlaylistImportDetailResponse>(
+    getPutPlaylistImportUrl(importId),
+    {
+      ...options,
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(putPlaylistImportRequest),
+    },
+  );
+};
+
+export const getPutPlaylistImportMutationOptions = <
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistImportErrorResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof putPlaylistImport>>,
+    TError,
+    { importId: string; data: BodyType<PutPlaylistImportRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof putPlaylistImport>>,
+  TError,
+  { importId: string; data: BodyType<PutPlaylistImportRequest> },
+  TContext
+> => {
+  const mutationKey = ["putPlaylistImport"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof putPlaylistImport>>,
+    { importId: string; data: BodyType<PutPlaylistImportRequest> }
+  > = (props) => {
+    const { importId, data } = props ?? {};
+
+    return putPlaylistImport(importId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type PutPlaylistImportMutationResult = NonNullable<
+  Awaited<ReturnType<typeof putPlaylistImport>>
+>;
+export type PutPlaylistImportMutationBody = BodyType<PutPlaylistImportRequest>;
+export type PutPlaylistImportMutationError = ErrorType<
+  | PlaylistImportBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | PlaylistImportErrorResponse
+  | CollectionUnavailableResponse
+>;
+
+/**
+ * @summary Create or replay an import draft at a client-selected UUID
+ */
+export const usePutPlaylistImport = <
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistImportErrorResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof putPlaylistImport>>,
+    TError,
+    { importId: string; data: BodyType<PutPlaylistImportRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof putPlaylistImport>>,
+  TError,
+  { importId: string; data: BodyType<PutPlaylistImportRequest> },
+  TContext
+> => {
+  return useMutation(getPutPlaylistImportMutationOptions(options));
+};
+
+/**
+ * The existing TF session and browser CSRF checks apply.
+ * @summary Delete an import draft from the current account
+ */
+export const getRemovePlaylistImportUrl = (importId: string) => {
+  return `/api/collections/imports/${importId}`;
+};
+
+export const removePlaylistImport = async (
+  importId: string,
+  options?: RequestInit,
+): Promise<void> => {
+  return customFetch<void>(getRemovePlaylistImportUrl(importId), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getRemovePlaylistImportMutationOptions = <
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistImportNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof removePlaylistImport>>,
+    TError,
+    { importId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof removePlaylistImport>>,
+  TError,
+  { importId: string },
+  TContext
+> => {
+  const mutationKey = ["removePlaylistImport"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof removePlaylistImport>>,
+    { importId: string }
+  > = (props) => {
+    const { importId } = props ?? {};
+
+    return removePlaylistImport(importId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RemovePlaylistImportMutationResult = NonNullable<
+  Awaited<ReturnType<typeof removePlaylistImport>>
+>;
+
+export type RemovePlaylistImportMutationError = ErrorType<
+  | PlaylistImportBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | PlaylistImportNotFoundResponse
+  | CollectionUnavailableResponse
+>;
+
+/**
+ * @summary Delete an import draft from the current account
+ */
+export const useRemovePlaylistImport = <
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | PlaylistImportNotFoundResponse
+    | CollectionUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof removePlaylistImport>>,
+    TError,
+    { importId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof removePlaylistImport>>,
+  TError,
+  { importId: string },
+  TContext
+> => {
+  return useMutation(getRemovePlaylistImportMutationOptions(options));
 };
 
 /**

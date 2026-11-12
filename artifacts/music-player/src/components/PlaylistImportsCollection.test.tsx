@@ -1,0 +1,182 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, it, vi } from "vitest";
+import { TfAuthProvider, useTfAuth } from "@/auth/tf-auth";
+import { clearTfSessionSecurityState } from "@/lib/tf-session-client";
+import { PlaylistImportsCollection } from "./PlaylistImportsCollection";
+
+const route = "/api/collections/imports";
+const accountId = "10000000-0000-4000-8000-000000000001";
+const installationA = "20000000-0000-4000-8000-000000000001";
+const installationB = "20000000-0000-4000-8000-000000000002";
+const entries = [
+  { artist: "Zeta", title: "Quiet Hours", durationSeconds: 183 },
+  { artist: "Alpha", title: "First Light", durationSeconds: null },
+  { artist: "Zeta", title: "Quiet Hours", durationSeconds: 183 },
+];
+const input = { name: "Night mix", source: "file", entries };
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+function exportFile(tracks: unknown = entries) {
+  return new File([JSON.stringify({
+    schemaVersion: "apollo.tf.playlist-export.v1",
+    playlist: { name: input.name, description: "Not part of the draft" },
+    tracks,
+  })], "playlist.json", { type: "application/json" });
+}
+
+function RefreshAccess() {
+  const { refresh } = useTfAuth();
+  return <button type="button" onClick={() => void refresh()}>Refresh access</button>;
+}
+
+function setup(respond: (path: string, init: RequestInit) => Response | Promise<Response>) {
+  let entitled = true;
+  let installationId = installationA;
+  const http = vi.fn<typeof fetch>((url, init = {}) => {
+    if (url === "/api/auth/me") return Promise.resolve(json({
+      accountId, installationId,
+      entitlements: entitled ? ["tf.collections"] : [],
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      csrfToken: "c".repeat(42) + "A",
+    }));
+    return Promise.resolve(respond(String(url), init));
+  });
+  vi.stubGlobal("fetch", http);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><TfAuthProvider>
+    <RefreshAccess />
+    <PlaylistImportsCollection />
+  </TfAuthProvider></QueryClientProvider>);
+  return { http, user: userEvent.setup(), revoke: () => { entitled = false; }, switchInstallation: () => { installationId = installationB; } };
+}
+
+function saved(id: string, name = input.name) {
+  return { id, name, source: input.source, entryCount: entries.length, createdAt: "2026-11-12T00:00:00Z" };
+}
+
+async function review(user: ReturnType<typeof userEvent.setup>) {
+  await user.upload(await screen.findByLabelText("Файл экспорта TF"), exportFile());
+  await screen.findByRole("heading", { name: "Проверка импорта" });
+}
+
+afterEach(() => {
+  cleanup();
+  clearTfSessionSecurityState();
+  vi.unstubAllGlobals();
+});
+
+it("reviews file metadata before saving and deletes only after confirmation with provider access off", async () => {
+  let id: string | null = null;
+  const { http, user } = setup((path, init) => {
+    if (path === route) return json({ imports: id ? [saved(id)] : [] });
+    if (path.startsWith(`${route}/`) && init.method === "PUT") {
+      id = path.split("/").at(-1)!;
+      return json({ draft: { ...saved(id), entries } }, 201);
+    }
+    if (path === `${route}/${id}` && init.method === "DELETE") {
+      id = null;
+      return new Response(null, { status: 204 });
+    }
+    if (path === `${route}/${id}` && id) return json({ draft: { ...saved(id), entries } });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await review(user);
+  const items = within(screen.getByRole("list", { name: "Записи черновика" })).getAllByRole("listitem");
+  expect(items.map((item) => within(item).getByText(/Quiet Hours|First Light/).textContent)).toEqual(["Quiet Hours", "First Light", "Quiet Hours"]);
+  expect(items.every((item) => within(item).getByText("Не сопоставлено"))).toBe(true);
+  expect(http.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+  await user.click(screen.getByRole("button", { name: "Сохранить черновик" }));
+  expect(await screen.findByRole("heading", { name: input.name })).toBeInTheDocument();
+  const put = http.mock.calls.find(([, init]) => init?.method === "PUT")!;
+  expect(JSON.parse(String(put[1]?.body))).toEqual(input);
+  expect(put[1]?.credentials).toBe("include");
+  expect(new Headers(put[1]?.headers).get("X-CSRF-Token")).toBe("c".repeat(42) + "A");
+  await user.click(screen.getByRole("button", { name: "Удалить черновик" }));
+  expect(http.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+  await user.click(screen.getByRole("button", { name: "Подтвердить удаление" }));
+  expect(await screen.findByText("Нет сохранённых черновиков.")).toBeInTheDocument();
+  expect(http.mock.calls.filter(([url, init]) => String(url).startsWith(route) && init?.method === "GET").every(([, init]) => init?.cache === "no-store")).toBe(true);
+  expect(http.mock.calls.some(([url]) => /\/spotify\/|\/tracks\//.test(String(url)))).toBe(false);
+});
+
+it("retries an uncertain save only on confirmation, with the same draft ID and body", async () => {
+  let attempts = 0;
+  let id = "";
+  const { http, user } = setup((path, init) => {
+    if (path === route) return json({ imports: id ? [saved(id)] : [] });
+    if (init.method === "PUT") {
+      id = path.split("/").at(-1)!;
+      if (++attempts === 1) return Promise.reject(new TypeError("network lost after request"));
+      return json({ draft: { ...saved(id), entries } }, 200);
+    }
+    if (path === `${route}/${id}` && id) return json({ draft: { ...saved(id), entries } });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await review(user);
+  await user.click(screen.getByRole("button", { name: "Сохранить черновик" }));
+  expect(await screen.findByRole("alert")).not.toHaveTextContent("network lost");
+  expect(attempts).toBe(1);
+  await user.click(screen.getByRole("button", { name: "Сохранить черновик" }));
+  await screen.findByRole("heading", { name: input.name });
+  const puts = http.mock.calls.filter(([, init]) => init?.method === "PUT");
+  expect(puts).toHaveLength(2);
+  expect(puts[0][0]).toBe(puts[1][0]);
+  expect(puts[0][1]?.body).toBe(puts[1][1]?.body);
+});
+
+it.each([
+  ["import_conflict", "Этот черновик уже существует с другим содержимым."],
+  ["import_limit", "Достигнут лимит черновиков."],
+])("keeps review and reports %s without treating it as revoked access", async (code, message) => {
+  const { user } = setup((path, init) => {
+    if (path === route) return json({ imports: [] });
+    if (init.method === "PUT") return json({ error: code }, 409);
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await review(user);
+  await user.click(screen.getByRole("button", { name: "Сохранить черновик" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(message);
+  expect(screen.getByRole("heading", { name: "Проверка импорта" })).toBeInTheDocument();
+});
+
+it("discards rejected files and hides a reviewed draft after revocation", async () => {
+  const { http, user, revoke } = setup((path) => {
+    if (path === route) return json({ imports: [] });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await user.upload(await screen.findByLabelText("Файл экспорта TF"), exportFile([{ ...entries[0], media: "must-not-echo" }]));
+  expect(await screen.findByRole("alert")).not.toHaveTextContent("must-not-echo");
+  expect(screen.queryByRole("button", { name: "Сохранить черновик" })).not.toBeInTheDocument();
+  await review(user);
+  revoke();
+  await user.click(screen.getByRole("button", { name: "Refresh access" }));
+  expect(await screen.findByText("Черновики импорта недоступны для этого аккаунта.")).toBeInTheDocument();
+  expect(screen.queryByText("Quiet Hours")).not.toBeInTheDocument();
+  expect(http.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+});
+
+it("aborts stale detail on installation change and never displays the old draft in the new scope", async () => {
+  const id = "10000000-0000-4000-8000-000000000002";
+  let finish!: (response: Response) => void;
+  let firstInstallation = true;
+  const { http, user, switchInstallation } = setup((path) => {
+    if (path === route) return json({ imports: firstInstallation ? [saved(id, "Old draft")] : [] });
+    if (path === `${route}/${id}`) return new Promise((resolve) => { finish = resolve; });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await user.click(await screen.findByRole("button", { name: /Old draft/ }));
+  const signal = () => http.mock.calls.find(([path]) => path === `${route}/${id}`)?.[1]?.signal;
+  await waitFor(() => expect(signal()?.aborted).toBe(false));
+  firstInstallation = false;
+  switchInstallation();
+  await user.click(screen.getByRole("button", { name: "Refresh access" }));
+  await waitFor(() => expect(signal()?.aborted).toBe(true));
+  await act(async () => finish(json({ draft: { ...saved(id, "Old draft"), entries } })));
+  expect(await screen.findByText("Нет сохранённых черновиков.")).toBeInTheDocument();
+  expect(screen.queryByText("Quiet Hours")).not.toBeInTheDocument();
+});

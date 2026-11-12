@@ -527,6 +527,124 @@ export interface CollectionErrorResponse {
   error: CollectionErrorResponseError;
 }
 
+/**
+ * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+ */
+export type PlaylistImportId = string;
+
+/**
+ * Client-supplied provenance label only; not provider authorization.
+ */
+export type PlaylistImportSource =
+  (typeof PlaylistImportSource)[keyof typeof PlaylistImportSource];
+
+export const PlaylistImportSource = {
+  file: "file",
+  spotify_album: "spotify_album",
+  spotify_playlist: "spotify_playlist",
+  spotify_liked: "spotify_liked",
+} as const;
+
+export interface PlaylistImportEntry {
+  /**
+   * Trimmed artist name
+   * @minLength 1
+   * @maxLength 300
+   * @pattern ^(?=[\s\S]*\S)(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$
+   */
+  artist: string;
+  /**
+   * Trimmed track title
+   * @minLength 1
+   * @maxLength 500
+   * @pattern ^(?=[\s\S]*\S)(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$
+   */
+  title: string;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   * @nullable
+   */
+  durationSeconds: number | null;
+}
+
+export interface PlaylistImportSummary {
+  id: PlaylistImportId;
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  name: string;
+  source: PlaylistImportSource;
+  /**
+   * @minimum 1
+   * @maximum 200
+   */
+  entryCount: number;
+  createdAt: string;
+}
+
+export interface PlaylistImportDraft {
+  id: PlaylistImportId;
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  name: string;
+  source: PlaylistImportSource;
+  /**
+   * @minimum 1
+   * @maximum 200
+   */
+  entryCount: number;
+  createdAt: string;
+  /**
+   * @minItems 1
+   * @maxItems 200
+   */
+  entries: PlaylistImportEntry[];
+}
+
+export interface PutPlaylistImportRequest {
+  /**
+   * Draft name, trimmed before validation and storage
+   * @minLength 1
+   * @maxLength 200
+   * @pattern ^(?=[\s\S]*\S)(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$
+   */
+  name: string;
+  source: PlaylistImportSource;
+  /**
+   * @minItems 1
+   * @maxItems 200
+   */
+  entries: PlaylistImportEntry[];
+}
+
+export interface PlaylistImportListResponse {
+  imports: PlaylistImportSummary[];
+}
+
+export interface PlaylistImportDetailResponse {
+  draft: PlaylistImportDraft;
+}
+
+export type PlaylistImportErrorResponseError =
+  (typeof PlaylistImportErrorResponseError)[keyof typeof PlaylistImportErrorResponseError];
+
+export const PlaylistImportErrorResponseError = {
+  bad_request: "bad_request",
+  invalid_request: "invalid_request",
+  import_not_found: "import_not_found",
+  import_conflict: "import_conflict",
+  import_limit: "import_limit",
+  request_too_large: "request_too_large",
+} as const;
+
+export interface PlaylistImportErrorResponse {
+  error: PlaylistImportErrorResponseError;
+}
+
 export interface Playlist {
   /** @minimum 1 */
   id: number;
@@ -655,6 +773,16 @@ export const SearchUnavailableResponseValue = {
   error: "search_unavailable",
 } as const;
 export type SearchUnavailableResponse = typeof SearchUnavailableResponseValue;
+
+/**
+ * Noncanonical import UUID, unexpected query, or invalid draft payload
+ */
+export type PlaylistImportBadRequestResponse = PlaylistImportErrorResponse;
+
+/**
+ * Import draft absent from the current account
+ */
+export type PlaylistImportNotFoundResponse = PlaylistImportErrorResponse;
 
 /**
  * Invalid playlist input

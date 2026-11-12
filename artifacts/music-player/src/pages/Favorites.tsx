@@ -38,6 +38,8 @@ import {
 import { useTfAuth } from "@/auth/tf-auth";
 import { LikedCollection } from "@/components/LikedCollection";
 import { PlaylistsCollection } from "@/components/PlaylistsCollection";
+import { PlaylistImportsCollection } from "@/components/PlaylistImportsCollection";
+import { SpotifyImportAction } from "@/components/SpotifyImportAction";
 import { ProviderCandidatePanel } from "@/components/ProviderCandidatePanel";
 import { formatDuration as formatDurationSeconds } from "@/lib/utils";
 
@@ -223,9 +225,9 @@ function SpotifyCatalog({ owner, onSearchVariants, onOpenAlbums }: {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: reduceMotion ? 0 : 0.15 }}
       >
-        {activeTab === "liked" && <SpotifyLikedTab onSearchVariants={onSearchVariants} />}
-        {activeTab === "playlists" && <SpotifyPlaylistsTab onSearchVariants={onSearchVariants} />}
-        {/* Stop album reads when the outer provider starts exiting. */}
+        {activeTab === "liked" && <SpotifyLikedTab owner={isPresent ? owner : null} onSearchVariants={onSearchVariants} />}
+        {activeTab === "playlists" && <SpotifyPlaylistsTab owner={isPresent ? owner : null} onSearchVariants={onSearchVariants} />}
+        {/* Stop album and import reads when the outer provider starts exiting. */}
         {activeTab === "albums" && isPresent && <SpotifyAlbumsTab key={JSON.stringify(owner)} owner={owner} />}
         {activeTab === "top" && <SpotifyTopTab onSearchVariants={onSearchVariants} />}
       </motion.div>
@@ -332,13 +334,14 @@ function SpotifyAlbumDetail({ owner, album, onBack }: { owner: SpotifyAlbumOwner
         </div>
         <SpotifyItemLink item={album} kind="album" />
       </div>
+      {album.trackCount > 0 && <SpotifyImportAction owner={owner} selection={{ kind: "album", id: album.id, name: album.title }} />}
       {isFetching ? <div role="status"><LoadingState label="Загружаем треки…" color={SPOTIFY_GREEN} /></div> :
         isError ? <SpotifyAlbumPageError message="Не удалось загрузить треки альбома." retry={() => void refetch()} previous={offset > 0 ? () => setOffset(Math.max(0, offset - SPOTIFY_ALBUM_TRACK_PAGE_SIZE)) : undefined} /> :
         data && <>
           {data.tracks.length ? (
             <ol className="divide-y divide-white/8">
-              {data.tracks.map((track) => (
-                <li key={`${track.discNumber}:${track.trackNumber}:${track.id}`} className="flex items-center gap-2 px-2 py-1 sm:gap-3">
+              {data.tracks.map((track, index) => (
+                <li key={`${offset + index}:${track.id}`} className="flex items-center gap-2 px-2 py-1 sm:gap-3">
                   <span className="w-9 shrink-0 text-center text-xs tabular-nums text-white/50" aria-label={`Диск ${track.discNumber}, трек ${track.trackNumber}`}>{track.discNumber}.{track.trackNumber}</span>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-white">{track.title}</p>
@@ -364,7 +367,7 @@ function SpotifyAlbumsTab({ owner }: { owner: SpotifyAlbumOwner | null }) {
     : <SpotifyAlbumGrid owner={owner} offset={offset} onPageChange={setOffset} onSelect={setSelected} />;
 }
 
-function SpotifyLikedTab({ onSearchVariants }: { onSearchVariants: (title: string, artist: string) => void }) {
+function SpotifyLikedTab({ owner, onSearchVariants }: { owner: SpotifyAlbumOwner | null; onSearchVariants: (title: string, artist: string) => void }) {
   const [offset, setOffset] = useState(0);
   const { data, isFetching, error, refetch } = useSpotifyLiked(offset, 50);
   useEffect(() => { refetch(); }, [offset]);
@@ -381,13 +384,14 @@ function SpotifyLikedTab({ onSearchVariants }: { onSearchVariants: (title: strin
 
   return (
     <>
+      {data.total > 0 && <SpotifyImportAction owner={owner} selection={{ kind: "liked", name: "Любимые треки Spotify" }} />}
       <TrackList tracks={tracks} offset={offset} accentColor={SPOTIFY_GREEN} onSearchVariants={onSearchVariants} />
       <Pagination offset={offset} limit={50} total={data.total} onPageChange={setOffset} />
     </>
   );
 }
 
-function SpotifyPlaylistsTab({ onSearchVariants }: { onSearchVariants: (title: string, artist: string) => void }) {
+function SpotifyPlaylistsTab({ owner, onSearchVariants }: { owner: SpotifyAlbumOwner | null; onSearchVariants: (title: string, artist: string) => void }) {
   const [selected, setSelected] = useState<SpotifyPlaylist | null>(null);
   const [offset, setOffset] = useState(0);
   const { data: pData, isFetching: loadingP, error: pErr, refetch: refetchP } = useSpotifyPlaylists();
@@ -414,6 +418,7 @@ function SpotifyPlaylistsTab({ onSearchVariants }: { onSearchVariants: (title: s
             <p className="text-white/40 text-xs">{selected.trackCount} tracks</p>
           </div>
         </div>
+        {selected.trackCount > 0 && <SpotifyImportAction owner={owner} selection={{ kind: "playlist", id: selected.id, name: selected.name }} />}
         {loadingT ? <LoadingState label="Loading tracks..." color={SPOTIFY_GREEN} /> :
           tErr ? <ErrorState message={(tErr as Error).message} /> : (
             <>
@@ -626,7 +631,7 @@ export default function Favorites() {
   const reduceMotion = useReducedMotion();
   const [, navigate] = useLocation();
   const [service, setService] = useState<ServiceTab>("apollo");
-  const [apolloTab, setApolloTab] = useState<"liked" | "playlists">("liked");
+  const [apolloTab, setApolloTab] = useState<"liked" | "playlists" | "imports">("liked");
   const [selectedTrack, setSelectedTrack] = useState<{ title: string; artist: string } | null>(null);
   const candidateRef = useRef<HTMLDivElement>(null);
   const { hasEntitlement, session } = useTfAuth();
@@ -730,8 +735,9 @@ export default function Favorites() {
               <div role="group" aria-label="Коллекция Apollo" className="mb-5 flex gap-4 border-b border-white/10">
                 <button type="button" aria-pressed={apolloTab === "liked"} onClick={() => setApolloTab("liked")} className={`min-h-11 border-b-2 px-1 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-[#8ddbd4] ${apolloTab === "liked" ? "border-[#8ddbd4] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Любимые</button>
                 <button type="button" aria-pressed={apolloTab === "playlists"} onClick={() => setApolloTab("playlists")} className={`min-h-11 border-b-2 px-1 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-[#8ddbd4] ${apolloTab === "playlists" ? "border-[#8ddbd4] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Плейлисты</button>
+                <button type="button" aria-pressed={apolloTab === "imports"} onClick={() => setApolloTab("imports")} className={`min-h-11 border-b-2 px-1 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-[#8ddbd4] ${apolloTab === "imports" ? "border-[#8ddbd4] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Импорты</button>
               </div>
-              {apolloTab === "liked" ? <LikedCollection /> : <PlaylistsCollection />}
+              {apolloTab === "liked" ? <LikedCollection /> : apolloTab === "playlists" ? <PlaylistsCollection /> : <PlaylistImportsCollection />}
             </> : !integrationsAllowed ? (
               <div className="py-8 text-sm text-muted-foreground">Подключение музыкальных сервисов недоступно для этого аккаунта.</div>
             ) : activeLoading ? (

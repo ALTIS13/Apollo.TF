@@ -39,13 +39,13 @@ function json(body: unknown, status = 200) {
   });
 }
 
-function setup(respond: (url: string) => Response | Promise<Response>, entitled = true) {
+function setup(respond: (url: string) => Response | Promise<Response>, entitled = true, collections = false) {
   const http = vi.fn<typeof fetch>((url) => {
     if (url === "/api/auth/me") {
       return Promise.resolve(json({
         accountId: "10000000-0000-4000-8000-000000000001",
         installationId: "20000000-0000-4000-8000-000000000002",
-        entitlements: entitled ? ["tf.search", "tf.integrations"] : ["tf.search"],
+        entitlements: ["tf.search", ...(entitled ? ["tf.integrations"] : []), ...(collections ? ["tf.collections"] : [])],
         expiresAt: new Date(Date.now() + 300_000).toISOString(),
         csrfToken: "c".repeat(42) + "A",
       }));
@@ -84,6 +84,36 @@ afterEach(() => {
 });
 
 describe("Spotify saved albums in Favorites", () => {
+  it("reviews the paged album and saves only ordered unresolved metadata after confirmation", async () => {
+    const { user, http } = setup((url) => {
+      if (url === albumsPath) return json({ offset: 0, limit: 10, total: 1, albums: [album] });
+      if (url === tracksPath) return json({ offset: 0, limit: 50, total: 51, tracks: [track, track] });
+      if (url === "/api/spotify/albums/exactAlbum/tracks?offset=50&limit=50") {
+        return json({ offset: 50, limit: 50, total: 51, tracks: [{ ...track, title: "Closer" }] });
+      }
+      if (url.startsWith("/api/collections/imports/")) return json({ draft: { id: url.split("/").at(-1), name: album.title,
+        source: "spotify_album", entries: [], entryCount: 3, createdAt: "2026-11-12T12:00:00Z" } }, 201);
+      return connected(url);
+    }, true, true);
+    await openAlbums(user);
+    await user.click(await screen.findByRole("button", { name: /Night Sessions/ }));
+    await user.click(await screen.findByRole("button", { name: "Импортировать метаданные" }));
+    expect(await screen.findByText(/Недоступно.*48/)).toBeInTheDocument();
+    expect(http.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Сохранить черновик" }));
+    await screen.findByText("Черновик сохранён.");
+    const puts = http.mock.calls.filter(([, init]) => init?.method === "PUT");
+    expect(puts).toHaveLength(1);
+    expect(String(puts[0]?.[0])).toMatch(/^\/api\/collections\/imports\/[0-9a-f-]{36}$/);
+    expect(JSON.parse(String(puts[0]?.[1]?.body))).toEqual({ name: album.title, source: "spotify_album", entries: [
+      { title: "Last Train", artist: "The Quartet", durationSeconds: 203 },
+      { title: "Last Train", artist: "The Quartet", durationSeconds: 203 },
+      { title: "Closer", artist: "The Quartet", durationSeconds: 203 },
+    ] });
+    expect(new Headers(puts[0]?.[1]?.headers).has("X-CSRF-Token")).toBe(true);
+    expect(http.mock.calls.every(([url]) => !String(url).includes("/api/tracks/"))).toBe(true);
+  });
+
   it("loads only the active view, pages both levels, and links exact Spotify items without playback or matching", async () => {
     const { http, user } = setup((url) => {
       if (url === albumsPath) return json({ offset: 0, limit: 10, total: 11, albums: [{ ...album, id: "firstAlbum", title: "First Album", providerUrl: "https://open.spotify.com/album/firstAlbum" }] });

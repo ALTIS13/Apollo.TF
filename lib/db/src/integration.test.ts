@@ -437,6 +437,7 @@ const migrationNames = [
   "0004_liked_manual_order.sql",
   "0005_lyrics_feedback_triage.sql",
   "0006_recommendation_hidden.sql",
+  "0007_playlist_import_drafts.sql",
 ] as const;
 const exactHistory = [
   {
@@ -468,6 +469,11 @@ const exactHistory = [
     name: "0006_recommendation_hidden.sql",
     checksum:
       "3adeb13847afbe19eea037478e372db5ba44d9cfceb67f0d63299367d4a50a0d",
+  },
+  {
+    name: "0007_playlist_import_drafts.sql",
+    checksum:
+      "93095e5046a08299286a0190ef638d75aa55a890a9a480b8593f99724a423351",
   },
 ] as const;
 
@@ -1279,6 +1285,8 @@ async function resetTfState(): Promise<void> {
   await adminPool!.query(`
     drop schema if exists apollo_tf cascade;
     drop table if exists
+      public.playlist_import_drafts,
+      public.recommendation_hidden,
       public.lyrics_feedback_events,
       public.lyrics_feedback,
       public.liked_order_revisions,
@@ -1291,6 +1299,7 @@ async function resetTfState(): Promise<void> {
       public.spotify_tokens,
       public.yandex_tokens
     cascade;
+    drop type if exists public.playlist_import_source;
     revoke all privileges on schema public
       from apollo_tf_migrator, apollo_tf_runtime;
     grant usage, create on schema public to apollo_tf_migrator;

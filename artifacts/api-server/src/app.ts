@@ -16,7 +16,7 @@ import {
   requireTfBrowserMutation,
   hasFamilyCookie,
 } from "./lib/tf-browser-session.js";
-import { createApiRouter, type ApiRouterOptions } from "./routes/index.js";
+import { createApiRouter, playlistImportNoStore, type ApiRouterOptions } from "./routes/index.js";
 import { moduleHeartbeatRouter } from "./routes/module-heartbeats.js";
 
 const API_BODY_LIMIT_BYTES = 100 * 1024;
@@ -152,6 +152,7 @@ export function createApiApp(options: ApiAppOptions = {}): Express {
   const allowedOrigin = options.auth?.webOrigin;
 
   app.disable("x-powered-by");
+  app.use(playlistImportNoStore);
   app.use(
     pinoHttp({
       logger: requestLogger,

@@ -797,6 +797,104 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CollectionErrorResponse"
+  /collections/imports:
+    get:
+      operationId: listPlaylistImports
+      tags: [collections]
+      summary: List the current account's metadata-only import drafts
+      responses:
+        "200":
+          description: Import draft summaries, without entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistImportListResponse"
+        "400":
+          $ref: "#/components/responses/PlaylistImportBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+  /collections/imports/{importId}:
+    parameters:
+      - $ref: "#/components/parameters/PlaylistImportId"
+    get:
+      operationId: getPlaylistImport
+      tags: [collections]
+      summary: Get an import draft with its ordered metadata entries
+      responses:
+        "200":
+          $ref: "#/components/responses/PlaylistImportDetail"
+        "400":
+          $ref: "#/components/responses/PlaylistImportBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistImportNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+    put:
+      operationId: putPlaylistImport
+      tags: [collections]
+      summary: Create or replay an import draft at a client-selected UUID
+      description: The existing TF session and browser CSRF checks apply. The source is a provenance label, not proof of access to a provider. The normalized JSON body must fit within 90 KiB of UTF-8.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutPlaylistImportRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/PlaylistImportDetail"
+        "201":
+          description: Draft created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistImportDetailResponse"
+        "400":
+          $ref: "#/components/responses/PlaylistImportBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "409":
+          description: The UUID already holds a different draft (import_conflict), or the account has reached its draft limit (import_limit)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistImportErrorResponse"
+        "413":
+          description: Request body exceeds the raw parser or normalized draft size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistImportErrorResponse"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+    delete:
+      operationId: removePlaylistImport
+      tags: [collections]
+      summary: Delete an import draft from the current account
+      description: The existing TF session and browser CSRF checks apply.
+      responses:
+        "204":
+          description: Draft deleted
+        "400":
+          $ref: "#/components/responses/PlaylistImportBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistImportNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
   /collections/playlists:
     get:
       operationId: listPlaylists
@@ -968,6 +1066,12 @@ paths:
           $ref: "#/components/responses/CollectionUnavailable"
 components:
   parameters:
+    PlaylistImportId:
+      name: importId
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/PlaylistImportId"
     PlaylistId:
       name: playlistId
       in: path
@@ -994,6 +1098,24 @@ components:
         maxLength: 4096
         pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
   responses:
+    PlaylistImportDetail:
+      description: Import draft with ordered entries, or an identical replay on PUT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PlaylistImportDetailResponse"
+    PlaylistImportBadRequest:
+      description: Noncanonical import UUID, unexpected query, or invalid draft payload
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PlaylistImportErrorResponse"
+    PlaylistImportNotFound:
+      description: Import draft absent from the current account
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PlaylistImportErrorResponse"
     CollectionBadRequest:
       description: Invalid playlist input
       content:
@@ -1635,6 +1757,128 @@ components:
             - internal_error
             - playlist_not_found
             - liked_track_not_found
+      required: [error]
+
+    PlaylistImportId:
+      type: string
+      pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+    PlaylistImportSource:
+      type: string
+      description: Client-supplied provenance label only; not provider authorization.
+      enum: [file, spotify_album, spotify_playlist, spotify_liked]
+    PlaylistImportEntry:
+      type: object
+      additionalProperties: false
+      properties:
+        artist:
+          type: string
+          description: Trimmed artist name
+          pattern: '^(?=[\s\S]*\S)(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$'
+          minLength: 1
+          maxLength: 300
+        title:
+          type: string
+          description: Trimmed track title
+          pattern: '^(?=[\s\S]*\S)(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$'
+          minLength: 1
+          maxLength: 500
+        durationSeconds:
+          type: [integer, "null"]
+          # Orval emits number() for integer; multipleOf preserves integrality in generated Zod.
+          multipleOf: 1
+          minimum: 1
+          maximum: 86400
+      required: [artist, title, durationSeconds]
+    PlaylistImportSummary:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/PlaylistImportId"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        source:
+          $ref: "#/components/schemas/PlaylistImportSource"
+        entryCount:
+          type: integer
+          multipleOf: 1
+          minimum: 1
+          maximum: 200
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, name, source, entryCount, createdAt]
+    PlaylistImportDraft:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/PlaylistImportId"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        source:
+          $ref: "#/components/schemas/PlaylistImportSource"
+        entryCount:
+          type: integer
+          multipleOf: 1
+          minimum: 1
+          maximum: 200
+        createdAt:
+          type: string
+          format: date-time
+        entries:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/PlaylistImportEntry"
+      required: [id, name, source, entryCount, createdAt, entries]
+    PutPlaylistImportRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: Draft name, trimmed before validation and storage
+          pattern: '^(?=[\s\S]*\S)(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$'
+          minLength: 1
+          maxLength: 200
+        source:
+          $ref: "#/components/schemas/PlaylistImportSource"
+        entries:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/PlaylistImportEntry"
+      required: [name, source, entries]
+    PlaylistImportListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        imports:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlaylistImportSummary"
+      required: [imports]
+    PlaylistImportDetailResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        draft:
+          $ref: "#/components/schemas/PlaylistImportDraft"
+      required: [draft]
+    PlaylistImportErrorResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum: [bad_request, invalid_request, import_not_found, import_conflict, import_limit, request_too_large]
       required: [error]
 
     Playlist:

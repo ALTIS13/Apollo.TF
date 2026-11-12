@@ -307,6 +307,7 @@ export function createSpotifyRouter(
   });
 
   router.get("/spotify/liked", async (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
     const page = pagination(request.query);
     try {
       const result = await dependencies.gateway.execute({
@@ -363,6 +364,7 @@ export function createSpotifyRouter(
   });
 
   router.get("/spotify/playlists", async (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
     try {
       const result = await dependencies.gateway.execute({
         accountId: request.tfPrincipal!.accountId,
@@ -382,6 +384,7 @@ export function createSpotifyRouter(
   router.get(
     "/spotify/playlists/:playlistId/tracks",
     async (request, response) => {
+      response.setHeader("Cache-Control", "no-store");
       const page = pagination(request.query);
       try {
         const result = await dependencies.gateway.execute({

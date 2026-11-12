@@ -24,6 +24,7 @@ import { createTracksRouter } from "./tracks.js";
 import { createYandexRouter } from "./yandex.js";
 import { createCollectionsRouter } from "./collections.js";
 import { createPlaylistsRouter } from "./playlists.js";
+import { createPlaylistImportsRouter } from "./playlist-imports.js";
 
 vi.hoisted(() => {
   process.env["DATABASE_URL"] ??= "postgres://unused:unused@127.0.0.1:1/unused";
@@ -129,6 +130,10 @@ function exactInventory(): TfProtectedRoute[] {
       path: "/api/collections/playlists/:playlistId/tracks/:trackId",
     },
     { method: "DELETE", path: "/api/collections/playlists/:playlistId" },
+    { method: "GET", path: "/api/collections/imports" },
+    { method: "GET", path: "/api/collections/imports/:importId" },
+    { method: "PUT", path: "/api/collections/imports/:importId" },
+    { method: "DELETE", path: "/api/collections/imports/:importId" },
     { method: "GET", path: "/api/tracks/suggest" },
     { method: "GET", path: "/api/tracks/lyrics" },
     { method: "POST", path: "/api/tracks/lyrics/feedback" },
@@ -218,6 +223,7 @@ describe("protected route policy coverage", () => {
     const trackRoutes = discoverRoutes(createTracksRouter());
     const collectionRoutes = discoverRoutes(createCollectionsRouter());
     const playlistRoutes = discoverRoutes(createPlaylistsRouter());
+    const importRoutes = discoverRoutes(createPlaylistImportsRouter());
     const spotifyRoutes = discoverRoutes(createSpotifyRouter());
     const yandexRoutes = discoverRoutes(createYandexRouter());
     const { createWebSocketTicketRouter } =
@@ -231,6 +237,7 @@ describe("protected route policy coverage", () => {
       ...trackRoutes,
       ...collectionRoutes,
       ...playlistRoutes,
+      ...importRoutes,
       ...spotifyRoutes,
       ...yandexRoutes,
       ...websocketTicketRoutes,
@@ -239,6 +246,7 @@ describe("protected route policy coverage", () => {
     expect(trackRoutes).toHaveLength(21);
     expect(collectionRoutes).toHaveLength(5);
     expect(playlistRoutes).toHaveLength(7);
+    expect(importRoutes).toHaveLength(4);
     expect(spotifyRoutes).toHaveLength(11);
     expect(yandexRoutes).toHaveLength(6);
     expect(websocketTicketRoutes).toHaveLength(1);
@@ -258,7 +266,7 @@ describe("protected route policy coverage", () => {
     expect(() =>
       assertProtectedRouteCoverage(discovered, TF_ROUTE_POLICIES),
     ).not.toThrow();
-    for (const route of playlistRoutes) {
+    for (const route of [...playlistRoutes, ...importRoutes]) {
       const policy = TF_ROUTE_POLICIES.find(
         (candidate) =>
           candidate.method === route.method && candidate.path === route.path,

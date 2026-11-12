@@ -445,6 +445,9 @@ describe("Spotify gateway routes", () => {
     });
     await expect(disconnected.json()).resolves.toEqual({ connected: false });
     await expect(logout.json()).resolves.toEqual({ ok: true });
+    for (const library of [liked, playlists, playlistTracks]) {
+      expect(library.headers.get("cache-control")).toBe("no-store");
+    }
     await expect(liked.json()).resolves.toEqual({
       tracks: [
         {
