@@ -92,7 +92,8 @@ export function readQueueSnapshot(
   now = Date.now(),
 ): QueueSnapshot | null {
   try {
-    const raw = storage.getItem(key(identity));
+    const storageKey = key(identity);
+    const raw = storage.getItem(storageKey);
     if (!raw) return null;
     const value: unknown = JSON.parse(raw);
     if (typeof value !== "object" || value === null) return null;
@@ -100,7 +101,14 @@ export function readQueueSnapshot(
     if (
       snapshot.version !== VERSION ||
       typeof snapshot.savedAt !== "number" || !Number.isFinite(snapshot.savedAt) ||
-      snapshot.savedAt > now + 60_000 || now - snapshot.savedAt > MAX_AGE_MS ||
+      snapshot.savedAt > now + 60_000
+    ) return null;
+    if (now - snapshot.savedAt > MAX_AGE_MS) {
+      // Recheck in case another tab refreshed the snapshot while it was being read.
+      if (storage.getItem(storageKey) === raw) storage.removeItem(storageKey);
+      return null;
+    }
+    if (
       !Array.isArray(snapshot.queue) || snapshot.queue.length === 0 || snapshot.queue.length > MAX_TRACKS ||
       !Number.isInteger(snapshot.index) || (snapshot.index as number) < -1 ||
       (snapshot.index as number) >= snapshot.queue.length ||
@@ -108,7 +116,7 @@ export function readQueueSnapshot(
       snapshot.positionSeconds < 0 || snapshot.positionSeconds > 86_400
     ) return null;
     if (snapshot.queue.some((track: unknown) => typeof track === "object" && track !== null && isReviewedTrack(track))) {
-      storage.removeItem(key(identity));
+      if (storage.getItem(storageKey) === raw) storage.removeItem(storageKey);
       return null;
     }
     const queue = snapshot.queue.map(safeTrack);

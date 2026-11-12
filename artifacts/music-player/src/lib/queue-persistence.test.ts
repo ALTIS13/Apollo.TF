@@ -70,11 +70,17 @@ describe("device-local queue snapshot", () => {
     expect(storage.getItem(keyB)).toBe(otherQueue);
   });
 
-  it("rejects stale and malformed snapshots without throwing", () => {
+  it("evicts the scoped stale snapshot and rejects malformed data without throwing", () => {
     const storage = memoryStorage();
     writeQueueSnapshot(storage, identityA, [first], 0, 3, 100_000);
-    expect(readQueueSnapshot(storage, identityA, 100_000 + 8 * 24 * 60 * 60 * 1000)).toBeNull();
     const key = storage.key(0)!;
+    const later = 100_000 + 8 * 24 * 60 * 60 * 1000;
+    writeQueueSnapshot(storage, identityB, [first], 0, 17, later);
+    const otherKey = storage.key(1)!;
+    const other = storage.getItem(otherKey);
+    expect(readQueueSnapshot(storage, identityA, later)).toBeNull();
+    expect(storage.getItem(key)).toBeNull();
+    expect(storage.getItem(otherKey)).toBe(other);
     storage.setItem(key, "{invalid");
     expect(readQueueSnapshot(storage, identityA, 100_001)).toBeNull();
     storage.setItem(key, JSON.stringify({ version: 1, savedAt: 100_000, index: 0, positionSeconds: 0,
