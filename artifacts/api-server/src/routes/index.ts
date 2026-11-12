@@ -60,7 +60,7 @@ export const playlistImportNoStore: RequestHandler = (
     )?.path;
     if (
       path === "/api/collections/imports" ||
-      path === "/api/collections/imports/:importId"
+      path?.startsWith("/api/collections/imports/")
     ) {
       response.set("Cache-Control", "no-store");
     }

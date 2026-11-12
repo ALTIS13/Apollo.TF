@@ -35,6 +35,26 @@ describe("TF browser session client", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
+  it("keeps the active session for catalog errors but fails closed on live policy outage", async () => {
+    const base = "/collections/imports/abcdef01-2345-4789-abcd-ef0123456789/entries/0";
+    const securityEvents = vi.fn();
+    const unsubscribe = subscribeTfAuthSecurityEvents(securityEvents);
+    const reply = (status: number, error: string) => Response.json({ error }, { status });
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(Response.json(session))
+      .mockResolvedValueOnce(reply(503, "recording_catalog_unavailable"))
+      .mockResolvedValueOnce(reply(409, "recording_selection_changed"))
+      .mockResolvedValueOnce(reply(503, "policy_unavailable"));
+    try {
+      await fetchAndCommitSession();
+      await expect(tfFetch(`${base}/candidates`)).rejects.toMatchObject({ kind: "rejected" });
+      await expect(tfFetch(`${base}/selection`, { method: "PUT" })).rejects.toMatchObject({ kind: "rejected" });
+      expect(securityEvents).not.toHaveBeenCalled();
+      await expect(tfFetch(`${base}/candidates`)).rejects.toMatchObject({ kind: "unavailable" });
+      expect(securityEvents).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "unavailable" }));
+    } finally { unsubscribe(); }
+  });
+
   it("fetches and validates the session without committing CSRF until the caller accepts it", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(session), {
       status: 200,

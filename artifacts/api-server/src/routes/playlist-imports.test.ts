@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 
 import {
   GetPlaylistImportResponse,
+  ListImportRecordingCandidatesResponse,
   ListPlaylistImportsResponse,
   PutPlaylistImportBody,
   PutPlaylistImportParams,
@@ -42,15 +43,26 @@ const summary = {
   createdAt: "2026-09-04T20:01:00.000Z",
 };
 const draft = { ...summary, entries };
+const entryPath = `${draftPath}/entries/0`;
+const streamOnlyCandidate = {
+  id: "fixture-full", evidenceRevision: "b".repeat(64), artist: "Artist", title: "Track",
+  edition: "original", releaseDate: "2024-08-03", expectedDurationSeconds: 210,
+  measuredDurationSeconds: 209, access: "full", download: "not_permitted",
+  sourceLabel: "Fixture catalog", sourceUrl: null,
+} as const;
+const previewCandidate = { ...streamOnlyCandidate, id: "fixture-preview", access: "preview", measuredDurationSeconds: 30 } as const;
+const selection = { candidateId: streamOnlyCandidate.id, evidenceRevision: streamOnlyCandidate.evidenceRevision, selectedAt: summary.createdAt };
 const servers: Server[] = [];
 
-async function startApp() {
+async function startApp(entitlements = ["tf.collections"]) {
   const store = {
     list: vi.fn().mockResolvedValue([summary]),
     get: vi.fn().mockResolvedValue(draft),
     put: vi.fn().mockResolvedValue({ status: "created", draft }),
     remove: vi.fn().mockResolvedValue(true),
   };
+  const catalog = { candidates: vi.fn().mockResolvedValue({ status: "ready", candidates: [streamOnlyCandidate, previewCandidate] }) };
+  const selections = { get: vi.fn().mockResolvedValue(null), put: vi.fn().mockResolvedValue(selection) };
   const opaque = () => randomBytes(32).toString("base64url");
   const transactionHandle = opaque();
   const handle = opaque();
@@ -64,7 +76,7 @@ async function startApp() {
     installation_id: installationId,
     nonce,
     account_status: "active",
-    entitlements: ["tf.collections"],
+    entitlements,
   })
     .setProtectedHeader({ alg: "EdDSA", kid, typ: "JWT" })
     .setIssuer(issuer)
@@ -77,7 +89,7 @@ async function startApp() {
     .sign(privateKey);
   const expiresAt = new Date(Date.now() + 300_000).toISOString();
   const introspected: unknown[] = [];
-  let liveEntitlements = ["tf.collections"];
+  let liveEntitlements = entitlements;
   const clientSecret = opaque();
   const platform = new PlatformAuthClient({
     issuer,
@@ -158,7 +170,7 @@ async function startApp() {
   };
   const app = createApiApp({
     auth: { platform, sessionStore, webOrigin, secureCookies: true },
-    playlistImports: { store },
+    playlistImports: { store, catalog, selections },
   });
   const server = app.listen(0, "127.0.0.1");
   servers.push(server);
@@ -193,10 +205,13 @@ async function startApp() {
   return {
     request,
     store,
+    catalog,
+    selections,
     introspected,
     revokeCollections: () => {
       liveEntitlements = ["tf.search"];
     },
+    revokeSearch: () => { liveEntitlements = ["tf.collections"]; },
   };
 }
 
@@ -219,6 +234,45 @@ async function expectJson(response: Response, status: number, body: unknown) {
 }
 
 describe("playlist import drafts HTTP", () => {
+  it("returns catalog evidence and rechecks the revision and full access on confirmation", async () => {
+    const { request, store, catalog, selections } = await startApp(["tf.collections", "tf.search"]);
+    const page = await request(`${entryPath}/candidates`);
+    expect(ListImportRecordingCandidatesResponse.safeParse(await page.clone().json()).success).toBe(true);
+    await expectJson(page, 200, {
+      status: "ready", candidates: [streamOnlyCandidate, previewCandidate], selection: null,
+    });
+    expect(selections.put).not.toHaveBeenCalled();
+    expect(catalog.candidates).toHaveBeenCalledExactlyOnceWith(entries[0]);
+    expect(selections.get).toHaveBeenCalledExactlyOnceWith(accountId, importId, 0);
+    const put = (candidateId: string, evidenceRevision: string) => request(`${entryPath}/selection`, {
+      method: "PUT", body: JSON.stringify({ candidateId, evidenceRevision }),
+    });
+    await expectJson(await put(streamOnlyCandidate.id, "a".repeat(64)), 409, { error: "recording_selection_changed" });
+    await expectJson(await put(previewCandidate.id, previewCandidate.evidenceRevision), 409, { error: "recording_not_full" });
+    expect(selections.put).not.toHaveBeenCalled();
+    await expectJson(await put(streamOnlyCandidate.id, streamOnlyCandidate.evidenceRevision), 200, { selection });
+    expect(selections.put).toHaveBeenCalledExactlyOnceWith(accountId, importId, 0, {
+      candidateId: streamOnlyCandidate.id, evidenceRevision: streamOnlyCandidate.evidenceRevision,
+    }, entries[0]);
+    selections.put.mockResolvedValueOnce(null);
+    await expectJson(await put(streamOnlyCandidate.id, streamOnlyCandidate.evidenceRevision), 404, { error: "import_entry_not_found" });
+    expect(store.get.mock.calls).toEqual(Array(5).fill([accountId, importId]));
+  });
+
+  it("does not read catalog evidence for a revoked search entitlement or a missing occurrence", async () => {
+    const { request, catalog, store, selections, revokeSearch } = await startApp(["tf.collections", "tf.search"]);
+    const candidates = (position: string) => request(`${draftPath}/entries/${position}/candidates`);
+    await expectJson(await candidates("00"), 400, { error: "bad_request" });
+    await expectJson(await candidates("1"), 404, { error: "import_entry_not_found" });
+    store.get.mockResolvedValueOnce(null);
+    await expectJson(await candidates("0"), 404, { error: "import_entry_not_found" });
+    revokeSearch();
+    await expectJson(await candidates("0"), 403, { error: "module_access_denied" });
+    expect(store.get).toHaveBeenCalledTimes(2);
+    expect(catalog.candidates).not.toHaveBeenCalled();
+    expect(selections.get).not.toHaveBeenCalled();
+  });
+
   it("generates strict metadata-only contracts for the import routes", () => {
     expect(PutPlaylistImportParams.parse({ importId })).toEqual({ importId });
     expect(

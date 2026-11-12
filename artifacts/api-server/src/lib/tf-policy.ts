@@ -277,6 +277,20 @@ export const TF_ROUTE_POLICIES: readonly TfRoutePolicy[] = Object.freeze([
   },
   {
     method: "GET",
+    path: "/api/collections/imports/:importId/entries/:position/candidates",
+    pattern: /^\/api\/collections\/imports\/[^/]+\/entries\/[^/]+\/candidates$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "PUT",
+    path: "/api/collections/imports/:importId/entries/:position/selection",
+    pattern: /^\/api\/collections\/imports\/[^/]+\/entries\/[^/]+\/selection$/,
+    capability: "tf.collections",
+    live: true,
+  },
+  {
+    method: "GET",
     path: "/api/tracks/:id/download",
     pattern: /^\/api\/tracks\/[^/]+\/download$/,
     capability: "tf.downloads",

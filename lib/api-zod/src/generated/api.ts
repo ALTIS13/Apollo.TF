@@ -1123,6 +1123,215 @@ export const RemovePlaylistImportParams = zod
   .strict();
 
 /**
+ * Requires live tf.collections and tf.search. A candidate is not playback or download authorization.
+ * @summary Review recording evidence for one owned import occurrence
+ */
+export const listImportRecordingCandidatesPathImportIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+export const listImportRecordingCandidatesPathPositionRegExp = new RegExp(
+  "^(?:[0-9]|[1-9][0-9]|1[0-9]{2})$",
+);
+
+export const ListImportRecordingCandidatesParams = zod
+  .object({
+    importId: zod
+      .string()
+      .regex(listImportRecordingCandidatesPathImportIdRegExp),
+    position: zod
+      .string()
+      .regex(listImportRecordingCandidatesPathPositionRegExp)
+      .describe("Zero-based occurrence in the immutable import draft."),
+  })
+  .strict();
+
+export const listImportRecordingCandidatesResponseCandidatesItemIdRegExp =
+  new RegExp("^[a-z0-9][a-z0-9_-]{0,63}$");
+export const listImportRecordingCandidatesResponseCandidatesItemEvidenceRevisionRegExp =
+  new RegExp("^[a-f0-9]{64}$");
+export const listImportRecordingCandidatesResponseCandidatesItemArtistMax = 300;
+
+export const listImportRecordingCandidatesResponseCandidatesItemTitleMax = 500;
+
+export const listImportRecordingCandidatesResponseCandidatesItemExpectedDurationSecondsMax = 86400;
+export const listImportRecordingCandidatesResponseCandidatesItemExpectedDurationSecondsMultipleOf = 1;
+
+export const listImportRecordingCandidatesResponseCandidatesItemMeasuredDurationSecondsMax = 86400;
+export const listImportRecordingCandidatesResponseCandidatesItemMeasuredDurationSecondsMultipleOf = 1;
+
+export const listImportRecordingCandidatesResponseCandidatesItemSourceLabelMax = 160;
+
+export const listImportRecordingCandidatesResponseCandidatesItemSourceUrlMax = 4096;
+
+export const listImportRecordingCandidatesResponseCandidatesItemSourceUrlRegExp =
+  new RegExp("^https:\/");
+export const listImportRecordingCandidatesResponseCandidatesMax = 12;
+
+export const listImportRecordingCandidatesResponseSelectionOneCandidateIdRegExp =
+  new RegExp("^[a-z0-9][a-z0-9_-]{0,63}$");
+export const listImportRecordingCandidatesResponseSelectionOneEvidenceRevisionRegExp =
+  new RegExp("^[a-f0-9]{64}$");
+
+export const ListImportRecordingCandidatesResponse = zod
+  .object({
+    status: zod.enum(["ready", "unconfigured"]),
+    candidates: zod
+      .array(
+        zod
+          .object({
+            id: zod
+              .string()
+              .regex(
+                listImportRecordingCandidatesResponseCandidatesItemIdRegExp,
+              ),
+            evidenceRevision: zod
+              .string()
+              .regex(
+                listImportRecordingCandidatesResponseCandidatesItemEvidenceRevisionRegExp,
+              ),
+            artist: zod
+              .string()
+              .min(1)
+              .max(
+                listImportRecordingCandidatesResponseCandidatesItemArtistMax,
+              ),
+            title: zod
+              .string()
+              .min(1)
+              .max(listImportRecordingCandidatesResponseCandidatesItemTitleMax),
+            edition: zod.enum([
+              "original",
+              "clean_edit",
+              "alternate",
+              "unknown",
+            ]),
+            releaseDate: zod.string().date().nullable(),
+            expectedDurationSeconds: zod
+              .number()
+              .min(1)
+              .max(
+                listImportRecordingCandidatesResponseCandidatesItemExpectedDurationSecondsMax,
+              )
+              .multipleOf(
+                listImportRecordingCandidatesResponseCandidatesItemExpectedDurationSecondsMultipleOf,
+              )
+              .nullable(),
+            measuredDurationSeconds: zod
+              .number()
+              .min(1)
+              .max(
+                listImportRecordingCandidatesResponseCandidatesItemMeasuredDurationSecondsMax,
+              )
+              .multipleOf(
+                listImportRecordingCandidatesResponseCandidatesItemMeasuredDurationSecondsMultipleOf,
+              )
+              .nullable(),
+            access: zod.enum(["full", "preview", "blocked", "unverified"]),
+            download: zod.enum(["permitted", "not_permitted", "unverified"]),
+            sourceLabel: zod
+              .string()
+              .min(1)
+              .max(
+                listImportRecordingCandidatesResponseCandidatesItemSourceLabelMax,
+              ),
+            sourceUrl: zod
+              .string()
+              .max(
+                listImportRecordingCandidatesResponseCandidatesItemSourceUrlMax,
+              )
+              .regex(
+                listImportRecordingCandidatesResponseCandidatesItemSourceUrlRegExp,
+              )
+              .nullable()
+              .describe("HTTPS attribution page, never a media URL or grant."),
+          })
+          .strict(),
+      )
+      .max(listImportRecordingCandidatesResponseCandidatesMax),
+    selection: zod.union([
+      zod
+        .object({
+          candidateId: zod
+            .string()
+            .regex(
+              listImportRecordingCandidatesResponseSelectionOneCandidateIdRegExp,
+            ),
+          evidenceRevision: zod
+            .string()
+            .regex(
+              listImportRecordingCandidatesResponseSelectionOneEvidenceRevisionRegExp,
+            ),
+          selectedAt: zod.string().datetime({}),
+        })
+        .strict(),
+      zod.null(),
+    ]),
+  })
+  .strict();
+
+/**
+ * Requires live tf.collections and tf.search plus browser CSRF. The catalog must still advertise full access and the identical evidence revision; the selection does not grant playback or download access.
+ * @summary Confirm a full recording for one owned import occurrence
+ */
+export const putImportRecordingSelectionPathImportIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+export const putImportRecordingSelectionPathPositionRegExp = new RegExp(
+  "^(?:[0-9]|[1-9][0-9]|1[0-9]{2})$",
+);
+
+export const PutImportRecordingSelectionParams = zod
+  .object({
+    importId: zod.string().regex(putImportRecordingSelectionPathImportIdRegExp),
+    position: zod
+      .string()
+      .regex(putImportRecordingSelectionPathPositionRegExp)
+      .describe("Zero-based occurrence in the immutable import draft."),
+  })
+  .strict();
+
+export const putImportRecordingSelectionBodyCandidateIdRegExp = new RegExp(
+  "^[a-z0-9][a-z0-9_-]{0,63}$",
+);
+export const putImportRecordingSelectionBodyEvidenceRevisionRegExp = new RegExp(
+  "^[a-f0-9]{64}$",
+);
+
+export const PutImportRecordingSelectionBody = zod
+  .object({
+    candidateId: zod
+      .string()
+      .regex(putImportRecordingSelectionBodyCandidateIdRegExp),
+    evidenceRevision: zod
+      .string()
+      .regex(putImportRecordingSelectionBodyEvidenceRevisionRegExp),
+  })
+  .strict();
+
+export const putImportRecordingSelectionResponseSelectionCandidateIdRegExp =
+  new RegExp("^[a-z0-9][a-z0-9_-]{0,63}$");
+export const putImportRecordingSelectionResponseSelectionEvidenceRevisionRegExp =
+  new RegExp("^[a-f0-9]{64}$");
+
+export const PutImportRecordingSelectionResponse = zod
+  .object({
+    selection: zod
+      .object({
+        candidateId: zod
+          .string()
+          .regex(putImportRecordingSelectionResponseSelectionCandidateIdRegExp),
+        evidenceRevision: zod
+          .string()
+          .regex(
+            putImportRecordingSelectionResponseSelectionEvidenceRevisionRegExp,
+          ),
+        selectedAt: zod.string().datetime({}),
+      })
+      .strict(),
+  })
+  .strict();
+
+/**
  * @summary List playlists owned by the current TF account
  */
 

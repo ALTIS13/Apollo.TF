@@ -268,6 +268,14 @@ export async function tfFetch<T>(path: string, init?: RequestInit): Promise<T> {
         : "invalid_response";
     const spotifyRead = /^\/spotify\/(?:albums(?:\/[^/?]+\/tracks)?|liked(?:-all)?|playlists(?:\/[^/?]+\/tracks)?|top-tracks)(?:\?|$)/.test(path);
     const importDraft = /^\/collections\/imports\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(path);
+    const recordingPath = /^\/collections\/imports\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/entries\/(?:[0-9]|[1-9][0-9]|1[0-9]{2})\/(candidates|selection)$/.exec(path)?.[1];
+    const recordingWrite = recordingPath === "selection" && requestInit.method === "PUT";
+    const recordingRead = recordingPath === "candidates" && requestInit.method === "GET";
+    const expectedRecordingRejection = (recordingRead || recordingWrite) && (
+      (response.status === 503 && code === "recording_catalog_unavailable") ||
+      (response.status === 404 && code === "import_entry_not_found") ||
+      (recordingWrite && response.status === 409 && (code === "recording_selection_changed" || code === "recording_not_full"))
+    );
     const expectedImportRejection = importDraft && (
       (response.status === 404 && code === "import_not_found") ||
       (requestInit.method === "PUT" && (
@@ -279,7 +287,7 @@ export async function tfFetch<T>(path: string, init?: RequestInit): Promise<T> {
     const kind =
       spotifyRead && response.status === 401 && code === "not_connected"
         ? "provider"
-        : expectedImportRejection || (spotifyRead && response.status === 502 && code === "spotify_error")
+        : expectedImportRejection || expectedRecordingRejection || (spotifyRead && response.status === 502 && code === "spotify_error")
           ? "rejected"
           : response.status === 401
             ? "unauthenticated"

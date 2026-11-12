@@ -37,6 +37,11 @@ import type {
   GetTrackStreamParams,
   GetTrackSuggestionsParams,
   HealthStatus,
+  ImportRecordingCandidatesResponse,
+  ImportRecordingCatalogUnavailableResponse,
+  ImportRecordingEntryNotFoundResponse,
+  ImportRecordingErrorResponse,
+  ImportRecordingSelectionResponse,
   LikedOrderConflictResponse,
   LikedOrderMutationResponse,
   LikedTrackLookupRequest,
@@ -58,6 +63,7 @@ import type {
   PlaylistMutationResponse,
   PlaylistNotFoundResponse,
   PlaylistTrackMutationResponse,
+  PutImportRecordingSelectionRequest,
   PutPlaylistImportRequest,
   ReorderPlaylistTracksRequest,
   SaveLikedTrackRequest,
@@ -2042,6 +2048,281 @@ export const useRemovePlaylistImport = <
   TContext
 > => {
   return useMutation(getRemovePlaylistImportMutationOptions(options));
+};
+
+/**
+ * Requires live tf.collections and tf.search. A candidate is not playback or download authorization.
+ * @summary Review recording evidence for one owned import occurrence
+ */
+export const getListImportRecordingCandidatesUrl = (
+  importId: string,
+  position: string,
+) => {
+  return `/api/collections/imports/${importId}/entries/${position}/candidates`;
+};
+
+export const listImportRecordingCandidates = async (
+  importId: string,
+  position: string,
+  options?: RequestInit,
+): Promise<ImportRecordingCandidatesResponse> => {
+  return customFetch<ImportRecordingCandidatesResponse>(
+    getListImportRecordingCandidatesUrl(importId, position),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getListImportRecordingCandidatesQueryKey = (
+  importId: string,
+  position: string,
+) => {
+  return [
+    `/api/collections/imports/${importId}/entries/${position}/candidates`,
+  ] as const;
+};
+
+export const getListImportRecordingCandidatesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listImportRecordingCandidates>>,
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | ImportRecordingEntryNotFoundResponse
+    | ImportRecordingCatalogUnavailableResponse
+  >,
+>(
+  importId: string,
+  position: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listImportRecordingCandidates>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getListImportRecordingCandidatesQueryKey(importId, position);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listImportRecordingCandidates>>
+  > = ({ signal }) =>
+    listImportRecordingCandidates(importId, position, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!(importId && position),
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof listImportRecordingCandidates>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListImportRecordingCandidatesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listImportRecordingCandidates>>
+>;
+export type ListImportRecordingCandidatesQueryError = ErrorType<
+  | PlaylistImportBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | ImportRecordingEntryNotFoundResponse
+  | ImportRecordingCatalogUnavailableResponse
+>;
+
+/**
+ * @summary Review recording evidence for one owned import occurrence
+ */
+
+export function useListImportRecordingCandidates<
+  TData = Awaited<ReturnType<typeof listImportRecordingCandidates>>,
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | ImportRecordingEntryNotFoundResponse
+    | ImportRecordingCatalogUnavailableResponse
+  >,
+>(
+  importId: string,
+  position: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listImportRecordingCandidates>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListImportRecordingCandidatesQueryOptions(
+    importId,
+    position,
+    options,
+  );
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Requires live tf.collections and tf.search plus browser CSRF. The catalog must still advertise full access and the identical evidence revision; the selection does not grant playback or download access.
+ * @summary Confirm a full recording for one owned import occurrence
+ */
+export const getPutImportRecordingSelectionUrl = (
+  importId: string,
+  position: string,
+) => {
+  return `/api/collections/imports/${importId}/entries/${position}/selection`;
+};
+
+export const putImportRecordingSelection = async (
+  importId: string,
+  position: string,
+  putImportRecordingSelectionRequest: PutImportRecordingSelectionRequest,
+  options?: RequestInit,
+): Promise<ImportRecordingSelectionResponse> => {
+  return customFetch<ImportRecordingSelectionResponse>(
+    getPutImportRecordingSelectionUrl(importId, position),
+    {
+      ...options,
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(putImportRecordingSelectionRequest),
+    },
+  );
+};
+
+export const getPutImportRecordingSelectionMutationOptions = <
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | ImportRecordingEntryNotFoundResponse
+    | ImportRecordingErrorResponse
+    | PlaylistImportErrorResponse
+    | ImportRecordingCatalogUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof putImportRecordingSelection>>,
+    TError,
+    {
+      importId: string;
+      position: string;
+      data: BodyType<PutImportRecordingSelectionRequest>;
+    },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof putImportRecordingSelection>>,
+  TError,
+  {
+    importId: string;
+    position: string;
+    data: BodyType<PutImportRecordingSelectionRequest>;
+  },
+  TContext
+> => {
+  const mutationKey = ["putImportRecordingSelection"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof putImportRecordingSelection>>,
+    {
+      importId: string;
+      position: string;
+      data: BodyType<PutImportRecordingSelectionRequest>;
+    }
+  > = (props) => {
+    const { importId, position, data } = props ?? {};
+
+    return putImportRecordingSelection(
+      importId,
+      position,
+      data,
+      requestOptions,
+    );
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type PutImportRecordingSelectionMutationResult = NonNullable<
+  Awaited<ReturnType<typeof putImportRecordingSelection>>
+>;
+export type PutImportRecordingSelectionMutationBody =
+  BodyType<PutImportRecordingSelectionRequest>;
+export type PutImportRecordingSelectionMutationError = ErrorType<
+  | PlaylistImportBadRequestResponse
+  | CollectionUnauthorizedResponse
+  | CollectionForbiddenResponse
+  | ImportRecordingEntryNotFoundResponse
+  | ImportRecordingErrorResponse
+  | PlaylistImportErrorResponse
+  | ImportRecordingCatalogUnavailableResponse
+>;
+
+/**
+ * @summary Confirm a full recording for one owned import occurrence
+ */
+export const usePutImportRecordingSelection = <
+  TError = ErrorType<
+    | PlaylistImportBadRequestResponse
+    | CollectionUnauthorizedResponse
+    | CollectionForbiddenResponse
+    | ImportRecordingEntryNotFoundResponse
+    | ImportRecordingErrorResponse
+    | PlaylistImportErrorResponse
+    | ImportRecordingCatalogUnavailableResponse
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof putImportRecordingSelection>>,
+    TError,
+    {
+      importId: string;
+      position: string;
+      data: BodyType<PutImportRecordingSelectionRequest>;
+    },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof putImportRecordingSelection>>,
+  TError,
+  {
+    importId: string;
+    position: string;
+    data: BodyType<PutImportRecordingSelectionRequest>;
+  },
+  TContext
+> => {
+  return useMutation(getPutImportRecordingSelectionMutationOptions(options));
 };
 
 /**

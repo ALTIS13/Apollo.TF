@@ -32,6 +32,7 @@ describe("TF immutable migration manifest", () => {
       "0005_lyrics_feedback_triage.sql",
       "0006_recommendation_hidden.sql",
       "0007_playlist_import_drafts.sql",
+      "0008_playlist_import_selections.sql",
     ]);
     expect(recomputed).toEqual(TF_MIGRATION_MANIFEST);
   });

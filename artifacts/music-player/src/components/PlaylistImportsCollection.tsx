@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-import { FileUp, ListMusic, Loader2, RefreshCw, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { FileUp, ListMusic, Loader2, RefreshCw, Search, Trash2 } from "lucide-react";
+import { useTfAuth } from "@/auth/tf-auth";
+import { DraftRecordingReview } from "@/components/DraftRecordingReview";
 import { Button } from "@/components/ui/button";
 import { useDeletePlaylistImport, usePlaylistImport, usePlaylistImportAccess, usePlaylistImports, useSavePlaylistImport } from "@/hooks/use-playlist-imports";
 import { PlaylistImportInputError, readPlaylistImportFile, type ImportDraftEntry, type ImportDraftInput, type ImportDraftSource } from "@/lib/playlist-imports";
@@ -27,19 +29,35 @@ function saveErrorMessage(error: unknown): string {
   return "Не удалось сохранить черновик. Повторите попытку.";
 }
 
-function DraftEntries({ entries }: { entries: ImportDraftEntry[] }) {
+type RecordingSlot = { draftId: string; position: number; generation: number };
+type SavedEntries = {
+  draftId: string;
+  generation: number;
+  activePosition: number | null;
+  toggle?: (position: number) => void;
+  onInvalidated: () => void;
+};
+
+function DraftEntries({ entries, saved }: { entries: ImportDraftEntry[]; saved?: SavedEntries }) {
   if (!entries.length) return <p className="border-y border-white/10 py-4 text-sm text-white/55">Нет записей.</p>;
   return (
     <ol aria-label="Записи черновика" className="divide-y divide-white/5 border-y border-white/10">
       {entries.map((entry, index) => (
-        <li key={index} className="flex min-w-0 items-center gap-3 px-1 py-2.5">
-          <span className="w-7 shrink-0 text-right text-xs tabular-nums text-white/45">{index + 1}</span>
-          <div className="min-w-0 flex-1">
-            <p className="break-words text-sm font-medium">{entry.title}</p>
-            <p className="break-words text-xs text-white/55">{entry.artist}</p>
-            <p className="mt-0.5 text-xs text-white/45">Не сопоставлено</p>
+        <li key={index} className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2 px-1 py-2.5 sm:gap-3">
+            <span className="w-7 shrink-0 text-right text-xs tabular-nums text-white/45">{index + 1}</span>
+            <div className="min-w-0 flex-1">
+              <p className="break-words text-sm font-medium">{entry.title}</p>
+              <p className="break-words text-xs text-white/55">{entry.artist}</p>
+              {!saved && <p className="mt-0.5 text-xs text-white/45">Не сопоставлено</p>}
+            </div>
+            <span className="shrink-0 text-xs tabular-nums text-white/55">{entry.durationSeconds === null ? "—" : formatDuration(entry.durationSeconds)}</span>
+            {saved?.toggle && <Button type="button" size="icon" variant="ghost" className="size-10 shrink-0"
+              aria-label={`Подобрать запись: ${entry.title} (позиция ${index + 1})`} title="Подобрать запись"
+              aria-expanded={saved.activePosition === index} onClick={() => saved.toggle?.(index)}><Search className="size-4" /></Button>}
           </div>
-          <span className="shrink-0 text-xs tabular-nums text-white/55">{entry.durationSeconds === null ? "—" : formatDuration(entry.durationSeconds)}</span>
+          {saved?.activePosition === index && <DraftRecordingReview key={`${saved.draftId}:${index}:${saved.generation}`}
+            draftId={saved.draftId} position={index} generation={saved.generation} entry={entry} onInvalidated={saved.onInvalidated} />}
         </li>
       ))}
     </ol>
@@ -56,11 +74,13 @@ function LoadError({ children, retry }: { children: string; retry: () => void })
 type FileReview = { id: string; input: ImportDraftInput };
 
 function OwnedPlaylistImports() {
+  const { hasEntitlement } = useTfAuth();
   const list = usePlaylistImports();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = usePlaylistImport(selectedId);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [review, setReview] = useState<FileReview | null>(null);
+  const [recordingSlot, setRecordingSlot] = useState<RecordingSlot | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [reading, setReading] = useState(false);
   const read = useRef<AbortController | null>(null);
@@ -69,16 +89,23 @@ function OwnedPlaylistImports() {
   const save = useSavePlaylistImport();
   const remove = useDeletePlaylistImport();
   const draft = selected.data?.draft;
+  const generation = captureTfSecurityGeneration();
+  const canReviewRecording = hasEntitlement("tf.collections") && hasEntitlement("tf.search") && !confirmDelete;
+  const activePosition = canReviewRecording && recordingSlot?.draftId === selectedId && recordingSlot.generation === generation
+    ? recordingSlot.position : null;
+  const dismissRecording = useCallback(() => setRecordingSlot(null), []);
 
   useEffect(() => () => read.current?.abort(), []);
 
   function selectDraft(id: string | null) {
+    dismissRecording();
     setSelectedId(id);
     setConfirmDelete(false);
     remove.reset();
   }
 
   function inspectFile(file: File) {
+    dismissRecording();
     read.current?.abort();
     const controller = new AbortController();
     const generation = captureTfSecurityGeneration();
@@ -119,6 +146,12 @@ function OwnedPlaylistImports() {
     void remove.mutateAsync(selectedId).then(() => {
       if (isCurrentTfSecurityGeneration(generation)) selectDraft(null);
     }).catch(() => {}).finally(() => { deleting.current = false; });
+  }
+
+  function toggleRecording(position: number) {
+    if (!draft || draft.id !== selectedId || !canReviewRecording || !isCurrentTfSecurityGeneration(generation)) return;
+    setRecordingSlot((current) => current?.draftId === draft.id && current.position === position && current.generation === generation
+      ? null : { draftId: draft.id, position, generation });
   }
 
   return (
@@ -184,7 +217,7 @@ function OwnedPlaylistImports() {
                 <p className="mt-1 text-xs text-white/55">{sourceLabel[draft.source]} · Записей: {draft.entryCount}</p>
               </div>
               <Button type="button" variant="ghost" size="icon" className="size-10 shrink-0" aria-label="Удалить черновик" title="Удалить черновик"
-                disabled={confirmDelete || remove.isPending} onClick={() => setConfirmDelete(true)}><Trash2 className="size-4" /></Button>
+                disabled={confirmDelete || remove.isPending} onClick={() => { dismissRecording(); setConfirmDelete(true); }}><Trash2 className="size-4" /></Button>
             </div>
             {confirmDelete && <div role="group" aria-label="Подтверждение удаления" className="mb-3 flex flex-wrap items-center gap-2 border-y border-red-400/20 py-3 text-sm text-red-200">
               <span>Удалить черновик?</span>
@@ -192,7 +225,10 @@ function OwnedPlaylistImports() {
               <Button type="button" variant="ghost" size="sm" disabled={remove.isPending} onClick={() => { setConfirmDelete(false); remove.reset(); }}>Отмена</Button>
             </div>}
             {remove.isError && <p role="alert" className="mb-3 text-sm text-amber-200">Не удалось удалить черновик. Повторите попытку.</p>}
-            <DraftEntries entries={draft.entries} />
+            <DraftEntries entries={draft.entries} saved={{
+              draftId: draft.id, generation, activePosition,
+              toggle: canReviewRecording ? toggleRecording : undefined, onInvalidated: dismissRecording,
+            }} />
           </>}
         </div>}
       </div>

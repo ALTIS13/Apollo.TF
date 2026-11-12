@@ -645,6 +645,134 @@ export interface PlaylistImportErrorResponse {
   error: PlaylistImportErrorResponseError;
 }
 
+/**
+ * @pattern ^[a-z0-9][a-z0-9_-]{0,63}$
+ */
+export type ImportRecordingCandidateId = string;
+
+/**
+ * @pattern ^[a-f0-9]{64}$
+ */
+export type ImportRecordingEvidenceRevision = string;
+
+export type ImportRecordingCandidateEdition =
+  (typeof ImportRecordingCandidateEdition)[keyof typeof ImportRecordingCandidateEdition];
+
+export const ImportRecordingCandidateEdition = {
+  original: "original",
+  clean_edit: "clean_edit",
+  alternate: "alternate",
+  unknown: "unknown",
+} as const;
+
+export type ImportRecordingCandidateAccess =
+  (typeof ImportRecordingCandidateAccess)[keyof typeof ImportRecordingCandidateAccess];
+
+export const ImportRecordingCandidateAccess = {
+  full: "full",
+  preview: "preview",
+  blocked: "blocked",
+  unverified: "unverified",
+} as const;
+
+export type ImportRecordingCandidateDownload =
+  (typeof ImportRecordingCandidateDownload)[keyof typeof ImportRecordingCandidateDownload];
+
+export const ImportRecordingCandidateDownload = {
+  permitted: "permitted",
+  not_permitted: "not_permitted",
+  unverified: "unverified",
+} as const;
+
+export interface ImportRecordingCandidate {
+  id: ImportRecordingCandidateId;
+  evidenceRevision: ImportRecordingEvidenceRevision;
+  /**
+   * @minLength 1
+   * @maxLength 300
+   */
+  artist: string;
+  /**
+   * @minLength 1
+   * @maxLength 500
+   */
+  title: string;
+  edition: ImportRecordingCandidateEdition;
+  /** @nullable */
+  releaseDate: string | null;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   * @nullable
+   */
+  expectedDurationSeconds: number | null;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   * @nullable
+   */
+  measuredDurationSeconds: number | null;
+  access: ImportRecordingCandidateAccess;
+  download: ImportRecordingCandidateDownload;
+  /**
+   * @minLength 1
+   * @maxLength 160
+   */
+  sourceLabel: string;
+  /**
+   * HTTPS attribution page, never a media URL or grant.
+   * @maxLength 4096
+   * @nullable
+   * @pattern ^https://
+   */
+  sourceUrl: string | null;
+}
+
+export interface PutImportRecordingSelectionRequest {
+  candidateId: ImportRecordingCandidateId;
+  evidenceRevision: ImportRecordingEvidenceRevision;
+}
+
+export interface ImportRecordingSelection {
+  candidateId: ImportRecordingCandidateId;
+  evidenceRevision: ImportRecordingEvidenceRevision;
+  selectedAt: string;
+}
+
+export type ImportRecordingCandidatesResponseStatus =
+  (typeof ImportRecordingCandidatesResponseStatus)[keyof typeof ImportRecordingCandidatesResponseStatus];
+
+export const ImportRecordingCandidatesResponseStatus = {
+  ready: "ready",
+  unconfigured: "unconfigured",
+} as const;
+
+export interface ImportRecordingCandidatesResponse {
+  status: ImportRecordingCandidatesResponseStatus;
+  /** @maxItems 12 */
+  candidates: ImportRecordingCandidate[];
+  selection: ImportRecordingSelection | null;
+}
+
+export interface ImportRecordingSelectionResponse {
+  selection: ImportRecordingSelection;
+}
+
+export type ImportRecordingErrorResponseError =
+  (typeof ImportRecordingErrorResponseError)[keyof typeof ImportRecordingErrorResponseError];
+
+export const ImportRecordingErrorResponseError = {
+  import_entry_not_found: "import_entry_not_found",
+  recording_selection_changed: "recording_selection_changed",
+  recording_not_full: "recording_not_full",
+  recording_catalog_unavailable: "recording_catalog_unavailable",
+  policy_unavailable: "policy_unavailable",
+} as const;
+
+export interface ImportRecordingErrorResponse {
+  error: ImportRecordingErrorResponseError;
+}
+
 export interface Playlist {
   /** @minimum 1 */
   id: number;
@@ -783,6 +911,17 @@ export type PlaylistImportBadRequestResponse = PlaylistImportErrorResponse;
  * Import draft absent from the current account
  */
 export type PlaylistImportNotFoundResponse = PlaylistImportErrorResponse;
+
+/**
+ * The draft or occurrence is not present for the current account
+ */
+export type ImportRecordingEntryNotFoundResponse = ImportRecordingErrorResponse;
+
+/**
+ * Live policy or the recording catalog could not be checked
+ */
+export type ImportRecordingCatalogUnavailableResponse =
+  ImportRecordingErrorResponse;
 
 /**
  * Invalid playlist input

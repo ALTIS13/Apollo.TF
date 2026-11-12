@@ -438,6 +438,7 @@ const migrationNames = [
   "0005_lyrics_feedback_triage.sql",
   "0006_recommendation_hidden.sql",
   "0007_playlist_import_drafts.sql",
+  "0008_playlist_import_selections.sql",
 ] as const;
 const exactHistory = [
   {
@@ -474,6 +475,11 @@ const exactHistory = [
     name: "0007_playlist_import_drafts.sql",
     checksum:
       "93095e5046a08299286a0190ef638d75aa55a890a9a480b8593f99724a423351",
+  },
+  {
+    name: "0008_playlist_import_selections.sql",
+    checksum:
+      "212fe5ad9a0a15a014908d614946a3b36e3afbb85ed196e63cb3de120980f621",
   },
 ] as const;
 
@@ -1285,6 +1291,7 @@ async function resetTfState(): Promise<void> {
   await adminPool!.query(`
     drop schema if exists apollo_tf cascade;
     drop table if exists
+      public.playlist_import_selections,
       public.playlist_import_drafts,
       public.recommendation_hidden,
       public.lyrics_feedback_events,
