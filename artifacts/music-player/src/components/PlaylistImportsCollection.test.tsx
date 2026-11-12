@@ -39,11 +39,26 @@ function spotifyFile(tracks: unknown[]) {
     "YourLibrary.json", { type: "application/json" });
 }
 
-async function reviewSpotify(user: ReturnType<typeof userEvent.setup>, tracks: unknown[]) {
-  const picker = await screen.findByLabelText<HTMLInputElement>("Файл библиотеки Spotify");
-  await user.upload(picker, spotifyFile(tracks));
+async function reviewSpotifyFile(user: ReturnType<typeof userEvent.setup>, file: File) {
+  const picker = await screen.findByLabelText<HTMLInputElement>("Файл экспорта Spotify");
+  await user.upload(picker, file);
   expect(picker.files).toHaveLength(0);
   return within(await screen.findByRole("region", { name: "Проверка импорта" }));
+}
+
+function reviewSpotify(user: ReturnType<typeof userEvent.setup>, tracks: unknown[]) {
+  return reviewSpotifyFile(user, spotifyFile(tracks));
+}
+
+function spotifyPlaylistFile(playlists: unknown[]) {
+  return new File([JSON.stringify({ playlists, account: "private-account" })],
+    "Playlist1.json", { type: "application/json" });
+}
+
+function playlistItem(trackName: string) {
+  return { track: {
+    artistName: "Archive Artist", trackName, trackUri: archiveSong.uri, albumName: "private-album",
+  }, addedDate: "2026-01-01" };
 }
 
 function RefreshAccess() {
@@ -279,4 +294,69 @@ it("clears Spotify review on cancel or installation change and never presents an
   await waitFor(() => expect(screen.queryByText("Archive Track")).not.toBeInTheDocument());
   expect(screen.queryByRole("region", { name: "Проверка импорта" })).not.toBeInTheDocument();
   expect(http.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+});
+
+it("chooses one of two identically named playlists and scopes the saved range to its collection index", async () => {
+  const name = "Shared playlist (201–201)";
+  const entry = { artist: "Archive Artist", title: "Second playlist track", durationSeconds: null };
+  let draftId: string | null = null;
+  let finishSave!: (response: Response) => void;
+  const summary = () => ({ ...saved(draftId!, name), entryCount: 1 });
+  const { http, user } = setup((path, init) => {
+    if (path === route) return json({ imports: draftId ? [summary()] : [] });
+    if (path.startsWith(`${route}/`) && init.method === "PUT") {
+      draftId = path.split("/").at(-1)!;
+      return new Promise((resolve) => { finishSave = resolve; });
+    }
+    if (draftId && path === `${route}/${draftId}`) return json({ draft: { ...summary(), entries: [entry] } });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const archive = await reviewSpotifyFile(user, spotifyPlaylistFile([
+    { name: "Shared playlist", items: [...Array(200).fill(null), playlistItem("First playlist track")] },
+    { name: "Shared playlist", items: [...Array(200).fill(null), playlistItem("Second playlist track")] },
+  ]));
+  const chooser = archive.getByRole("combobox", { name: "Плейлист Spotify" });
+  const next = () => archive.getByRole("button", { name: "Следующий диапазон" });
+  const saveButton = () => archive.getByRole("button", { name: "Сохранить черновик" });
+  const puts = () => http.mock.calls.filter(([, init]) => init?.method === "PUT");
+
+  expect(chooser).toHaveValue("");
+  expect(archive.queryByRole("button", { name: "Сохранить черновик" })).not.toBeInTheDocument();
+  await user.selectOptions(chooser, archive.getByRole("option", { name: "2. Shared playlist" }));
+  await user.click(next());
+  expect(archive.getByText("Second playlist track")).toBeInTheDocument();
+  expect(archive.queryByText("First playlist track")).not.toBeInTheDocument();
+  expect(puts()).toHaveLength(0);
+  await user.click(saveButton());
+  expect(chooser).toBeDisabled();
+  expect(archive.getByRole("button", { name: "Предыдущий диапазон" })).toBeDisabled();
+  expect(puts()).toHaveLength(1);
+  expect(JSON.parse(String(puts()[0][1]?.body))).toEqual({ name, source: "file", entries: [entry] });
+  await act(async () => finishSave(json({ draft: { ...summary(), entries: [entry] } }, 201)));
+  await archive.findByText("Диапазон сохранён как черновик.");
+
+  await user.selectOptions(chooser, archive.getByRole("option", { name: "1. Shared playlist" }));
+  expect(archive.getByText("Позиции 1–200 из 201")).toBeInTheDocument();
+  await user.click(next());
+  expect(archive.getByText("First playlist track")).toBeInTheDocument();
+  expect(saveButton()).toBeEnabled();
+  await user.selectOptions(chooser, archive.getByRole("option", { name: "2. Shared playlist" }));
+  await user.click(next());
+  expect(archive.getByText("Диапазон сохранён как черновик.")).toBeInTheDocument();
+  expect(puts()).toHaveLength(1);
+  expect(http.mock.calls.map(([url]) => String(url)).every((path) =>
+    path === "/api/auth/me" || path === route || path === `${route}/${draftId}`)).toBe(true);
+});
+
+it("distinguishes a Spotify file with no playlists from a selected empty playlist", async () => {
+  const { user } = setup((path) => {
+    if (path === route) return json({ imports: [] });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const emptyFile = await reviewSpotifyFile(user, spotifyPlaylistFile([]));
+  expect(emptyFile.getByText("В файле нет плейлистов Spotify.")).toBeInTheDocument();
+  const emptyPlaylist = await reviewSpotifyFile(user, spotifyPlaylistFile([{ name: "Empty playlist", items: [] }]));
+  expect(emptyPlaylist.getByText("В плейлисте нет записей.")).toBeInTheDocument();
+  expect(emptyPlaylist.queryByText(/Позиции/)).not.toBeInTheDocument();
+  expect(emptyPlaylist.queryByRole("button", { name: "Сохранить черновик" })).not.toBeInTheDocument();
 });

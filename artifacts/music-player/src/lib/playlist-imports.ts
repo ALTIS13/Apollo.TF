@@ -5,10 +5,12 @@ export const MAX_IMPORT_PAYLOAD_BYTES = 90 * 1024;
 export const MAX_IMPORT_FILE_BYTES = 128 * 1024;
 export const MAX_SPOTIFY_LIBRARY_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SPOTIFY_LIBRARY_SLOTS = 10_000;
+const MAX_SPOTIFY_EXPORT_PLAYLISTS = 1_000;
+const MAX_IMPORT_NAME_LENGTH = 200;
 
 const sourceSchema = z.enum(["file", "spotify_album", "spotify_playlist", "spotify_liked"]);
 const requiredText = (max: number) => z.string().trim().min(1).max(max).refine((text) => !text.includes("\0"));
-const nameSchema = requiredText(200);
+const nameSchema = requiredText(MAX_IMPORT_NAME_LENGTH);
 const entriesSchema = z.array(z.object({
   artist: requiredText(300),
   title: requiredText(500),
@@ -23,10 +25,26 @@ const exportSchema = z.object({
 const spotifyLibrarySchema = z.object({
   tracks: z.array(z.unknown()).max(MAX_SPOTIFY_LIBRARY_SLOTS),
 });
+const spotifyTrackUriSchema = z.string().regex(/^spotify:track:[A-Za-z0-9]{1,64}$/);
 const spotifyLibraryTrackSchema = z.object({
   artist: requiredText(300),
   track: requiredText(500),
-  uri: z.string().regex(/^spotify:track:[A-Za-z0-9]{1,64}$/),
+  uri: spotifyTrackUriSchema,
+});
+const spotifyPlaylistArraySchema = z.array(z.object({
+  name: nameSchema,
+  items: z.array(z.unknown()).max(MAX_SPOTIFY_LIBRARY_SLOTS),
+})).max(MAX_SPOTIFY_EXPORT_PLAYLISTS);
+const spotifyPlaylistExportSchema = z.union([
+  z.object({ playlists: spotifyPlaylistArraySchema }).transform(({ playlists }) => playlists),
+  spotifyPlaylistArraySchema.min(1),
+]);
+const spotifyPlaylistTrackSchema = z.object({
+  track: z.object({
+    artistName: requiredText(300),
+    trackName: requiredText(500),
+    trackUri: spotifyTrackUriSchema,
+  }),
 });
 
 export type ImportDraftInput = z.infer<typeof inputSchema>;
@@ -43,7 +61,12 @@ export interface ImportDraft extends ImportDraftSummary {
   entries: ImportDraftEntry[];
 }
 export interface SpotifyLibraryExport {
+  readonly name?: string;
   readonly slots: readonly (ImportDraftEntry | null)[];
+}
+export interface SpotifyExportFile {
+  readonly kind: "library" | "playlists";
+  readonly collections: readonly SpotifyLibraryExport[];
 }
 
 type ImportInputErrorCode = "invalid_import_input" | "import_payload_too_large" | "invalid_import_file" | "import_file_too_large";
@@ -103,9 +126,7 @@ export async function readPlaylistImportFile(file: Blob, signal?: AbortSignal): 
   return validatePlaylistImportInput({ name: result.data.playlist.name, source: "file", entries: result.data.tracks });
 }
 
-export async function readSpotifyLibraryExport(file: Blob, signal?: AbortSignal): Promise<SpotifyLibraryExport> {
-  const value = await readImportJson(file, MAX_SPOTIFY_LIBRARY_FILE_BYTES, signal);
-  signal?.throwIfAborted();
+function parseSpotifyLibrary(value: unknown): SpotifyLibraryExport {
   const library = spotifyLibrarySchema.safeParse(value);
   if (!library.success) throw new PlaylistImportInputError("invalid_import_file");
   // Retain a slot for each unavailable row without retaining its raw data or Spotify ID.
@@ -117,15 +138,40 @@ export async function readSpotifyLibraryExport(file: Blob, signal?: AbortSignal)
   return { slots };
 }
 
+export async function readSpotifyExportFile(file: Blob, signal?: AbortSignal): Promise<SpotifyExportFile> {
+  const value = await readImportJson(file, MAX_SPOTIFY_LIBRARY_FILE_BYTES, signal);
+  signal?.throwIfAborted();
+  const hasPlaylists = typeof value === "object" && value !== null && Object.hasOwn(value, "playlists");
+  if (!Array.isArray(value) && !hasPlaylists) {
+    return { kind: "library", collections: [parseSpotifyLibrary(value)] };
+  }
+  const result = spotifyPlaylistExportSchema.safeParse(value);
+  if (!result.success || result.data.reduce((count, { items }) => count + items.length, 0) > MAX_SPOTIFY_LIBRARY_SLOTS) {
+    throw new PlaylistImportInputError("invalid_import_file");
+  }
+  return {
+    kind: "playlists",
+    collections: result.data.map(({ name, items }) => ({
+      name,
+      slots: items.map((item): ImportDraftEntry | null => {
+        const parsed = spotifyPlaylistTrackSchema.safeParse(item);
+        return parsed.success
+          ? { artist: parsed.data.track.artistName, title: parsed.data.track.trackName, durationSeconds: null }
+          : null;
+      }),
+    })),
+  };
+}
+
 export function previewSpotifyLibraryRange(library: SpotifyLibraryExport, offset: number) {
   const total = library.slots.length;
   if (!Number.isSafeInteger(offset) || offset < 0 || offset % MAX_IMPORT_ENTRIES !== 0 ||
       offset >= Math.max(1, total)) throw new PlaylistImportInputError("invalid_import_input");
   const end = Math.min(offset + MAX_IMPORT_ENTRIES, total);
   const entries = library.slots.slice(offset, end).filter((entry) => entry !== null);
-  const name = total > MAX_IMPORT_ENTRIES
-    ? `Любимые Spotify из файла (${offset + 1}–${end})`
-    : "Любимые Spotify из файла";
+  const title = library.name ?? "Любимые Spotify из файла";
+  const suffix = total > MAX_IMPORT_ENTRIES ? ` (${offset + 1}–${end})` : "";
+  const name = title.slice(0, MAX_IMPORT_NAME_LENGTH - suffix.length).replace(/[\uD800-\uDBFF]$/, "").trimEnd() + suffix;
   return {
     offset, end, total, unavailable: end - offset - entries.length,
     input: entries.length ? validatePlaylistImportInput({ name, source: "file", entries }) : null,

@@ -5,8 +5,8 @@ import { DraftRecordingReview } from "@/components/DraftRecordingReview";
 import { Button } from "@/components/ui/button";
 import { useDeletePlaylistImport, usePlaylistImport, usePlaylistImportAccess, usePlaylistImports, useSavePlaylistImport } from "@/hooks/use-playlist-imports";
 import {
-  MAX_IMPORT_ENTRIES, PlaylistImportInputError, previewSpotifyLibraryRange, readPlaylistImportFile, readSpotifyLibraryExport,
-  type ImportDraftEntry, type ImportDraftInput, type ImportDraftSource, type SpotifyLibraryExport,
+  MAX_IMPORT_ENTRIES, PlaylistImportInputError, previewSpotifyLibraryRange, readPlaylistImportFile, readSpotifyExportFile,
+  type ImportDraftEntry, type ImportDraftInput, type ImportDraftSource, type SpotifyExportFile, type SpotifyLibraryExport,
 } from "@/lib/playlist-imports";
 import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, TfApiError } from "@/lib/tf-session-client";
 import { formatDuration } from "@/lib/utils";
@@ -20,7 +20,7 @@ const sourceLabel: Record<ImportDraftSource, string> = {
 
 const filePickers = [
   { kind: "tf", label: "Файл экспорта TF" },
-  { kind: "spotify", label: "Файл библиотеки Spotify" },
+  { kind: "spotify", label: "Файл экспорта Spotify" },
 ] as const;
 type FileKind = (typeof filePickers)[number]["kind"];
 
@@ -29,7 +29,7 @@ function fileErrorMessage(error: unknown, kind: FileKind): string {
     return kind === "spotify" ? "Размер файла превышает 2 МиБ." : "Размер файла превышает 128 КиБ.";
   }
   if (error instanceof PlaylistImportInputError && error.code === "import_payload_too_large") return "Метаданные превышают 90 КиБ.";
-  return kind === "spotify" ? "Не удалось прочитать файл библиотеки Spotify. Проверьте формат и количество записей."
+  return kind === "spotify" ? "Не удалось прочитать файл экспорта Spotify. Проверьте формат и количество записей."
     : "Не удалось прочитать файл экспорта TF. Проверьте формат и количество записей.";
 }
 
@@ -85,7 +85,13 @@ function LoadError({ children, retry }: { children: string; retry: () => void })
 
 type FileReview = { generation: number } & (
   | { kind: "tf"; id: string; input: ImportDraftInput }
-  | { kind: "spotify"; library: SpotifyLibraryExport; offset: number; drafts: ReadonlyMap<number, { id: string; saved: boolean }> }
+  | {
+    kind: "spotify";
+    exportData: SpotifyExportFile;
+    collectionIndex: number | null;
+    offset: number;
+    drafts: ReadonlyMap<string, { id: string; saved: boolean }>;
+  }
 );
 
 function reviewSpotifyRange(library: SpotifyLibraryExport, offset: number) {
@@ -119,10 +125,13 @@ function OwnedPlaylistImports() {
   const generation = captureTfSecurityGeneration();
   const activeReview = review?.generation === generation ? review : null;
   const archive = activeReview?.kind === "spotify" ? activeReview : null;
-  const library = archive?.library;
+  const collectionIndex = archive?.collectionIndex ?? null;
+  const library = collectionIndex === null ? undefined : archive?.exportData.collections[collectionIndex];
   const archiveOffset = archive?.offset ?? 0;
   const archiveRange = useMemo(() => library ? reviewSpotifyRange(library, archiveOffset) : null, [library, archiveOffset]);
-  const archiveDraft = archive?.drafts.get(archiveOffset);
+  const archiveRangeKey = collectionIndex === null ? null : `${collectionIndex}:${archiveOffset}`;
+  const archiveDraft = archiveRangeKey === null ? undefined : archive?.drafts.get(archiveRangeKey);
+  const playlists = archive?.exportData.kind === "playlists" ? archive.exportData.collections : null;
   const reviewInput = activeReview?.kind === "tf" ? activeReview.input : archiveRange?.input;
   const canReviewRecording = hasEntitlement("tf.collections") && hasEntitlement("tf.search") && !confirmDelete;
   const activePosition = canReviewRecording && recordingSlot?.draftId === selectedId && recordingSlot.generation === generation
@@ -164,10 +173,16 @@ function OwnedPlaylistImports() {
     setFileError(null);
     setReading(true);
     try {
-      const result: FileReview = kind === "spotify"
-        ? { kind, generation, library: await readSpotifyLibraryExport(file, controller.signal), offset: 0, drafts: new Map() }
-        : { kind, generation, input: await readPlaylistImportFile(file, controller.signal), id: crypto.randomUUID() };
-      if (current()) setReview(result);
+      if (kind === "spotify") {
+        const exportData = await readSpotifyExportFile(file, controller.signal);
+        if (current()) setReview({
+          kind, generation, exportData, collectionIndex: exportData.collections.length === 1 ? 0 : null,
+          offset: 0, drafts: new Map(),
+        });
+      } else {
+        const input = await readPlaylistImportFile(file, controller.signal);
+        if (current()) setReview({ kind, generation, input, id: crypto.randomUUID() });
+      }
     } catch (error) {
       if (current()) setFileError(fileErrorMessage(error, kind));
     } finally {
@@ -176,6 +191,13 @@ function OwnedPlaylistImports() {
         setReading(false);
       }
     }
+  }
+
+  function chooseArchivePlaylist(index: number) {
+    if (!archive || !playlists || !playlists[index] || index === archive.collectionIndex ||
+        saving.current || !isCurrentTfSecurityGeneration(archive.generation)) return;
+    save.reset();
+    setReview({ ...archive, collectionIndex: index, offset: 0 });
   }
 
   function changeArchiveRange(offset: number) {
@@ -189,17 +211,18 @@ function OwnedPlaylistImports() {
     if (!activeReview || !reviewInput || saving.current || archiveDraft?.saved ||
         !isCurrentTfSecurityGeneration(activeReview.generation)) return;
     const { kind, generation: reviewGeneration } = activeReview;
+    if (kind === "spotify" && archiveRangeKey === null) return;
     const id = kind === "tf" ? activeReview.id : archiveDraft?.id ?? crypto.randomUUID();
-    if (archive && !archiveDraft) {
-      setReview({ ...archive, drafts: new Map(archive.drafts).set(archiveOffset, { id, saved: false }) });
+    if (archive && archiveRangeKey !== null && !archiveDraft) {
+      setReview({ ...archive, drafts: new Map(archive.drafts).set(archiveRangeKey, { id, saved: false }) });
     }
     saving.current = true;
     void save.mutateAsync({ id, input: reviewInput }).then(() => {
       if (!isCurrentTfSecurityGeneration(reviewGeneration)) return;
-      if (kind === "spotify") {
+      if (kind === "spotify" && archiveRangeKey !== null) {
         setReview((current) => current?.kind === "spotify" && current.generation === reviewGeneration &&
-          current.drafts.get(archiveOffset)?.id === id
-          ? { ...current, drafts: new Map(current.drafts).set(archiveOffset, { id, saved: true }) }
+          current.drafts.get(archiveRangeKey)?.id === id
+          ? { ...current, drafts: new Map(current.drafts).set(archiveRangeKey, { id, saved: true }) }
           : current);
       } else {
         setReview(null);
@@ -256,8 +279,18 @@ function OwnedPlaylistImports() {
 
       {activeReview && <section aria-label="Проверка импорта" className="mb-6 border-y border-white/10 py-4">
         <h3 className="text-sm font-semibold">Проверка импорта</h3>
+        {playlists?.length === 0 && <p className="mt-2 text-sm text-white/60">В файле нет плейлистов Spotify.</p>}
+        {playlists && playlists.length > 1 && <label className="my-3 grid max-w-sm gap-1 text-sm text-white/65">
+          Плейлист Spotify
+          <select className="min-h-10 w-full min-w-0 rounded-md border border-white/15 bg-[#111] px-2 text-sm text-white focus-visible:outline-2 focus-visible:outline-white disabled:opacity-50"
+            value={collectionIndex ?? ""} disabled={save.isPending}
+            onChange={(event) => { if (event.currentTarget.value !== "") chooseArchivePlaylist(Number(event.currentTarget.value)); }}>
+            <option value="" disabled>Выберите плейлист</option>
+            {playlists.map((playlist, index) => <option key={index} value={index}>{index + 1}. {playlist.name ?? "Без названия"}</option>)}
+          </select>
+        </label>}
         {archiveRange && (archiveRange.total === 0 ? (
-          <p className="mt-2 text-sm text-white/60">В файле нет сохранённых треков Spotify.</p>
+          <p className="mt-2 text-sm text-white/60">{playlists ? "В плейлисте нет записей." : "В файле нет сохранённых треков Spotify."}</p>
         ) : <>
           <div role="group" aria-label="Диапазоны файла Spotify" className="my-2 flex min-w-0 items-center gap-2">
             {archiveRange.total > MAX_IMPORT_ENTRIES && <Button type="button" size="icon" variant="ghost" className="size-10 shrink-0"

@@ -4,7 +4,7 @@ import {
   MAX_IMPORT_FILE_BYTES,
   previewSpotifyLibraryRange,
   readPlaylistImportFile,
-  readSpotifyLibraryExport,
+  readSpotifyExportFile,
   validatePlaylistImportInput,
 } from "./playlist-imports";
 
@@ -82,12 +82,59 @@ describe("playlist import input", () => {
   });
 });
 
+describe("Spotify playlist archive", () => {
+  const track = {
+    track: {
+      trackName: "Archive song", artistName: "Archive artist", trackUri: "spotify:track:ABC123",
+      albumName: "Discard album",
+    },
+    addedAt: "Discard date",
+  };
+  const local = { track: { ...track.track, trackUri: "spotify:local:A:B:C:123" } };
+  const file = (value: unknown) => new File([JSON.stringify(value)], "Playlist1.json");
+
+  it.each([false, true])("retains separate selected playlists and ordered occurrences (wrapped: %s)", async (wrapped) => {
+    const playlists = [
+      { name: "First", items: [track], description: "Discard description" },
+      { name: " Second ", items: [...Array(200).fill(null), track, local, track], owner: "Discard owner" },
+      { name: "Empty", items: [] },
+    ];
+    const archive = await readSpotifyExportFile(file(wrapped ? { playlists, account: "Discard account" } : playlists));
+    expect(archive.kind).toBe("playlists");
+    expect(archive.collections.map((item) => [item.name, item.slots.length])).toEqual([
+      ["First", 1], ["Second", 203], ["Empty", 0],
+    ]);
+    const entry = { artist: "Archive artist", title: "Archive song", durationSeconds: null };
+    expect(previewSpotifyLibraryRange(archive.collections[1]!, 200)).toEqual({
+      offset: 200, end: 203, total: 203, unavailable: 1,
+      input: { name: "Second (201–203)", source: "file", entries: [entry, entry] },
+    });
+    expect(JSON.stringify(archive)).not.toMatch(/Discard|spotify:track:|spotify:local:/);
+  });
+
+  it("rejects malformed collections and combined slot overflow instead of silently importing a subset", async () => {
+    await expect(readSpotifyExportFile(file([{ trackName: "History entry" }]))).rejects.toThrow(/^invalid_import_file$/);
+    await expect(readSpotifyExportFile(file({ playlists: [
+      { name: "Good", items: [track] }, { name: "Broken", items: "not an array" },
+    ] }))).rejects.toThrow(/^invalid_import_file$/);
+    await expect(readSpotifyExportFile(file({ playlists: [
+      { name: "A", items: Array(5_001).fill(null) }, { name: "B", items: Array(5_000).fill(null) },
+    ] }))).rejects.toThrow(/^invalid_import_file$/);
+  });
+});
+
 describe("Spotify saved tracks file", () => {
   const song = { artist: " Fixture Artist ", track: " Example Track ", uri: "spotify:track:Example123" };
   const exportFile = (value: unknown) => new File([JSON.stringify(value)], "YourLibrary.json");
+  const readLibrary = async (file: Blob) => {
+    const archive = await readSpotifyExportFile(file);
+    expect(archive.kind).toBe("library");
+    expect(archive.collections).toHaveLength(1);
+    return archive.collections[0]!;
+  };
 
   it("previews raw positions without retaining Spotify IDs, unrelated data or unsupported rows", async () => {
-    const library = await readSpotifyLibraryExport(exportFile({
+    const library = await readLibrary(exportFile({
       tracks: [
         ...Array.from({ length: 200 }, () => null),
         { ...song, album: "Not retained", durationMs: 200_000, audioUrl: "Not retained" },
@@ -111,30 +158,30 @@ describe("Spotify saved tracks file", () => {
   });
 
   it("rejects ZIP and unrelated JSON, bounds input size and keeps the TF file limit", async () => {
-    await expect(readSpotifyLibraryExport(exportFile({ playlists: [] }))).rejects.toThrow(/^invalid_import_file$/);
-    await expect(readSpotifyLibraryExport(new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], "data.zip")))
+    await expect(readSpotifyExportFile(exportFile({ history: [] }))).rejects.toThrow(/^invalid_import_file$/);
+    await expect(readSpotifyExportFile(new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], "data.zip")))
       .rejects.toThrow(/^invalid_import_file$/);
-    await expect(readSpotifyLibraryExport(exportFile({ tracks: Array(10_001).fill(song) })))
+    await expect(readSpotifyExportFile(exportFile({ tracks: Array(10_001).fill(song) })))
       .rejects.toThrow(/^invalid_import_file$/);
     const oversized = new Blob([new Uint8Array(2 * 1024 * 1024 + 1)]);
     const read = vi.spyOn(FileReader.prototype, "readAsArrayBuffer");
     try {
-      await expect(readSpotifyLibraryExport(oversized)).rejects.toThrow(/^import_file_too_large$/);
+      await expect(readSpotifyExportFile(oversized)).rejects.toThrow(/^import_file_too_large$/);
       expect(read).not.toHaveBeenCalled();
     } finally {
       read.mockRestore();
     }
     const boundedLargeFile = exportFile({ tracks: [song], extra: " ".repeat(128 * 1024) });
-    await expect(readSpotifyLibraryExport(boundedLargeFile)).resolves.toMatchObject({ slots: [{ title: "Example Track" }] });
+    await expect(readLibrary(boundedLargeFile)).resolves.toMatchObject({ slots: [{ title: "Example Track" }] });
     await expect(readPlaylistImportFile(boundedLargeFile)).rejects.toThrow(/^import_file_too_large$/);
   });
 
   it("keeps a zero-song library read-only and refuses a preview over the draft byte budget", async () => {
-    const empty = await readSpotifyLibraryExport(exportFile({ tracks: [] }));
+    const empty = await readLibrary(exportFile({ tracks: [] }));
     expect(previewSpotifyLibraryRange(empty, 0)).toEqual({
       offset: 0, end: 0, total: 0, unavailable: 0, input: null,
     });
-    const large = await readSpotifyLibraryExport(exportFile({
+    const large = await readLibrary(exportFile({
       tracks: Array(200).fill({ ...song, artist: "я".repeat(300), track: "я".repeat(500) }),
     }));
     expect(() => previewSpotifyLibraryRange(large, 0)).toThrow(/^import_payload_too_large$/);
