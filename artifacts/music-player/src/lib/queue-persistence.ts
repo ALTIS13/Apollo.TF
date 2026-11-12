@@ -24,6 +24,15 @@ function key(identity: QueueIdentity): string {
   return `apollo_tf_queue_v1:${identity.accountId}:${identity.installationId}`;
 }
 
+export function clearQueueSnapshot(identity: QueueIdentity, storage?: Storage): boolean {
+  try {
+    (storage ?? window.localStorage).removeItem(key(identity));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function safeTrack(value: unknown): TrackResult | null {
   if (typeof value !== "object" || value === null) return null;
   const track = value as Record<string, unknown>;
@@ -60,8 +69,7 @@ export function writeQueueSnapshot(
 ): boolean {
   try {
     if (queue.length === 0 || queue.some(isReviewedTrack)) {
-      storage.removeItem(key(identity));
-      return true;
+      return clearQueueSnapshot(identity, storage);
     }
     if (
       queue.length > MAX_TRACKS || !Number.isInteger(index) || index < -1 || index >= queue.length ||

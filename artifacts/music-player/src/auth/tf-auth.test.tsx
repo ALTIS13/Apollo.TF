@@ -17,6 +17,8 @@ import {
 } from "@/lib/tf-session-client";
 import { TfAuthProvider, useTfAuth } from "./tf-auth";
 import { TfSessionBoundary } from "./TfSessionBoundary";
+import { readQueueSnapshot, writeQueueSnapshot } from "@/lib/queue-persistence";
+import { clearRecentSearches, readRecentSearches, rememberRecentSearch } from "@/lib/recent-searches";
 
 vi.mock("@/lib/tf-session-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/tf-session-client")>();
@@ -214,6 +216,42 @@ describe("TF auth boundary", () => {
     await act(async () => {
       await remoteLogout.promise;
     });
+  });
+
+  it("removes only the active account and installation's device data even when logout fails", async () => {
+    const track = {
+      id: "yt_fixture", title: "Saved track", artist: "Artist", duration: 120,
+      source: "youtube", type: "original", quality: [], score: 1,
+    } as const;
+    const otherInstallation = { ...session, installationId: replacementSession.installationId };
+    const identities = [session, replacementSession, otherInstallation];
+    const storage = window.localStorage;
+    for (const identity of identities) {
+      expect(writeQueueSnapshot(storage, identity, [{ ...track, quality: [] }], 0, 30)).toBe(true);
+      expect(rememberRecentSearch(identity, { kind: "quick", query: "Saved search" })).toHaveLength(1);
+    }
+    storage.setItem("unrelated-app", "keep");
+    fetchTfSessionMock.mockResolvedValueOnce(session);
+    logoutTfSessionMock.mockRejectedValueOnce(new Error("network unavailable"));
+    renderAuth();
+    try {
+      await screen.findByTestId("protected-canary");
+      fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+      expect(readQueueSnapshot(storage, session)).toBeNull();
+      expect(readRecentSearches(session)).toEqual([]);
+      for (const identity of [replacementSession, otherInstallation]) {
+        expect(readQueueSnapshot(storage, identity)?.positionSeconds).toBe(30);
+        expect(readRecentSearches(identity)).toHaveLength(1);
+      }
+      expect(storage.getItem("unrelated-app")).toBe("keep");
+      expect(screen.getByRole("heading", { name: "Требуется вход" })).toBeInTheDocument();
+    } finally {
+      for (const identity of identities) {
+        writeQueueSnapshot(storage, identity, [], -1, 0);
+        clearRecentSearches(identity);
+      }
+      storage.removeItem("unrelated-app");
+    }
   });
 
   it("rejects a delayed initial session response after logout", async () => {
