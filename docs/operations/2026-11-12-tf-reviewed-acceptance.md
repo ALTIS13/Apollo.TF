@@ -47,3 +47,20 @@ Keep the environment outside Git. The check uses only Compose `config`, compares
 ## Admission still required
 
 The topology check accepts source equivalence, declared isolation and file-mount shape, not actual runtime authority. Before enabling an Application, require the root-owned source/image/registry receipt, current destination and port inventory, file hashes/readability inside `tf-api`, registered Platform issuer/JWKS and Spotify callback/OAuth, real entitlement/revocation, migration/backup, rollback and scoped cleanup proof. Keep existing HomeNode services untouched. Do not reuse the frozen canary's keys, database volumes, or images by relabeling them.
+
+### Check the mounted sample on the destination
+
+After the owner admits the exact API digest and verifies its independent pull, use the digest already present on the selected Linux Docker daemon. Set `TF_API_IMAGE`, `TF_REVIEWED_CATALOG_FILE` and `TF_REVIEWED_MEDIA_DIR` to the exact admitted image and resolved sources from the same Application declaration. Mount only the [fixture archive's exact catalog and media bytes](2026-11-13-tf-reviewed-successor-intake.md#licensed-acceptance-fixture), not the differently formatted example catalog. Keep the staging parent private; in the local proof the catalog and Ogg were `root:10001` mode `0440` and the media directory was `root:10001` mode `0550`. Do not widen permissions on unrelated files if the check fails.
+
+From the operator checkout containing the [fixture-only verifier](../../deploy/coolify/fixtures/verify-cylinder-five.cjs):
+
+```sh
+docker run --rm -i --pull=never --network=none --read-only \
+  --user=10001:10001 --cap-drop=ALL --security-opt=no-new-privileges \
+  --mount "type=bind,source=${TF_REVIEWED_CATALOG_FILE:?},target=/run/tf-reviewed/catalog.json,readonly" \
+  --mount "type=bind,source=${TF_REVIEWED_MEDIA_DIR:?},target=/run/tf-reviewed/media,readonly" \
+  --entrypoint /usr/local/bin/node "${TF_API_IMAGE:?}" - \
+  < deploy/coolify/fixtures/verify-cylinder-five.cjs
+```
+
+This starts one disposable process, not the API. No ports, secrets, databases or shared mounts are needed. Expect two actual read-only binds, UID/GID `10001`, matching SHA-256 values and `173.533` seconds decoded by the API image's FFmpeg. On local API OCI `sha256:9ace7f66a059182bdd4b508213e21af26fdfac8a18235e91e89adbc243053786`, runc rejected `root:root` mode `0400` with `fixture_unreadable` and accepted the corrected stage. The tracked verifier also passed via stdin with the image unchanged. All disposable containers and their local scratch disk were removed. This is not a destination receipt; rerun on the admitted image/host, then verify actual Coolify mounts, Platform authorization and playback separately. See Docker's [run](https://docs.docker.com/reference/cli/docker/container/run/) and [bind mount](https://docs.docker.com/engine/storage/bind-mounts/) reference.
