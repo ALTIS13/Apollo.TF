@@ -34,4 +34,12 @@ The Web OCI entry `assets/index-BQXc1HVS.js` embeds the canary API origin, not p
 
 The test container was removed. After all nine exported archives were verified, the exact disposable builder registration and its 7,864,320,000-byte virtual disk were removed; all other WSL registrations were unchanged. The verified archives remain outside Git. No browser/API sign-in, Spotify OAuth, server stack, provider media, publication, or mobile/Windows installation occurred here.
 
-Next owner step: decide whether the admitted publisher may ingest these digest-verified archives or must rebuild the exact source in its own environment. Independently verify the actual private registry manifests and Coolify pull, then satisfy the separate Platform/Auth, ingress, rollback and cleanup requirements before registering a reviewed Application. Do not use a local manifest digest as a remote reference until the registry returns it.
+## Registry transfer rehearsal
+
+In a second disposable Alpine 3.24.4 environment, Distribution 2.8.3 and Skopeo 1.20.1 transferred the nine exact archives above through a real HTTPS registry. The server and both clients ran in a network namespace with only loopback and no default route. Certificate verification used a test CA scoped to the clients; the same endpoint was rejected without that CA. Push and pull used separate empty client homes, no production credentials, and an explicitly local non-release tag.
+
+Each tag was absent before its transfer. `skopeo copy --preserve-digests`, the registry's `Docker-Content-Digest` and the downloaded manifest bytes agreed with each of the nine expected OCI digests. A separate pull by digest matched every manifest and all 117 referenced configuration/layer objects (counted per image). The process stopped and the exact disposable 3,530,555,392-byte WSL disk was removed; the nine original archives and all other WSL registrations remained intact. This proves lossless OCI transport on Distribution, not GHCR write access, authenticated Coolify pull, or native publisher custody.
+
+## Owner decision
+
+On 2026-11-13 the Quasar coordinator confirmed that the current canary process requires a rebuild from `7e991b0` in the admitted publisher environment. Import of these local archives is **not admitted**, even with matching digests. The last confirmed publisher credential expired on 2026-11-01. No live canary issuer/JWKS, exact TF client registration, or ingress receipt was supplied. Keep the [publisher guard](2026-09-27-tf-canary-publisher-preflight.md) in place. Next: establish fresh protected publisher custody and admit the exact source/tool tuple; verify GHCR manifests and independent Coolify pull from that native build. Platform/Auth and deployment remain separate gates.
