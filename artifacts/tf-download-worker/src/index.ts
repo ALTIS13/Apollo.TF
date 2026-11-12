@@ -396,7 +396,7 @@ export async function startTfDownloadWorkerRuntime(
   try {
     config = await dependencies.parseConfig(options.env ?? process.env);
     storage = await dependencies.createStorage(config);
-    await storage.sweep();
+    sweepFailed = !(await storage.sweep()).quotaSatisfied;
 
     workerRedis = dependencies.createRedis(
       config.queueRedisConnection,
@@ -596,8 +596,8 @@ export async function startTfDownloadWorkerRuntime(
       void storage!
         .sweep()
         .then(
-          () => {
-            sweepFailed = false;
+          (result) => {
+            sweepFailed = !result.quotaSatisfied;
           },
           () => {
             sweepFailed = true;

@@ -1,0 +1,91 @@
+# Standalone Git-backed Coolify Compose Application, one admitted destination.
+# No Coolify domains or shared proxy attachment. The operator must admit a
+# private HTTPS listener that forwards unchanged signed requests to tf-search:8080
+# on the dedicated control network. An API origin switch is a separate cutover.
+# Do not balance or overlap active instances with the same command key: replay
+# state, caches and provider budgets are process-local.
+# Download worker excluded: its queue and locally owned artifacts stay together.
+name: apollo-tf-search-compute
+
+services:
+  tf-search:
+    # Supply the bare, nonzero SHA-256 of the source-admitted runner image.
+    image: ghcr.io/altis13/apollo-tf-search@sha256:${TF_SEARCH_COMPUTE_IMAGE_DIGEST:?Use the admitted TF search image digest}
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    pids_limit: 128
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+          pids: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      APOLLO_API_VERSION: ${TF_SEARCH_VERSION:?Use the admitted TF search version}
+      APOLLO_DEPLOYED_AT: ${TF_SEARCH_DEPLOYED_AT:?Use the TF search deployment timestamp}
+      NODE_ENV: production
+      PORT: "8080"
+      TF_SEARCH_HEARTBEAT_ALLOW_INSECURE_HTTP: "false"
+      TF_SEARCH_HEARTBEAT_API_ORIGIN: ${TF_SEARCH_COMPUTE_HEARTBEAT_API_ORIGIN:?Use the admitted exact HTTPS TF API origin}
+      TF_SEARCH_HEARTBEAT_SECRET_FILE: /run/secrets/tf_search_heartbeat_secret
+      TF_SEARCH_INTERNAL_AUTH_SECRET_FILE: /run/secrets/tf_search_internal_auth_secret
+    secrets:
+      - source: tf_search_internal_auth_secret
+        target: tf_search_internal_auth_secret
+        uid: "10001"
+        gid: "10001"
+        mode: "0400"
+      - source: tf_search_heartbeat_secret
+        target: tf_search_heartbeat_secret
+        uid: "10001"
+        gid: "10001"
+        mode: "0400"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+      - /tmp/yt-dlp:rw,noexec,nosuid,size=64m
+    networks:
+      tf-search-compute-control:
+        gw_priority: 0
+      tf-search-compute-egress:
+        gw_priority: 1
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:8080/readyz').then(r=>{if(!r.ok)process.exit(1)})
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+secrets:
+  # Stage distinct keys on the target; prove UID 10001 can read both files.
+  # Compose file secrets do not remap host-file ownership or permissions.
+  tf_search_internal_auth_secret:
+    file: ${TF_SEARCH_COMPUTE_SECRET_DIRECTORY:?Use the dedicated absolute search secret directory}/tf_search_internal_auth_secret
+  tf_search_heartbeat_secret:
+    file: ${TF_SEARCH_COMPUTE_SECRET_DIRECTORY:?Use the dedicated absolute search secret directory}/tf_search_heartbeat_secret
+
+networks:
+  # Existing dedicated internal bridge: only search and the admitted private
+  # listener may attach. A Docker bridge itself does not span destinations.
+  tf-search-compute-control:
+    external: true
+    name: apollo-tf-search-compute-control-v1
+  # Destination egress, not an ingress attachment. Provider and heartbeat
+  # reachability, DNS, TLS, and target egress policy require runtime proof.
+  tf-search-compute-egress:
+    name: apollo-tf-search-compute-egress-v1

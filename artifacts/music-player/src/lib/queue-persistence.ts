@@ -36,11 +36,6 @@ function safeTrack(value: unknown): TrackResult | null {
     !Number.isInteger(track.duration) || (track.duration as number) < 0 || (track.duration as number) > 86_400 ||
     track.source !== SOURCE_BY_PREFIX[prefix] || !TYPES.has(track.type as TrackType)
   ) return null;
-  const thumbnail = track.thumbnailUrl;
-  if (thumbnail != null && (
-    typeof thumbnail !== "string" || thumbnail.length > 2048 ||
-    !/^https?:\/\//.test(thumbnail)
-  )) return null;
   return {
     id: track.id,
     title: track.title,
@@ -48,7 +43,8 @@ function safeTrack(value: unknown): TrackResult | null {
     duration: track.duration as number,
     source: track.source as TrackSource,
     type: track.type as TrackType,
-    thumbnailUrl: thumbnail ?? null,
+    // Provider artwork URLs may be signed; do not persist or replay them.
+    thumbnailUrl: null,
     quality: [],
     score: 0,
   };
