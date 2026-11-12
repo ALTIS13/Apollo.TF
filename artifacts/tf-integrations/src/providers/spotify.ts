@@ -1,4 +1,6 @@
 import {
+  SPOTIFY_PLAYLIST_MAX_OFFSET,
+  SPOTIFY_PLAYLIST_PAGE_SIZE,
   SPOTIFY_SAVED_ALBUMS_PAGE_SIZE,
   TF_INTEGRATIONS_MAX_RETRY_AFTER_SECONDS,
   spotifyCatalogIdSchema,
@@ -6,6 +8,7 @@ import {
   type SpotifyAlbumTracksPage,
   type SpotifyAlbumsPage,
   type SpotifyPlaylist,
+  type SpotifyPlaylistsPage,
 } from "@workspace/tf-integrations-contract";
 
 import type { SpotifySecret } from "../token-keyring.js";
@@ -62,6 +65,7 @@ type SpotifyProviderOperation =
   | "account.profile"
   | "liked.list"
   | "playlists.list"
+  | "playlists.page"
   | "playlist-tracks.list"
   | "albums.list"
   | "album-tracks.list"
@@ -434,8 +438,16 @@ function playlistsResult(
   ) {
     throw new ProviderError("invalid_provider_response");
   }
+  return {
+    playlists: playlistRows(value.items, playlistApi),
+    total: pageTotal(value.total),
+    itemCount: value.items.length,
+  };
+}
+
+function playlistRows(items: readonly unknown[], playlistApi: SpotifyPlaylistApi): SpotifyPlaylist[] {
   const playlists: SpotifyPlaylist[] = [];
-  for (const item of value.items) {
+  for (const item of items) {
     if (
       !isObject(item) ||
       !Array.isArray(item.images) ||
@@ -483,7 +495,7 @@ function playlistsResult(
       owner,
     });
   }
-  return { playlists, total: pageTotal(value.total), itemCount: value.items.length };
+  return playlists;
 }
 
 function topTracksResult(value: unknown): SpotifyTracksResult {
@@ -694,6 +706,20 @@ export class SpotifyProvider {
     return { playlists: [...selected.values()], total };
   }
 
+  async playlistsPage(input: SpotifyCatalogRequest): Promise<SpotifyPlaylistsPage> {
+    if (input.offset > SPOTIFY_PLAYLIST_MAX_OFFSET || input.limit > SPOTIFY_PLAYLIST_PAGE_SIZE) {
+      throw new ProviderError("provider_rejected");
+    }
+    const { items, ...page } = await this.#readCatalogPage("playlists.page", "/me/playlists", input);
+    if (items.length > Math.max(0, page.total - page.offset)) {
+      throw new ProviderError("invalid_provider_response");
+    }
+    // Spotify's positions include unreadable playlists; do not follow its pagination URLs.
+    const end = page.offset + items.length;
+    const nextOffset = end < page.total && end <= SPOTIFY_PLAYLIST_MAX_OFFSET ? end : null;
+    return { ...page, nextOffset, playlists: playlistRows(items, this.#playlistApi) };
+  }
+
   async playlistTracks(input: {
     readonly accessToken: string;
     readonly playlistId: string;
@@ -795,7 +821,7 @@ export class SpotifyProvider {
   }
 
   async #readCatalogPage(
-    operation: "albums.list" | "album-tracks.list",
+    operation: "albums.list" | "album-tracks.list" | "playlists.page",
     path: string,
     { accessToken, offset, limit, signal }: SpotifyCatalogRequest,
   ) {

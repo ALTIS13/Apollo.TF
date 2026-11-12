@@ -149,14 +149,18 @@ export function useSpotifyLiked(offset = 0, limit = 50) {
   });
 }
 
-export function useSpotifyPlaylists() {
+export function useSpotifyPlaylistPage(owner: SpotifyAlbumOwner | null, offset = 0, limit = 50) {
   const fetchLibrary = useSpotifyLibraryFetch();
-  return useQuery<{ playlists: SpotifyPlaylist[]; total: number }>({
-    queryKey: ["spotify", "playlists"],
-    queryFn: () => fetchLibrary("/spotify/playlists"),
-    retry: retrySpotifyLibrary,
-    enabled: false,
-    refetchOnReconnect: refetchSpotifyOnReconnect,
+  return useQuery<SpotifyPage & { nextOffset: number | null; playlists: SpotifyPlaylist[] }>({
+    queryKey: ["spotify", "playlist-page", owner, offset, limit],
+    queryFn: ({ signal }) => fetchLibrary(`/spotify/playlists/page?offset=${offset}&limit=${limit}`, signal),
+    enabled: owner !== null,
+    // Back can use a visited page even while new Spotify reads are throttled.
+    staleTime: Infinity,
+    retry: false,
+    retryOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
 
@@ -182,14 +186,14 @@ export function useSpotifyAlbumTracks(owner: SpotifyAlbumOwner | null, albumId: 
   });
 }
 
-export function useSpotifyPlaylistTracks(playlistId: string | null, offset = 0, limit = 50) {
+export function useSpotifyPlaylistTracks(owner: SpotifyAlbumOwner | null, playlistId: string, offset = 0, limit = 50) {
   const fetchLibrary = useSpotifyLibraryFetch();
   return useQuery<{ tracks: SpotifyTrack[]; total: number; offset: number; limit: number }>({
-    queryKey: ["spotify", "playlist", playlistId, offset, limit],
-    queryFn: () =>
-      fetchLibrary(`/spotify/playlists/${playlistId}/tracks?offset=${offset}&limit=${limit}`),
+    queryKey: ["spotify", "playlist", owner, playlistId, offset, limit],
+    queryFn: ({ signal }) =>
+      fetchLibrary(`/spotify/playlists/${encodeURIComponent(playlistId)}/tracks?offset=${offset}&limit=${limit}`, signal),
     retry: retrySpotifyLibrary,
-    enabled: !!playlistId,
+    enabled: owner !== null && playlistId.trim().length > 0,
     refetchOnReconnect: refetchSpotifyOnReconnect,
   });
 }

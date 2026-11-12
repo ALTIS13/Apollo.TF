@@ -1,18 +1,22 @@
 import { once } from "node:events";
-import type { Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { IncomingMessage, ServerResponse, type Server } from "node:http";
+import { Socket, type AddressInfo } from "node:net";
 
-import type {
-  TfIntegrationsCommand,
-  TfIntegrationsErrorResponse,
-  TfIntegrationsSuccessResponse,
+import { createSignedBodySignature } from "@workspace/module-runtime-contract";
+import {
+  TF_INTEGRATIONS_COMMAND_PATH,
+  type SpotifyPlaylistsPage,
+  type TfIntegrationsCommand,
+  type TfIntegrationsErrorResponse,
+  type TfIntegrationsSuccessResponse,
 } from "@workspace/tf-integrations-contract";
-import express from "express";
+import cookieParser from "cookie-parser";
+import express, { type Express, type RequestHandler } from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TfIntegrationsGateway } from "../lib/tf-integrations-client.js";
 import { HttpTfIntegrationsClient, TfIntegrationsUnavailableError } from "../lib/tf-integrations-client.js";
-import type { TfPrincipal } from "../lib/tf-policy.js";
+import { requireTfCapability, type TfPrincipal } from "../lib/tf-policy.js";
 import {
   createSpotifyRouter,
   type SpotifyRouteDependencies,
@@ -502,6 +506,214 @@ describe("Spotify gateway routes", () => {
     expect(callback.headers.get("location")).toBe(
       `${WEB_ORIGIN}/favorites?spotify_connected=1`,
     );
+  });
+
+  describe("playlist page", () => {
+    const path = "/api/spotify/playlists/page";
+    const secret = "s".repeat(48);
+    const serviceOrigin = "https://integrations.example.test";
+    const usePrincipal: RequestHandler = (request, _response, next) => {
+      request.tfPrincipal = principal;
+      next();
+    };
+
+    function app(
+      gateway: TfIntegrationsGateway,
+      authorize = usePrincipal,
+    ): Express {
+      const { dependencies } = spotifyDependencies();
+      const instance = express();
+      instance.use(cookieParser());
+      instance.use("/api/spotify", authorize);
+      instance.use("/api", createSpotifyRouter({ ...dependencies, gateway }));
+      return instance;
+    }
+
+    function get(
+      instance: Express,
+      suffix = "",
+      headers: Record<string, string> = {},
+    ) {
+      const req = new IncomingMessage(new Socket());
+      req.method = "GET";
+      req.url = path + suffix;
+      req.headers = headers;
+      const res = new ServerResponse(req);
+      return new Promise<{
+        status: number;
+        headers: ReturnType<typeof res.getHeaders>;
+        body: string;
+      }>((resolve) => {
+        res.end = ((chunk?: unknown) => {
+          resolve({
+            status: res.statusCode,
+            headers: res.getHeaders(),
+            body: chunk?.toString() ?? "",
+          });
+          return res;
+        }) as typeof res.end;
+        instance(req, res);
+        req.push(null);
+      });
+    }
+
+    function signedGateway(fetch: typeof globalThis.fetch) {
+      return new HttpTfIntegrationsClient(
+        { origin: serviceOrigin, internalAuthSecret: secret, timeoutMs: 1_000 },
+        { fetch, randomUuid: () => REQUEST_ID },
+      );
+    }
+
+    it.each([
+      ["", 0, 50, 3],
+      ["?offset=100000&limit=1", 100_000, 1, null],
+    ] as const)("returns exactly one signed page for query %j", async (query, offset, limit, nextOffset) => {
+      const result: SpotifyPlaylistsPage = {
+        offset, limit, total: offset + 8, nextOffset, playlists: [playlist],
+      };
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json({
+        schemaVersion: 1,
+        requestId: REQUEST_ID,
+        accountId: ACCOUNT_ID,
+        operation: "spotify.playlists.page",
+        result,
+      }));
+      const response = await get(app(signedGateway(fetch)), query, { "x-account-id": OTHER_ACCOUNT_ID });
+
+      expect(response.status).toBe(200);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(JSON.parse(response.body)).toEqual(result);
+      expect(fetch).toHaveBeenCalledOnce();
+      const [target, init] = fetch.mock.calls[0]!;
+      expect(String(target)).toBe(serviceOrigin + TF_INTEGRATIONS_COMMAND_PATH);
+      expect(init?.method).toBe("POST");
+      const rawBody = String(init?.body);
+      expect(JSON.parse(rawBody)).toEqual({
+        schemaVersion: 1,
+        requestId: REQUEST_ID,
+        accountId: ACCOUNT_ID,
+        operation: "spotify.playlists.page",
+        input: { offset, limit },
+      });
+      const headers = new Headers(init?.headers);
+      expect(headers.get("x-apollo-internal-signature")).toBe(createSignedBodySignature({
+        method: "POST",
+        path: TF_INTEGRATIONS_COMMAND_PATH,
+        timestamp: headers.get("x-apollo-internal-timestamp")!,
+        nonce: headers.get("x-apollo-internal-nonce")!,
+        rawBody: Buffer.from(rawBody),
+        secret,
+      }));
+    });
+
+    it("rejects malformed, duplicate, extra and out-of-bounds query fields before dispatch", async () => {
+      const { dependencies, execute } = spotifyDependencies();
+      const instance = app(dependencies.gateway);
+      for (const query of [
+        "?offset=", "?limit", "?offset=-1", "?offset=100001", "?limit=0", "?limit=51",
+        "?limit=1.0", "?offset=1e2", "?offset=%2B2", "?limit=%202", "?offset=%FF",
+        "?offset=1&%6Fffset=1", "?limit=5&limit=5", "?offset[]=2", "?offset=2&",
+        "?&limit=2", "??offset=1", `?accountId=${OTHER_ACCOUNT_ID}`,
+      ]) {
+        const response = await get(instance, query);
+        expect(response.status, query).toBe(400);
+        expect(response.headers["cache-control"], query).toBe("no-store");
+        expect(JSON.parse(response.body), query).toEqual({ error: "invalid_request" });
+      }
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { offset: 3, limit: 5 },
+      { offset: 2, limit: 4 },
+    ])("rejects a signed page with mismatched $offset/$limit", async (page) => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json({
+        schemaVersion: 1,
+        requestId: REQUEST_ID,
+        accountId: ACCOUNT_ID,
+        operation: "spotify.playlists.page",
+        result: { ...page, total: 8, nextOffset: null, playlists: [playlist] },
+      }));
+      const response = await get(app(signedGateway(fetch)), "?offset=2&limit=5");
+      expect(response.status).toBe(502);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(JSON.parse(response.body)).toEqual({ error: "spotify_error" });
+      expect(fetch).toHaveBeenCalledOnce();
+    });
+
+    it("returns 429 without inventing a retry hint for the playlist page", async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json({
+        schemaVersion: 1,
+        requestId: REQUEST_ID,
+        accountId: ACCOUNT_ID,
+        operation: "spotify.playlists.page",
+        error: { code: "provider_rate_limited" },
+      }));
+      const response = await get(app(signedGateway(fetch)));
+
+      expect(response.status).toBe(429);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.headers["retry-after"]).toBeUndefined();
+      expect(JSON.parse(response.body)).toEqual({ error: "spotify_rate_limited" });
+      expect(fetch).toHaveBeenCalledOnce();
+    });
+
+    it("requires live tf.integrations before mapping signed throttling to public 429", async () => {
+      const session = {
+        id: principal.tfSessionId,
+        accountId: ACCOUNT_ID,
+        platformSessionId: "50000000-0000-4000-8000-000000000005",
+        installationId: principal.installationId,
+        entitlements: ["tf.integrations"],
+        expiresAt: principal.sessionExpiresAt,
+        assertionExpiresAt: principal.policyFreshUntil,
+      };
+      const introspection = {
+        active: true,
+        accountId: ACCOUNT_ID,
+        sessionId: session.platformSessionId,
+        installationId: session.installationId,
+        accountStatus: "active",
+        expiresAt: session.expiresAt,
+        entitlements: session.entitlements,
+      } as const;
+      const introspect = vi.fn()
+        .mockResolvedValueOnce({ ...introspection, entitlements: ["tf.search"] })
+        .mockResolvedValueOnce(introspection);
+      const authorize = requireTfCapability({
+        now: () => Date.parse("2026-07-24T03:00:00.000Z"),
+        platform: { introspect },
+        sessionStore: {
+          observeSession: vi.fn().mockResolvedValue({ revision: "revision", session }),
+          refreshSession: vi.fn().mockResolvedValue(session),
+          revokeSession: vi.fn(),
+        },
+      });
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json({
+        schemaVersion: 1,
+        requestId: REQUEST_ID,
+        accountId: ACCOUNT_ID,
+        operation: "spotify.playlists.page",
+        error: { code: "provider_rate_limited", retryAfterSeconds: 0 },
+      }));
+      const instance = app(signedGateway(fetch), authorize);
+      const alias = { "x-account-id": OTHER_ACCOUNT_ID };
+      const headers = { ...alias, cookie: `__Host-apollo_tf=${STATE}` };
+      const anonymous = await get(instance, "", alias);
+      expect(anonymous.status).toBe(401);
+      const denied = await get(instance, "", headers);
+      expect(denied.status).toBe(403);
+      expect(JSON.parse(denied.body)).toEqual({ error: "module_access_denied" });
+      expect(fetch).not.toHaveBeenCalled();
+
+      const allowed = await get(instance, "", headers);
+      expect(allowed.status).toBe(429);
+      expect(allowed.headers["cache-control"]).toBe("no-store");
+      expect(allowed.headers["retry-after"]).toBe("0");
+      expect(JSON.parse(allowed.body)).toEqual({ error: "spotify_rate_limited", retryAfterSeconds: 0 });
+      expect(introspect).toHaveBeenCalledTimes(2);
+      expect(fetch).toHaveBeenCalledOnce();
+    });
   });
 
   it.each([

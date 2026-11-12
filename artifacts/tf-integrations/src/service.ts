@@ -44,6 +44,7 @@ import {
 export interface SpotifyProviderAdapter {
   savedAlbums: SpotifyProvider["savedAlbums"];
   albumTracks: SpotifyProvider["albumTracks"];
+  playlistsPage: SpotifyProvider["playlistsPage"];
   authorizationUrl(input: {
     readonly state: string;
     readonly callbackUri: string;
@@ -363,6 +364,16 @@ export class TfIntegrationsService {
               signal: context.signal,
             }),
           );
+          return this.#success(command, result);
+        }
+
+        case "spotify.playlists.page": {
+          const secret = await this.#refreshedSpotifySecret(command.accountId, context);
+          const result = await this.#provider(context, () => this.#spotify.playlistsPage({
+            ...command.input,
+            accessToken: secret.accessToken,
+            signal: context.signal,
+          }));
           return this.#success(command, result);
         }
 

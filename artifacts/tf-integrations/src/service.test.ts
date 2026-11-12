@@ -195,6 +195,9 @@ function spotifyAdapter(
         total: 1,
       };
     },
+    async playlistsPage({ offset, limit }) {
+      return { offset, limit, total: 0, nextOffset: null, playlists: [] };
+    },
     async playlistTracks(input) {
       return {
         offset: input.offset,
@@ -344,6 +347,7 @@ describe("TfIntegrationsService", () => {
   it.each([
     { stage: "refresh", header: "0", retryAfterSeconds: 0 },
     { stage: "library", header: "invalid-delay", retryAfterSeconds: undefined },
+    { stage: "playlist page", header: "12", retryAfterSeconds: 12 },
   ])("reports throttling during Spotify $stage without changing stored credentials", async ({
     stage, header, retryAfterSeconds,
   }) => {
@@ -366,7 +370,7 @@ describe("TfIntegrationsService", () => {
       },
     });
     const target = service(repository, tokenVault, provider);
-    const input = command("spotify.liked.list", { offset: 0, limit: 1 });
+    const input = command(stage === "playlist page" ? "spotify.playlists.page" : "spotify.liked.list", { offset: 0, limit: 1 });
 
     expect(await target.execute(input)).toStrictEqual({
       schemaVersion: 1,
@@ -379,7 +383,7 @@ describe("TfIntegrationsService", () => {
     });
     expect(requests).toEqual([stage === "refresh"
       ? "https://accounts.spotify.com/api/token"
-      : "https://api.spotify.com/v1/me/tracks?offset=0&limit=1"]);
+      : `https://api.spotify.com/v1/me/${stage === "playlist page" ? "playlists" : "tracks"}?offset=0&limit=1`]);
     expect(cancelled).toBe(1);
     expect(repository.mutationContexts).toEqual([]);
     expect(repository.records.get(`${accountId}:spotify`)).toBe(record);
@@ -1240,6 +1244,11 @@ describe("TfIntegrationsService", () => {
         providerCalls.push("spotify.playlists.list");
         return spotifyAdapter().playlists(input);
       },
+      async playlistsPage(input) {
+        providerCalls.push("spotify.playlists.page");
+        expect(input).toMatchObject({ accessToken: "stored-access", offset: 41, limit: 50, signal: expect.any(AbortSignal) });
+        return { offset: 41, limit: 50, total: 100, nextOffset: 43, playlists: [] };
+      },
       async playlistTracks(input) {
         providerCalls.push("spotify.playlist-tracks.list");
         return spotifyAdapter().playlistTracks(input);
@@ -1300,6 +1309,7 @@ describe("TfIntegrationsService", () => {
       ["spotify.disconnect", {}],
       ["spotify.liked.list", { offset: 0, limit: 1 }],
       ["spotify.playlists.list", {}],
+      ["spotify.playlists.page", { offset: 41, limit: 50 }],
       [
         "spotify.playlist-tracks.list",
         { playlistId: "playlist", offset: 0, limit: 1 },
@@ -1337,6 +1347,9 @@ describe("TfIntegrationsService", () => {
         yandex,
       ).execute(command(operation, input));
       expect(response).not.toHaveProperty("error");
+      if (operation === "spotify.playlists.page") expect(response).toMatchObject({
+        result: { offset: 41, limit: 50, total: 100, nextOffset: 43, playlists: [] },
+      });
       operations.push(response.operation);
     }
 
@@ -1348,6 +1361,8 @@ describe("TfIntegrationsService", () => {
       "spotify.liked.list",
       "spotify.refresh",
       "spotify.playlists.list",
+      "spotify.refresh",
+      "spotify.playlists.page",
       "spotify.refresh",
       "spotify.playlist-tracks.list",
       "spotify.refresh",

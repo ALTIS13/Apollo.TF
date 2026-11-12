@@ -41,6 +41,35 @@ const yandexAccount = {
   },
 } as const;
 
+it("accepts bounded playlist windows that advance past filtered slots", () => {
+  const command = {
+    schemaVersion: 1,
+    requestId,
+    accountId,
+    operation: "spotify.playlists.page",
+    input: { offset: 250, limit: 50 },
+  };
+  const reply = {
+    schemaVersion: 1,
+    requestId,
+    accountId,
+    operation: command.operation,
+    result: { offset: 250, limit: 50, total: 302, nextOffset: 300, playlists: [] },
+  };
+
+  expect(tfIntegrationsCommandSchema.safeParse(command).success).toBe(true);
+  expect(tfIntegrationsCommandSchema.safeParse({
+    ...command, input: { ...command.input, offset: 100_001 },
+  }).success).toBe(false);
+  expect(tfIntegrationsSuccessResponseSchema.safeParse(reply).success).toBe(true);
+  expect(tfIntegrationsSuccessResponseSchema.safeParse({
+    ...reply, result: { ...reply.result, nextOffset: 250 },
+  }).success).toBe(false);
+  expect(tfIntegrationsSuccessResponseSchema.safeParse({
+    ...reply, result: { ...reply.result, nextOffset: 301 },
+  }).success).toBe(false);
+});
+
 const commands = [
   {
     operation: "spotify.oauth.authorize",

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { SPOTIFY_PLAYLIST_MAX_OFFSET, SPOTIFY_PLAYLIST_PAGE_SIZE } from "@workspace/tf-integrations-contract";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -467,6 +468,85 @@ describe("SpotifyProvider", () => {
     await expect(provider.playlists({ accessToken: "access" }))
       .rejects.toMatchObject({ code: "provider_unavailable" });
     expect(requests).toHaveLength(1);
+  });
+
+  describe("playlist catalog pages", () => {
+    const metadata = {
+      id: "playlistA", name: "Playlist A", description: null, images: [],
+      owner: { display_name: null, id: "ownerA" },
+    };
+
+    it("advances over an empty filtered page using its partial raw count, not the next URL", async () => {
+      const { provider, requests } = makeProvider([jsonResponse({
+        offset: 40, limit: 50, total: 120,
+        next: "https://untrusted.invalid/?offset=90",
+        items: [metadata, { ...metadata, id: "playlistB" }],
+      })], { playlistApi: "items" });
+      const signal = new AbortController().signal;
+
+      await expect(provider.playlistsPage({ accessToken: "access", offset: 40, limit: 50, signal }))
+        .resolves.toStrictEqual({ offset: 40, limit: 50, total: 120, nextOffset: 42, playlists: [] });
+      expect(requests.map(({ url }) => url)).toEqual(["https://api.spotify.com/v1/me/playlists?offset=40&limit=50"]);
+      expect(requests[0]?.init.signal).toBe(signal);
+    });
+
+    it.each(["tracks", "items"] as const)("normalizes only readable %s-profile metadata on a terminal page", async (profile) => {
+      const { provider, requests } = makeProvider([jsonResponse({
+        offset: 10, limit: 3, total: 11,
+        items: [{ ...metadata, [profile]: { total: 4 }, unrelated: "not exposed" }],
+      })], { playlistApi: profile });
+
+      await expect(provider.playlistsPage({ accessToken: "access", offset: 10, limit: 3 }))
+        .resolves.toStrictEqual({ offset: 10, limit: 3, total: 11, nextOffset: null, playlists: [
+          { id: "playlistA", name: "Playlist A", description: "", trackCount: 4, thumbnailUrl: null, owner: "ownerA" },
+        ] });
+      expect(requests).toHaveLength(1);
+    });
+
+    it.each([
+      { name: "mismatched offset", change: { offset: 1 } },
+      { name: "mismatched limit", change: { limit: 2 } },
+      { name: "excess raw rows", change: { items: [metadata, metadata] } },
+      { name: "rows beyond total", change: { total: 0 } },
+      { name: "wrong profile", change: { items: [{ ...metadata, tracks: { total: 2 } }] } },
+      { name: "zero progress before total", change: { items: [] }, code: "provider_unavailable" },
+    ])("rejects $name without fetching another page", async ({ change, code }) => {
+      const { provider, requests } = makeProvider([jsonResponse({
+        offset: 0, limit: 1, total: 2, items: [metadata], ...change,
+      })], { playlistApi: "items" });
+
+      await expect(provider.playlistsPage({ accessToken: "access", offset: 0, limit: 1 }))
+        .rejects.toMatchObject({ code: code ?? "invalid_provider_response" });
+      expect(requests).toHaveLength(1);
+    });
+
+    it.each([
+      [SPOTIFY_PLAYLIST_MAX_OFFSET - 1, SPOTIFY_PLAYLIST_MAX_OFFSET],
+      [SPOTIFY_PLAYLIST_MAX_OFFSET, null],
+    ] as const)("keeps readable rows at offset %s with bounded successor %s", async (offset, nextOffset) => {
+      const total = SPOTIFY_PLAYLIST_MAX_OFFSET + 2;
+      const { provider, requests } = makeProvider([jsonResponse({
+        offset, limit: 1, total, items: [{ ...metadata, items: { total: 4 } }],
+      })], { playlistApi: "items" });
+
+      await expect(provider.playlistsPage({ accessToken: "access", offset, limit: 1 }))
+        .resolves.toStrictEqual({ offset, limit: 1, total, nextOffset, playlists: [
+          { id: "playlistA", name: "Playlist A", description: "", trackCount: 4, thumbnailUrl: null, owner: "ownerA" },
+        ] });
+      expect(requests).toHaveLength(1);
+    });
+
+    it("rejects inputs outside the playlist-specific bounds without a request", async () => {
+      const { provider, requests } = makeProvider([]);
+      for (const input of [
+        { offset: SPOTIFY_PLAYLIST_MAX_OFFSET + 1, limit: 1 },
+        { offset: 0, limit: SPOTIFY_PLAYLIST_PAGE_SIZE + 1 },
+      ]) {
+        await expect(provider.playlistsPage({ accessToken: "access", ...input }))
+          .rejects.toMatchObject({ code: "provider_rejected" });
+      }
+      expect(requests).toEqual([]);
+    });
   });
 
   it("does not fall back to the legacy endpoint after a playlist access refusal", async () => {

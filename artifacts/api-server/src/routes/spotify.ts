@@ -1,4 +1,6 @@
 import {
+  SPOTIFY_PLAYLIST_MAX_OFFSET,
+  SPOTIFY_PLAYLIST_PAGE_SIZE,
   SPOTIFY_SAVED_ALBUMS_PAGE_SIZE,
   spotifyCatalogIdSchema,
   type NormalizedTrack,
@@ -130,6 +132,39 @@ function pagination(
     offset: paginationValue(query["offset"], 0, 1_000_000),
     limit: Math.max(1, paginationValue(query["limit"], maxPageSize, maxPageSize)),
   };
+}
+
+function playlistPageQuery(
+  originalUrl: string,
+): { offset: number; limit: number } | null {
+  const queryStart = originalUrl.indexOf("?");
+  if (queryStart < 0 || queryStart === originalUrl.length - 1) {
+    return { offset: 0, limit: SPOTIFY_PLAYLIST_PAGE_SIZE };
+  }
+
+  const fieldCount = originalUrl.slice(queryStart + 1).split("&", 3).length;
+  if (fieldCount > 2) return null;
+  const params = new URLSearchParams(originalUrl.slice(queryStart));
+  const offsets = params.getAll("offset");
+  const limits = params.getAll("limit");
+  if (
+    fieldCount !== params.size ||
+    offsets.length + limits.length !== params.size ||
+    offsets.length > 1 ||
+    limits.length > 1
+  ) {
+    return null;
+  }
+  const offsetText = offsets[0] ?? "0";
+  const limitText = limits[0] ?? String(SPOTIFY_PLAYLIST_PAGE_SIZE);
+  if (!/^[0-9]+$/.test(offsetText) || !/^[0-9]+$/.test(limitText)) return null;
+
+  const offset = Number(offsetText);
+  const limit = Number(limitText);
+  if (offset > SPOTIFY_PLAYLIST_MAX_OFFSET || limit < 1 || limit > SPOTIFY_PLAYLIST_PAGE_SIZE) {
+    return null;
+  }
+  return { offset, limit };
 }
 
 function mapTrack(track: NormalizedTrack) {
@@ -385,6 +420,33 @@ export function createSpotifyRouter(
       });
       if (isFailure(result)) {
         sendLibraryFailure(response, result);
+        return;
+      }
+      response.json(result.result);
+    } catch {
+      response.status(502).json({ error: "spotify_error" });
+    }
+  });
+
+  router.get("/spotify/playlists/page", async (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    const page = playlistPageQuery(request.originalUrl);
+    if (page === null) {
+      response.status(400).json({ error: "invalid_request" });
+      return;
+    }
+    try {
+      const result = await dependencies.gateway.execute({
+        accountId: request.tfPrincipal!.accountId,
+        operation: "spotify.playlists.page",
+        input: page,
+      });
+      if (isFailure(result)) {
+        sendLibraryFailure(response, result);
+        return;
+      }
+      if (result.result.offset !== page.offset || result.result.limit !== page.limit) {
+        response.status(502).json({ error: "spotify_error" });
         return;
       }
       response.json(result.result);

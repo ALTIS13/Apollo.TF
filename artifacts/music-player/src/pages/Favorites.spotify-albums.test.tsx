@@ -64,7 +64,7 @@ function setup(respond: (url: string) => Response | Promise<Response>, entitled 
       </TfAuthProvider>
     </QueryClientProvider>,
   );
-  return { http, user: userEvent.setup() };
+  return { client, http, user: userEvent.setup() };
 }
 
 function connected(url: string) {
@@ -311,5 +311,135 @@ describe("Spotify saved albums in Favorites", () => {
     await openAlbums(user);
     expect(await screen.findByText("Не удалось подтвердить аккаунт Spotify.")).toBeInTheDocument();
     expect(http.mock.calls.some(([url]) => String(url).includes("/spotify/albums"))).toBe(false);
+  });
+});
+
+const playlistPagePath = (offset: number) => `/api/spotify/playlists/page?offset=${offset}&limit=50`;
+const playlist = {
+  id: "playlistAfter250", name: "Playlist after 250", description: "", trackCount: 1,
+  thumbnailUrl: null, owner: "Fixture Owner",
+};
+
+function playlistPage(offset: number, nextOffset: number | null, playlists = [playlist]) {
+  return json({ offset, limit: 50, total: 300, nextOffset, playlists });
+}
+
+async function openPlaylists(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: "Spotify" }));
+  const catalog = within(await screen.findByRole("group", { name: "Коллекция Spotify" }));
+  await user.click(catalog.getByRole("button", { name: "Плейлисты" }));
+}
+
+describe("Spotify playlist catalog in Favorites", () => {
+  it("follows raw offsets through an empty page past 250, preserves detail return, and goes back through visited offsets", async () => {
+    const { http, user } = setup((url) => {
+      for (const offset of [0, 50, 100, 150, 200]) {
+        if (url === playlistPagePath(offset)) return playlistPage(offset, offset + 50, [{ ...playlist, name: `Playlist at ${offset}` }]);
+      }
+      if (url === playlistPagePath(250)) return playlistPage(250, 273, []);
+      if (url === playlistPagePath(273)) return playlistPage(273, null);
+      if (url === "/api/spotify/playlists/playlistAfter250/tracks?offset=0&limit=50") {
+        return json({ offset: 0, limit: 50, total: 1, tracks: [{
+          id: "fixtureTrack", title: "Playlist track", artist: "Fixture Artist", album: "Fixture Album",
+          durationMs: 203000, thumbnailUrl: null, spotifyUrl: "https://open.spotify.com/track/fixtureTrack",
+        }] });
+      }
+      return connected(url);
+    }, true, true);
+    const catalogRequests = () => http.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("/spotify/playlists"));
+    const next = () => screen.getByRole("button", { name: "Следующая страница" });
+    const previous = () => screen.getByRole("button", { name: "Предыдущая страница" });
+
+    await user.click(await screen.findByRole("button", { name: "Spotify" }));
+    const catalog = within(await screen.findByRole("group", { name: "Коллекция Spotify" }));
+    expect(catalogRequests()).toEqual([]);
+    await user.click(catalog.getByRole("button", { name: "Плейлисты" }));
+    for (const offset of [0, 50, 100, 150, 200]) {
+      await screen.findByRole("button", { name: new RegExp(`Playlist at ${offset}`) });
+      await user.click(next());
+    }
+    expect(await screen.findByText("На этой странице нет доступных плейлистов.")).toBeInTheDocument();
+    expect(catalogRequests()).toEqual([0, 50, 100, 150, 200, 250].map(playlistPagePath));
+    expect(next()).toBeEnabled();
+    await user.click(next());
+    const last = await screen.findByRole("button", { name: /Playlist after 250/ });
+    expect(next()).toBeDisabled();
+    await user.click(last);
+    expect(await screen.findByText("Playlist track")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Импортировать метаданные" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Back to playlists" }));
+    await screen.findByRole("button", { name: /Playlist after 250/ });
+    expect(catalogRequests().slice(-2)).toEqual([
+      playlistPagePath(273), "/api/spotify/playlists/playlistAfter250/tracks?offset=0&limit=50",
+    ]);
+    await user.click(previous());
+    await screen.findByText("На этой странице нет доступных плейлистов.");
+    await user.click(previous());
+    await screen.findByRole("button", { name: /Playlist at 200/ });
+    expect(catalogRequests()).not.toContain("/api/spotify/playlists");
+  });
+
+  it("resets to offset zero and cancels the old page when the connected Spotify subject changes", async () => {
+    let finishOldPage!: (response: Response) => void;
+    let firstPages = 0;
+    const { client, http, user } = setup((url) => {
+      if (url === playlistPagePath(0)) {
+        return playlistPage(0, 50, [{ ...playlist, name: ++firstPages === 1 ? "Original owner list" : "New owner list" }]);
+      }
+      if (url === playlistPagePath(50)) return new Promise((resolve) => { finishOldPage = resolve; });
+      return connected(url);
+    });
+    await openPlaylists(user);
+    await screen.findByRole("button", { name: /Original owner list/ });
+    await user.click(screen.getByRole("button", { name: "Следующая страница" }));
+    const oldSignal = () => http.mock.calls.find(([url]) => url === playlistPagePath(50))?.[1]?.signal;
+    await waitFor(() => expect(oldSignal()?.aborted).toBe(false));
+    await act(async () => { client.setQueryData(["spotify", "status"], { connected: true, spotifyUserId: "new-owner" }); });
+    expect(await screen.findByRole("button", { name: /New owner list/ })).toBeInTheDocument();
+    expect(oldSignal()?.aborted).toBe(true);
+    await act(async () => finishOldPage(json({ error: "unauthorized" }, 401)));
+    expect(screen.queryByRole("heading", { name: "Требуется вход" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Предыдущая страница" })).toBeDisabled();
+  });
+
+  it("uses the Spotify cooldown and reloads a throttled page only on explicit Retry", async () => {
+    let laterReads = 0;
+    const { user, http } = setup((url) => {
+      if (url === playlistPagePath(0)) return playlistPage(0, 31, [{ ...playlist, name: "First playlist" }]);
+      if (url === playlistPagePath(31)) return ++laterReads === 1
+        ? json({ error: "spotify_rate_limited", retryAfterSeconds: 1 }, 429)
+        : playlistPage(31, null);
+      return connected(url);
+    });
+    await openPlaylists(user);
+    await screen.findByRole("button", { name: /First playlist/ });
+    await user.click(screen.getByRole("button", { name: "Следующая страница" }));
+    const retry = await screen.findByRole("button", { name: "Повторить" });
+    expect(screen.getByRole("alert")).toHaveTextContent(/Лимит запросов Spotify/);
+    expect(retry).toBeDisabled();
+    await waitFor(() => expect(retry).toBeEnabled(), { timeout: 2_000 });
+    await act(async () => { onlineManager.setOnline(false); });
+    await act(async () => { onlineManager.setOnline(true); });
+    expect(laterReads).toBe(1);
+    await user.click(retry);
+    expect(await screen.findByRole("button", { name: /Playlist after 250/ })).toBeInTheDocument();
+    expect(laterReads).toBe(2);
+    expect(http.mock.calls.filter(([url]) => url === "/api/auth/me")).toHaveLength(1);
+    expect(http.mock.calls.some(([url]) => String(url).includes("/logout"))).toBe(false);
+  });
+
+  it("can go back to a loaded page during the Spotify cooldown without requesting it again", async () => {
+    const { user, http } = setup((url) => {
+      if (url === playlistPagePath(0)) return playlistPage(0, 31, [{ ...playlist, name: "First playlist" }]);
+      if (url === playlistPagePath(31)) return json({ error: "spotify_rate_limited", retryAfterSeconds: 30 }, 429);
+      return connected(url);
+    });
+    await openPlaylists(user);
+    await screen.findByRole("button", { name: /First playlist/ });
+    await user.click(screen.getByRole("button", { name: "Следующая страница" }));
+    expect(await screen.findByRole("button", { name: "Повторить" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Предыдущая страница" }));
+    expect(await screen.findByRole("button", { name: /First playlist/ })).toBeInTheDocument();
+    expect(http.mock.calls.filter(([url]) => url === playlistPagePath(0))).toHaveLength(1);
   });
 });

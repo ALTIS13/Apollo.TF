@@ -17,7 +17,7 @@ import {
 import {
   useSpotifyStatus,
   useSpotifyLiked,
-  useSpotifyPlaylists,
+  useSpotifyPlaylistPage,
   useSpotifyPlaylistTracks,
   useSpotifyTopTracks,
   useSpotifyAlbums,
@@ -227,8 +227,7 @@ function SpotifyCatalog({ owner, onSearchVariants, onOpenAlbums }: {
         transition={{ duration: reduceMotion ? 0 : 0.15 }}
       >
         {activeTab === "liked" && <SpotifyLikedTab owner={isPresent ? owner : null} onSearchVariants={onSearchVariants} />}
-        {activeTab === "playlists" && <SpotifyPlaylistsTab owner={isPresent ? owner : null} onSearchVariants={onSearchVariants} />}
-        {/* Stop album and import reads when the outer provider starts exiting. */}
+        {activeTab === "playlists" && isPresent && <SpotifyPlaylistsTab key={JSON.stringify(owner)} owner={owner} onSearchVariants={onSearchVariants} />}
         {activeTab === "albums" && isPresent && <SpotifyAlbumsTab key={JSON.stringify(owner)} owner={owner} />}
         {activeTab === "top" && <SpotifyTopTab onSearchVariants={onSearchVariants} />}
       </motion.div>
@@ -394,72 +393,97 @@ function SpotifyLikedTab({ owner, onSearchVariants }: { owner: SpotifyAlbumOwner
   );
 }
 
+function SpotifyPlaylistDetail({ owner, playlist, onBack, onSearchVariants }: {
+  owner: SpotifyAlbumOwner;
+  playlist: SpotifyPlaylist;
+  onBack: () => void;
+  onSearchVariants: (title: string, artist: string) => void;
+}) {
+  const [offset, setOffset] = useState(0);
+  const { data, isFetching, error, refetch } = useSpotifyPlaylistTracks(owner, playlist.id, offset, 50);
+  const tracks: GenericTrack[] = (data?.tracks ?? []).map((t) => ({
+    id: t.id, title: t.title, artist: t.artist, album: t.album,
+    durationMs: t.durationMs, thumbnailUrl: t.thumbnailUrl, externalUrl: t.spotifyUrl,
+  }));
+  return (
+    <div>
+      <button type="button" className="flex items-center gap-2 text-white/50 hover:text-white mb-4 text-sm transition-colors" onClick={onBack}>
+        <ChevronLeft className="w-4 h-4" /> Back to playlists
+      </button>
+      <div className="flex items-center gap-3 mb-4 p-3 rounded-xl bg-white/5">
+        {playlist.thumbnailUrl && <img src={playlist.thumbnailUrl} alt={playlist.name} className="w-12 h-12 rounded-lg object-cover" />}
+        <div>
+          <h3 className="font-semibold text-white text-sm">{playlist.name}</h3>
+          <p className="text-white/40 text-xs">{playlist.trackCount} tracks</p>
+        </div>
+      </div>
+      {playlist.trackCount > 0 && <SpotifyImportAction owner={owner} selection={{ kind: "playlist", id: playlist.id, name: playlist.name }} />}
+      {isFetching ? <LoadingState label="Loading tracks..." color={SPOTIFY_GREEN} /> :
+        error ? <SpotifyReadError error={error} retry={() => void refetch()} /> : (
+          <>
+            <TrackList tracks={tracks} offset={offset} accentColor={SPOTIFY_GREEN} onSearchVariants={onSearchVariants} />
+            {data && <Pagination offset={offset} limit={50} total={data.total} onPageChange={setOffset} />}
+          </>
+        )}
+    </div>
+  );
+}
+
 function SpotifyPlaylistsTab({ owner, onSearchVariants }: { owner: SpotifyAlbumOwner | null; onSearchVariants: (title: string, artist: string) => void }) {
   const [selected, setSelected] = useState<SpotifyPlaylist | null>(null);
-  const [offset, setOffset] = useState(0);
-  const { data: pData, isFetching: loadingP, error: pErr, refetch: refetchP } = useSpotifyPlaylists();
-  const { data: tData, isFetching: loadingT, error: tErr, refetch: refetchT } = useSpotifyPlaylistTracks(selected?.id ?? null, offset, 50);
+  const [history, setHistory] = useState([0]);
+  const offset = history.at(-1) ?? 0;
+  const { data, isFetching, error, refetch } = useSpotifyPlaylistPage(owner, offset);
+  const previous = history.length > 1 ? () =>
+    setHistory((offsets) => offsets.at(-1) === offset ? offsets.slice(0, -1) : offsets) : undefined;
 
-  useEffect(() => { refetchP(); }, []);
-  useEffect(() => { if (selected) { setOffset(0); } }, [selected?.id]);
-  useEffect(() => { if (selected) refetchT(); }, [selected?.id, offset]);
+  if (owner === null) return <p className="py-8 text-sm text-muted-foreground">Не удалось подтвердить аккаунт Spotify.</p>;
+  if (selected) return <SpotifyPlaylistDetail owner={owner} playlist={selected} onBack={() => setSelected(null)} onSearchVariants={onSearchVariants} />;
+  if (isFetching) return <div role="status"><LoadingState label="Загружаем плейлисты…" color={SPOTIFY_GREEN} /></div>;
+  if (error) return <SpotifyReadError error={error} message="Не удалось загрузить плейлисты Spotify." retry={() => void refetch()} previous={previous} />;
+  if (!data) return null;
 
-  if (selected) {
-    const tracks: GenericTrack[] = (tData?.tracks ?? []).map((t: SpotifyTrack) => ({
-      id: t.id, title: t.title, artist: t.artist, album: t.album,
-      durationMs: t.durationMs, thumbnailUrl: t.thumbnailUrl, externalUrl: t.spotifyUrl,
-    }));
-    return (
-      <div>
-        <button className="flex items-center gap-2 text-white/50 hover:text-white mb-4 text-sm transition-colors" onClick={() => { setSelected(null); setOffset(0); }}>
-          <ChevronLeft className="w-4 h-4" /> Back to playlists
-        </button>
-        <div className="flex items-center gap-3 mb-4 p-3 rounded-xl bg-white/5">
-          {selected.thumbnailUrl && <img src={selected.thumbnailUrl} alt={selected.name} className="w-12 h-12 rounded-lg object-cover" />}
-          <div>
-            <h3 className="font-semibold text-white text-sm">{selected.name}</h3>
-            <p className="text-white/40 text-xs">{selected.trackCount} tracks</p>
-          </div>
-        </div>
-        {selected.trackCount > 0 && <SpotifyImportAction owner={owner} selection={{ kind: "playlist", id: selected.id, name: selected.name }} />}
-        {loadingT ? <LoadingState label="Loading tracks..." color={SPOTIFY_GREEN} /> :
-          tErr ? <SpotifyReadError error={tErr} retry={() => void refetchT()} /> : (
-            <>
-              <TrackList tracks={tracks} offset={offset} accentColor={SPOTIFY_GREEN} onSearchVariants={onSearchVariants} />
-              {tData && <Pagination offset={offset} limit={50} total={tData.total} onPageChange={setOffset} />}
-            </>
-          )}
-      </div>
-    );
-  }
-
-  if (loadingP) return <LoadingState label="Loading playlists..." color={SPOTIFY_GREEN} />;
-  if (pErr) return <SpotifyReadError error={pErr} retry={() => void refetchP()} />;
-  if (!pData) return null;
-
+  const nextOffset = data.nextOffset !== null && Number.isSafeInteger(data.nextOffset) && data.nextOffset > offset ? data.nextOffset : null;
+  const next = nextOffset === null ? undefined : () =>
+    setHistory((offsets) => offsets.at(-1) === offset ? [...offsets, nextOffset] : offsets);
+  const pageButtonClass = "grid size-10 shrink-0 place-items-center rounded-full hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-white";
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-      {pData.playlists.map((p: SpotifyPlaylist, i: number) => (
-        <motion.button
-          key={p.id}
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: Math.min(i * 0.03, 0.4) }}
-          onClick={() => setSelected(p)}
-          className="flex items-center gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-all text-left group"
-        >
-          {p.thumbnailUrl
-            ? <img src={p.thumbnailUrl} alt={p.name} className="w-12 h-12 rounded-md object-cover shrink-0" />
-            : <div className="w-12 h-12 rounded-md bg-white/8 flex items-center justify-center shrink-0"><List className="w-5 h-5 text-white/25" /></div>
-          }
-          <div className="min-w-0 flex-1">
-            <p className="font-medium text-white text-sm truncate">{p.name}</p>
-            <p className="text-white/35 text-xs">{p.trackCount} tracks</p>
-          </div>
-          <ChevronLeft className="w-4 h-4 text-white/15 group-hover:text-white/50 rotate-180 shrink-0 transition-colors" />
-        </motion.button>
-      ))}
-    </div>
+    <>
+      {data.playlists.length ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {data.playlists.map((playlist, index) => (
+            <motion.button
+              key={playlist.id}
+              type="button"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ delay: Math.min(index * 0.03, 0.4) }}
+              onClick={() => setSelected(playlist)}
+              className="flex min-w-0 items-center gap-3 p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-all text-left group focus-visible:outline-2 focus-visible:outline-white"
+            >
+              {playlist.thumbnailUrl
+                ? <img src={playlist.thumbnailUrl} alt={playlist.name} className="w-12 h-12 rounded-md object-cover shrink-0" />
+                : <div className="w-12 h-12 rounded-md bg-white/8 flex items-center justify-center shrink-0"><List className="w-5 h-5 text-white/25" /></div>
+              }
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-white text-sm truncate">{playlist.name}</p>
+                <p className="text-white/35 text-xs">{playlist.trackCount} tracks</p>
+              </div>
+              <ChevronRight className="w-4 h-4 text-white/15 group-hover:text-white/50 shrink-0 transition-colors" />
+            </motion.button>
+          ))}
+        </div>
+      ) : <p className="py-8 text-sm text-muted-foreground">{data.total > 0 ? "На этой странице нет доступных плейлистов." : "Нет плейлистов Spotify."}</p>}
+      {(previous || next) && <nav aria-label="Страницы плейлистов Spotify" className="flex items-center justify-center gap-3 pt-4 pb-2">
+        <button type="button" aria-label="Предыдущая страница" className={pageButtonClass} onClick={previous} disabled={!previous}>
+          <ChevronLeft className="size-5" />
+        </button>
+        <span className="text-sm text-white/60 tabular-nums">Страница {history.length}</span>
+        <button type="button" aria-label="Следующая страница" className={pageButtonClass} onClick={next} disabled={!next}>
+          <ChevronRight className="size-5" />
+        </button>
+      </nav>}
+    </>
   );
 }
 

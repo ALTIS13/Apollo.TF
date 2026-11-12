@@ -54,6 +54,7 @@ export function createSmokeFixtureProviders(): {
       },
       likedTracks: () => providerUnavailable(),
       playlists: () => providerUnavailable(),
+      playlistsPage: () => providerUnavailable(),
       playlistTracks: () => providerUnavailable(),
       topTracks: () => providerUnavailable(),
       savedAlbums: () => providerUnavailable(),
