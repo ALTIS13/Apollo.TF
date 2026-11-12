@@ -23,6 +23,7 @@ type Renderer = (
 ) => unknown;
 type Output = { stdout(value: string): void; stderr(value: string): void };
 type ObjectMap = Record<string, unknown>;
+type ReviewedMode = "local" | "remote-search";
 
 const repositoryRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -41,6 +42,9 @@ const sourceFiles = [
 ] as const;
 const standaloneFiles = [
   "deploy/coolify/apollo-tf.reviewed-acceptance.git.compose.yml",
+] as const;
+const remoteSearchFiles = [
+  "deploy/coolify/apollo-tf.reviewed-remote-search.git.compose.yml",
 ] as const;
 const catalogTarget = "/run/tf-reviewed/catalog.json";
 const mediaTarget = "/run/tf-reviewed/media";
@@ -533,15 +537,15 @@ export function validateTfReviewedAcceptanceTopology(
 
 function assertLocalComposeSource(path: string): void {
   const source = readBounded(path, 512 * 1024);
-  // These fixed repo layers are local block YAML, with no include/extends/env-file directives.
+  // These fixed repo layers are local block YAML, without file-loading directives.
   // Reject alternate syntax that could hide a file-loading key before invoking Compose.
   if (
     source.includes("\\") ||
-    source.includes("\0") ||
+    /[\u0000\u0085\u2028\u2029]|\r(?!\n)/.test(source) ||
     source.split(/\r?\n/).some((line) => {
       if (!line.trim() || line.trimStart().startsWith("#")) return false;
       return (
-        /\b(?:include|extends|env_file)\b/.test(line) ||
+        /\b(?:include|extends|env_file|label_file)\b/.test(line) ||
         (!line.startsWith(" ") &&
           !/^(?:name|services|networks|volumes|secrets|x-[a-z0-9-]+):(?:\s|$)/.test(
             line,
@@ -601,11 +605,88 @@ function canonical(value: unknown): string {
   );
 }
 
+function requireRemoteSearchOrigin(env: Environment): string {
+  const origin = env.TF_SEARCH_ORIGIN;
+  try {
+    const url = new URL(origin ?? "");
+    const publicKeys = [
+      "TF_CANARY_PUBLIC_ORIGIN", "TF_CANARY_API_PUBLIC_ORIGIN", "TF_CANARY_ADMIN_PUBLIC_ORIGIN",
+      "TF_PUBLIC_ORIGIN", "TF_API_PUBLIC_ORIGIN", "TF_ADMIN_PUBLIC_ORIGIN", "TF_WEB_API_ORIGIN",
+      "PLATFORM_CANARY_PUBLIC_ORIGIN", "PLATFORM_PUBLIC_ORIGIN",
+    ];
+    if (
+      url.protocol === "https:" &&
+      url.origin === origin &&
+      !url.hostname.endsWith(".") &&
+      !publicKeys.some((key) => env[key] === origin)
+    ) return origin;
+  } catch { /* Invalid URL. */ }
+  fail("reviewed_remote_search_origin_invalid");
+}
+
+function normalizeApiEnvironment(api: ObjectMap): ObjectMap {
+  if (!Array.isArray(api.environment)) return object(api.environment);
+  // Compose can keep environment assignments as an ordered list before interpolation.
+  const entries = new Map<string, string>();
+  for (const line of api.environment) {
+    if (typeof line !== "string") fail();
+    const separator = line.indexOf("=");
+    const key = line.slice(0, separator);
+    if (separator < 1 || entries.has(key)) fail();
+    entries.set(key, line.slice(separator + 1));
+  }
+  return Object.fromEntries(entries);
+}
+
+function assertRemoteSearchProjection(
+  local: ObjectMap,
+  remote: ObjectMap,
+  origin: string,
+  secretDirectory: string,
+  errorCode: string,
+): void {
+  try {
+    const projected = structuredClone(local);
+    const services = object(projected.services);
+    const api = object(services["tf-api"]);
+    delete services["tf-search"];
+    const networks = object(projected.networks);
+    delete networks["tf-search-control"];
+    delete networks["tf-search-egress"];
+    delete object(api.depends_on)["tf-search"];
+    delete object(api.networks)["tf-search-control"];
+
+    const secrets = object(projected.secrets);
+    delete secrets.tf_search_heartbeat_secret;
+    object(secrets.tf_search_internal_auth_secret).file =
+      `${secretDirectory}/tf_remote_search_internal_auth_secret`;
+    object(secrets.tf_module_heartbeat_keys).file =
+      `${secretDirectory}/tf_remote_search_module_heartbeat_keys`;
+
+    api.environment = {
+      ...normalizeApiEnvironment(api),
+      TF_SEARCH_ORIGIN: origin,
+      TF_SEARCH_ALLOW_INSECURE_HTTP: "false",
+    };
+    const candidate = structuredClone(remote);
+    const candidateApi = object(object(candidate.services)["tf-api"]);
+    candidateApi.environment = normalizeApiEnvironment(candidateApi);
+    if (isDeepStrictEqual(projected, candidate)) return;
+  } catch (error) {
+    if (!(error instanceof ReviewedAcceptanceError)) throw error;
+  }
+  fail(errorCode);
+}
+
 export function validateTfReviewedAcceptance(
   env: Environment,
   render: Renderer = renderCompose,
+  mode: ReviewedMode = "local",
 ) {
   assertEnvironment(env);
+  if (mode !== "local" && mode !== "remote-search") fail("invalid_arguments");
+  const remoteOrigin =
+    mode === "remote-search" ? requireRemoteSearchOrigin(env) : null;
   function checkedRender(
     files: readonly string[],
     interpolate: boolean,
@@ -621,21 +702,37 @@ export function validateTfReviewedAcceptance(
       fail("reviewed_compose_render_failed");
     }
   }
-  const source = canonical(checkedRender(sourceFiles, false));
+  const localSource = checkedRender(sourceFiles, false);
+  const source = canonical(localSource);
   const standalone = canonical(checkedRender(standaloneFiles, false));
   if (source !== standalone) fail("reviewed_compose_snapshot_drift");
-  validateTfReviewedAcceptanceTopology(
-    env,
-    checkedRender(baselineFiles, true),
-    checkedRender(sourceFiles, true),
-  );
+  const remoteSource = remoteOrigin
+    ? checkedRender(remoteSearchFiles, false)
+    : null;
+  if (remoteSource) {
+    assertRemoteSearchProjection(
+      localSource, remoteSource, "${TF_SEARCH_ORIGIN:?}",
+      "${TF_CANARY_SECRET_DIRECTORY:?}", "reviewed_remote_search_source_drift",
+    );
+  }
+  const baseline = checkedRender(baselineFiles, true);
+  const localResolved = checkedRender(sourceFiles, true);
+  validateTfReviewedAcceptanceTopology(env, baseline, localResolved);
+  if (remoteOrigin) {
+    assertRemoteSearchProjection(
+      localResolved, checkedRender(remoteSearchFiles, true), remoteOrigin,
+      env.TF_CANARY_SECRET_DIRECTORY!, "reviewed_remote_search_resolved_drift",
+    );
+  }
   return {
     status: "validated",
     evidenceLevel: "compose-config-only",
     activationAllowed: false,
-    composeSha256: createHash("sha256").update(source).digest("hex"),
-    serviceCount: Object.keys(images).length,
-    networkCount: Object.keys(networks).length,
+    composeSha256: createHash("sha256")
+      .update(remoteSource ? canonical(remoteSource) : source)
+      .digest("hex"),
+    serviceCount: Object.keys(images).length - (remoteSource ? 1 : 0),
+    networkCount: Object.keys(networks).length - (remoteSource ? 2 : 0),
     volumeCount: volumes.length,
   } as const;
 }
@@ -649,10 +746,11 @@ export function runTfReviewedAcceptanceCli(
   },
 ): number {
   try {
-    const path = args[1];
+    const remoteSearch = args[0] === "--remote-search";
+    const [flag, path] = remoteSearch ? args.slice(1) : args;
     if (
-      args.length !== 2 ||
-      args[0] !== "--env-file" ||
+      args.length !== (remoteSearch ? 3 : 2) ||
+      flag !== (remoteSearch ? "--declarations-file" : "--env-file") ||
       !path?.trim() ||
       path.startsWith("--")
     )
@@ -660,6 +758,7 @@ export function runTfReviewedAcceptanceCli(
     const result = validateTfReviewedAcceptance(
       readTfReviewedAcceptanceEnvironment(resolve(repositoryRoot, path)),
       render,
+      remoteSearch ? "remote-search" : "local",
     );
     output.stdout(`${JSON.stringify({ ok: true, ...result })}\n`);
     return 0;

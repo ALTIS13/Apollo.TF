@@ -1,0 +1,23 @@
+# Source-only overlay for the reviewed acceptance Application; do not deploy alone.
+# This is an alternate profile of the SAME Application, not a parallel TF stack.
+services:
+  tf-search: !reset null
+  tf-api:
+    depends_on:
+      tf-search: !reset null
+    networks:
+      tf-search-control: !reset null
+    environment:
+      TF_SEARCH_ALLOW_INSECURE_HTTP: "false"
+      TF_SEARCH_ORIGIN: ${TF_SEARCH_ORIGIN:?}
+
+networks:
+  tf-search-control: !reset null
+  tf-search-egress: !reset null
+
+secrets:
+  tf_search_heartbeat_secret: !reset null
+  tf_search_internal_auth_secret:
+    file: ${TF_CANARY_SECRET_DIRECTORY:?}/tf_remote_search_internal_auth_secret
+  tf_module_heartbeat_keys:
+    file: ${TF_CANARY_SECRET_DIRECTORY:?}/tf_remote_search_module_heartbeat_keys

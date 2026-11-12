@@ -73,7 +73,32 @@ Local proof (2026-11-13): 35 focused cases and scripts typecheck passed. Compose
 3. Bring the new search process up against a dedicated acceptance API first. Prove readiness, signed requests, replay rejection and heartbeat; measure timeout, provider capacity and cold-cache latency. For cutover, stop routing to the old search, drain it, and switch the API to the exact private HTTPS `TF_SEARCH_ORIGIN` with insecure HTTP disabled and the admitted command/heartbeat key binding. Do not send live requests or accepted heartbeats to/from both destinations with the same key. Roll back the API origin and key binding together; keep the old image and scoped rollback resources until acceptance ends.
 4. A future private balancer must keep signed request bytes intact, avoid blind retries, drain old targets and pass a two-instance replay/limit test. This requires atomic shared replay admission or separate target-bound signing, a shared provider budget, and per-instance health. Until then use one active target. Search has no durable storage to migrate; retire only the exact old Application, its dedicated network if unused, and retired keys/images after rollback retention. Full API/worker migration still follows the restore and writer-fencing steps above.
 
-The reviewed Web profile already has its own topology validator. Its TF API currently uses the literal local `http://tf-search:8080` and waits on that service. A Coolify environment variable alone does not override these literals. Before a split cutover, prepare a separate source-bound API-side profile that binds the exact private origin, disables insecure HTTP, and removes the local search dependency and service from that profile. Preserve the existing single-node profile for rollback. A live private listener, balancing and cross-node stateful migration are not included in this search source profile.
+### API Cutover And Rollback
+
+The [split API-side profile](../../deploy/coolify/apollo-tf.reviewed-remote-search.git.compose.yml) is an alternate Compose file for the **same reviewed acceptance Application**, not another instance of TF. It removes the local search process and its two networks, requires `TF_SEARCH_ORIGIN`, and disables insecure search HTTP. The API still reads keys from its existing in-container paths, but the split profile mounts separate host files: `tf_remote_search_internal_auth_secret` and `tf_remote_search_module_heartbeat_keys` under `TF_CANARY_SECRET_DIRECTORY`. In the second file change only the `search-media` entry to the remote heartbeat key; keep the integration and download entries consistent with their running modules. Do not overwrite the local profile's keys. Keep the same images, data volumes, API/Web/Admin exposure and reviewed catalog/media inputs.
+
+The [source overlay](../../deploy/coolify/apollo-tf.reviewed-remote-search.compose.yml) is for regenerating the standalone file, not for direct Coolify deployment. From the repository root:
+
+```powershell
+docker compose --profile '*' -f deploy/coolify/apollo-tf.reviewed-acceptance.git.compose.yml `
+  -f deploy/coolify/apollo-tf.reviewed-remote-search.compose.yml `
+  config --no-interpolate --no-path-resolution --format yaml `
+  --output deploy/coolify/apollo-tf.reviewed-remote-search.git.compose.yml
+```
+
+Validate the split profile using the existing reviewed Application declarations plus `TF_SEARCH_ORIGIN`:
+
+```powershell
+pnpm release:validate:tf-reviewed --remote-search --declarations-file '<operator>/tf-reviewed-remote-search.env'
+```
+
+Use the same approved search origin in the standalone search preflight. Run both checks against the intended release and destination declarations; neither starts an Application or approves a network route. The local reviewed profile and its original validator invocation remain available for rollback.
+
+Keep the current single-node Compose source and exact release available for rollback. Disable overlapping deploys; do not create a second API Application using these explicit names, binds or ports. Verify the remote listener's certificate from the API environment, scope the reciprocal private route to `POST /api/internal/modules/search-media/heartbeat`, and prove the remote keys and route on a disposable fixture. On the accepted Application, drain old search requests, switch the whole Compose profile, and verify the old search container is stopped even if it remains as an orphan. Do not use a global orphan cleanup or remove volumes. Verify new signed requests, a fresh heartbeat from the expected deployment, and unchanged login/library/playback after the switch. API liveness alone does not verify search.
+
+On failure, stop routing to the remote listener, restore the single-node Compose source with the original key bindings on the same Application, and verify fresh local search and heartbeat before resuming traffic. Keep databases and media attached; reverting search should not restore, recreate or delete those stores. This profile does not create the private listener, register a destination, or move persistent data. It has no runtime admission.
+
+Local proof (2026-11-13): Compose v5.4.0 refused a missing remote origin, reproduced the standalone file from its source layers, and rendered 11 default active services instead of 12 with all five volumes unchanged. In a separate loopback rehearsal the real TF client and search handler used HTTPS with a test CA and synthetic keys. The selected target returned a fixture result, untrusted TLS and mismatched keys failed, and shutting down the HTTPS target produced `search_unavailable` without a request to the HTTP target. Explicit rollback with its own key restored the result. Both listeners were stopped. This does not prove cross-host routing, heartbeat acceptance, Coolify container retirement or live provider behavior.
 
 ### Balancer acceptance
 

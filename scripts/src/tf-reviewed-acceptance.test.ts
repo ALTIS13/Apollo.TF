@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { tfOnlyReleaseImageEnvironmentNames } from "./release-images.js";
 import {
@@ -17,6 +17,8 @@ const baselineName = "apollo-tf-canary-renewal-v2";
 const dataRoot = `/var/lib/${profile}/data`;
 const catalogTarget = "/run/tf-reviewed/catalog.json";
 const mediaTarget = "/run/tf-reviewed/media";
+const searchOrigin = "https://search.private.internal:8443";
+const remoteFile = "apollo-tf.reviewed-remote-search.git.compose.yml";
 
 function environment() {
   const env = readTfReviewedAcceptanceEnvironment(
@@ -518,13 +520,99 @@ describe("reviewed acceptance Compose evidence", () => {
     ]);
   });
 
-  it("renders the real ordered layers and standalone with isolated dummy inputs using config only", () => {
-    const result = validateTfReviewedAcceptance(environment());
+  it.each([undefined, "http://search.private.internal", "https://search.private.internal/", "https://user@search.private.internal"])(
+    "rejects a missing or noncanonical remote origin before rendering: %s", (origin) => {
+      const render = vi.fn();
+      const env = environment();
+      if (origin !== undefined) env.TF_SEARCH_ORIGIN = origin;
+      expect(() => validateTfReviewedAcceptance(env, render, "remote-search")).toThrow("reviewed_remote_search_origin_invalid");
+      expect(render).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not admit a declared public web, API, admin, or Platform origin as the private listener", () => {
+    const env = environment();
+    const render = vi.fn();
+    for (const key of ["TF_CANARY_PUBLIC_ORIGIN", "TF_CANARY_API_PUBLIC_ORIGIN", "TF_CANARY_ADMIN_PUBLIC_ORIGIN", "PLATFORM_CANARY_PUBLIC_ORIGIN"]) {
+      expect(env[key]).toBeTruthy();
+      expect(() => validateTfReviewedAcceptance({ ...env, TF_SEARCH_ORIGIN: env[key]! }, render, "remote-search"))
+        .toThrow("reviewed_remote_search_origin_invalid");
+    }
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("accepts the remote CLI declarations flag without changing the legacy invocation", () => {
+    const stdout = vi.fn();
+    const stderr = vi.fn();
+    const render = vi.fn();
+    const path = resolve(root, "deploy/coolify/canary-renewal.v2.env.example");
+    expect(runTfReviewedAcceptanceCli(["--remote-search", "--declarations-file", path], render, { stdout, stderr })).toBe(1);
+    expect(render).not.toHaveBeenCalled();
+    expect(stdout).not.toHaveBeenCalled();
+    expect(stderr).toHaveBeenCalledExactlyOnceWith('{"ok":false,"error":"reviewed_remote_search_origin_invalid"}\n');
+  });
+
+  it.each([
+    [false, "reviewed_remote_search_source_drift"],
+    [true, "reviewed_remote_search_resolved_drift"],
+  ] as const)("rejects a collateral volume change (interpolated: %s)", (interpolated, error) => {
+    const { env, baseline, reviewed } = fixture();
+    env.TF_SEARCH_ORIGIN = searchOrigin;
+    for (const model of [baseline, reviewed]) {
+      const api = model.services["tf-api"]!;
+      api.depends_on = { "tf-search": { condition: "service_healthy" } };
+      Object.assign(api.environment!, { TF_SEARCH_ORIGIN: "http://tf-search:8080", TF_SEARCH_ALLOW_INSECURE_HTTP: "true" });
+      for (const name of ["tf_search_heartbeat_secret", "tf_search_internal_auth_secret", "tf_module_heartbeat_keys"]) {
+        model.secrets[name] = { name: `${model.name}_${name}`, file: `${env.TF_CANARY_SECRET_DIRECTORY}/${name}` };
+      }
+    }
+    const render: Parameters<typeof validateTfReviewedAcceptance>[1] = (files, _env, interpolate) => {
+      if (files.length === 3) return baseline;
+      const remote = files[0]?.endsWith(remoteFile);
+      const model = structuredClone(reviewed);
+      const api = model.services["tf-api"]!;
+      if (!interpolate) {
+        for (const secret of Object.values(model.secrets)) {
+          secret.file = secret.file.replace(env.TF_CANARY_SECRET_DIRECTORY!, "${TF_CANARY_SECRET_DIRECTORY:?}");
+        }
+      }
+      if (remote) {
+        delete model.services["tf-search"];
+        delete model.networks["tf-search-control"];
+        delete model.networks["tf-search-egress"];
+        delete api.networks["tf-search-control"];
+        api.depends_on = {};
+        delete model.secrets.tf_search_heartbeat_secret;
+        for (const [name, basename] of [
+          ["tf_search_internal_auth_secret", "tf_remote_search_internal_auth_secret"],
+          ["tf_module_heartbeat_keys", "tf_remote_search_module_heartbeat_keys"],
+        ] as const) {
+          model.secrets[name]!.file = model.secrets[name]!.file.replace(`/${name}`, `/${basename}`);
+        }
+        Object.assign(api.environment!, {
+          TF_SEARCH_ORIGIN: interpolate ? searchOrigin : "${TF_SEARCH_ORIGIN:?}", TF_SEARCH_ALLOW_INSECURE_HTTP: "false",
+        });
+        if (interpolated === interpolate) model.volumes["tf-postgres-data"]!.name = "unapproved-postgres";
+      }
+      if (interpolate) return model;
+      const environment = Object.entries(api.environment!).map(([key, value]) => `${key}=${value}`);
+      return { ...model, services: { ...model.services, "tf-api": { ...api, environment: remote ? environment.reverse() : environment } } };
+    };
+    expect(() => validateTfReviewedAcceptance(env, render, "remote-search")).toThrow(error);
+  });
+
+  it.each([
+    ["local", 14, 10],
+    ["remote-search", 13, 8],
+  ] as const)("renders the real %s profile with isolated dummy inputs using config only", (mode, serviceCount, networkCount) => {
+    const result = validateTfReviewedAcceptance({ ...environment(), TF_SEARCH_ORIGIN: searchOrigin }, undefined, mode);
     expect(result).toMatchObject({
       status: "validated",
+      evidenceLevel: "compose-config-only",
       activationAllowed: false,
-      serviceCount: 14,
-      networkCount: 10,
+      composeSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      serviceCount,
+      networkCount,
       volumeCount: 5,
     });
   }, 30_000);
