@@ -1,24 +1,36 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { FileUp, ListMusic, Loader2, RefreshCw, Search, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, FileUp, ListMusic, Loader2, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useTfAuth } from "@/auth/tf-auth";
 import { DraftRecordingReview } from "@/components/DraftRecordingReview";
 import { Button } from "@/components/ui/button";
 import { useDeletePlaylistImport, usePlaylistImport, usePlaylistImportAccess, usePlaylistImports, useSavePlaylistImport } from "@/hooks/use-playlist-imports";
-import { PlaylistImportInputError, readPlaylistImportFile, type ImportDraftEntry, type ImportDraftInput, type ImportDraftSource } from "@/lib/playlist-imports";
+import {
+  MAX_IMPORT_ENTRIES, PlaylistImportInputError, previewSpotifyLibraryRange, readPlaylistImportFile, readSpotifyLibraryExport,
+  type ImportDraftEntry, type ImportDraftInput, type ImportDraftSource, type SpotifyLibraryExport,
+} from "@/lib/playlist-imports";
 import { captureTfSecurityGeneration, isCurrentTfSecurityGeneration, TfApiError } from "@/lib/tf-session-client";
 import { formatDuration } from "@/lib/utils";
 
 const sourceLabel: Record<ImportDraftSource, string> = {
-  file: "Файл TF",
+  file: "Файл",
   spotify_album: "Альбом Spotify",
   spotify_playlist: "Плейлист Spotify",
   spotify_liked: "Любимые Spotify",
 };
 
-function fileErrorMessage(error: unknown): string {
-  if (error instanceof PlaylistImportInputError && error.code === "import_file_too_large") return "Размер файла превышает 128 КиБ.";
+const filePickers = [
+  { kind: "tf", label: "Файл экспорта TF" },
+  { kind: "spotify", label: "Файл библиотеки Spotify" },
+] as const;
+type FileKind = (typeof filePickers)[number]["kind"];
+
+function fileErrorMessage(error: unknown, kind: FileKind): string {
+  if (error instanceof PlaylistImportInputError && error.code === "import_file_too_large") {
+    return kind === "spotify" ? "Размер файла превышает 2 МиБ." : "Размер файла превышает 128 КиБ.";
+  }
   if (error instanceof PlaylistImportInputError && error.code === "import_payload_too_large") return "Метаданные превышают 90 КиБ.";
-  return "Не удалось прочитать файл экспорта TF. Проверьте формат и количество записей.";
+  return kind === "spotify" ? "Не удалось прочитать файл библиотеки Spotify. Проверьте формат и количество записей."
+    : "Не удалось прочитать файл экспорта TF. Проверьте формат и количество записей.";
 }
 
 function saveErrorMessage(error: unknown): string {
@@ -71,7 +83,22 @@ function LoadError({ children, retry }: { children: string; retry: () => void })
   </div>;
 }
 
-type FileReview = { id: string; input: ImportDraftInput };
+type FileReview = { generation: number } & (
+  | { kind: "tf"; id: string; input: ImportDraftInput }
+  | { kind: "spotify"; library: SpotifyLibraryExport; offset: number; drafts: ReadonlyMap<number, { id: string; saved: boolean }> }
+);
+
+function reviewSpotifyRange(library: SpotifyLibraryExport, offset: number) {
+  try {
+    return { ...previewSpotifyLibraryRange(library, offset), error: null };
+  } catch (error) {
+    // An oversized draft cannot be saved, but its archive can still be browsed.
+    const total = library.slots.length;
+    const end = Math.min(offset + MAX_IMPORT_ENTRIES, total);
+    const unavailable = library.slots.slice(offset, end).filter((entry) => entry === null).length;
+    return { input: null, offset, end, total, unavailable, error: fileErrorMessage(error, "spotify") };
+  }
+}
 
 function OwnedPlaylistImports() {
   const { hasEntitlement } = useTfAuth();
@@ -90,12 +117,22 @@ function OwnedPlaylistImports() {
   const remove = useDeletePlaylistImport();
   const draft = selected.data?.draft;
   const generation = captureTfSecurityGeneration();
+  const activeReview = review?.generation === generation ? review : null;
+  const archive = activeReview?.kind === "spotify" ? activeReview : null;
+  const library = archive?.library;
+  const archiveOffset = archive?.offset ?? 0;
+  const archiveRange = useMemo(() => library ? reviewSpotifyRange(library, archiveOffset) : null, [library, archiveOffset]);
+  const archiveDraft = archive?.drafts.get(archiveOffset);
+  const reviewInput = activeReview?.kind === "tf" ? activeReview.input : archiveRange?.input;
   const canReviewRecording = hasEntitlement("tf.collections") && hasEntitlement("tf.search") && !confirmDelete;
   const activePosition = canReviewRecording && recordingSlot?.draftId === selectedId && recordingSlot.generation === generation
     ? recordingSlot.position : null;
   const dismissRecording = useCallback(() => setRecordingSlot(null), []);
 
-  useEffect(() => () => read.current?.abort(), []);
+  useEffect(() => () => {
+    read.current?.abort();
+    read.current = null;
+  }, []);
 
   function selectDraft(id: string | null) {
     dismissRecording();
@@ -104,38 +141,71 @@ function OwnedPlaylistImports() {
     remove.reset();
   }
 
-  function inspectFile(file: File) {
+  function clearReview() {
+    if (saving.current) return;
+    read.current?.abort();
+    read.current = null;
+    setReading(false);
+    setReview(null);
+    setFileError(null);
+    save.reset();
+  }
+
+  async function inspectFile(kind: FileKind, file: File) {
+    if (saving.current) return;
     dismissRecording();
     read.current?.abort();
     const controller = new AbortController();
     const generation = captureTfSecurityGeneration();
-    const current = () => !controller.signal.aborted && isCurrentTfSecurityGeneration(generation);
+    const current = () => read.current === controller && !controller.signal.aborted && isCurrentTfSecurityGeneration(generation);
     read.current = controller;
     save.reset();
     setReview(null);
     setFileError(null);
     setReading(true);
-    void readPlaylistImportFile(file, controller.signal).then((input) => {
-      if (current()) setReview({ id: crypto.randomUUID(), input });
-    }).catch((error: unknown) => {
-      if (current()) setFileError(fileErrorMessage(error));
-    }).finally(() => {
+    try {
+      const result: FileReview = kind === "spotify"
+        ? { kind, generation, library: await readSpotifyLibraryExport(file, controller.signal), offset: 0, drafts: new Map() }
+        : { kind, generation, input: await readPlaylistImportFile(file, controller.signal), id: crypto.randomUUID() };
+      if (current()) setReview(result);
+    } catch (error) {
+      if (current()) setFileError(fileErrorMessage(error, kind));
+    } finally {
       if (read.current === controller) {
         read.current = null;
-        if (current()) setReading(false);
+        setReading(false);
       }
-    });
+    }
+  }
+
+  function changeArchiveRange(offset: number) {
+    if (!archive || !archiveRange || offset < 0 || offset >= archiveRange.total || saving.current ||
+        !isCurrentTfSecurityGeneration(archive.generation)) return;
+    save.reset();
+    setReview({ ...archive, offset });
   }
 
   function saveReview() {
-    if (!review || saving.current) return;
+    if (!activeReview || !reviewInput || saving.current || archiveDraft?.saved ||
+        !isCurrentTfSecurityGeneration(activeReview.generation)) return;
+    const { kind, generation: reviewGeneration } = activeReview;
+    const id = kind === "tf" ? activeReview.id : archiveDraft?.id ?? crypto.randomUUID();
+    if (archive && !archiveDraft) {
+      setReview({ ...archive, drafts: new Map(archive.drafts).set(archiveOffset, { id, saved: false }) });
+    }
     saving.current = true;
-    const generation = captureTfSecurityGeneration();
-    void save.mutateAsync(review).then(() => {
-      if (!isCurrentTfSecurityGeneration(generation)) return;
-      setReview(null);
+    void save.mutateAsync({ id, input: reviewInput }).then(() => {
+      if (!isCurrentTfSecurityGeneration(reviewGeneration)) return;
+      if (kind === "spotify") {
+        setReview((current) => current?.kind === "spotify" && current.generation === reviewGeneration &&
+          current.drafts.get(archiveOffset)?.id === id
+          ? { ...current, drafts: new Map(current.drafts).set(archiveOffset, { id, saved: true }) }
+          : current);
+      } else {
+        setReview(null);
+      }
       save.reset();
-      selectDraft(review.id);
+      selectDraft(id);
     }).catch(() => {}).finally(() => { saving.current = false; });
   }
 
@@ -164,27 +234,53 @@ function OwnedPlaylistImports() {
         </Button>
       </div>
       <div className="mb-5">
-        <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-md border border-white/15 px-3 text-sm font-medium hover:bg-white/5 focus-within:outline-2 focus-within:outline-white has-disabled:cursor-not-allowed has-disabled:opacity-50">
-          <FileUp className="size-4" /> Файл экспорта TF
-          <input type="file" accept=".json,application/json" className="sr-only" disabled={save.isPending}
-            onChange={(event) => {
-              const file = event.currentTarget.files?.[0];
-              event.currentTarget.value = "";
-              if (file) inspectFile(file);
-            }} />
-        </label>
-        {reading && <p role="status" className="mt-2 text-sm text-white/60">Читаем файл...</p>}
+        <div className="flex flex-wrap gap-2">
+          {filePickers.map(({ kind, label }) => (
+            <label key={kind} className="inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-md border border-white/15 px-3 text-sm font-medium hover:bg-white/5 focus-within:outline-2 focus-within:outline-white has-disabled:cursor-not-allowed has-disabled:opacity-50">
+              <FileUp className="size-4 shrink-0" /> {label}
+              <input type="file" accept=".json,application/json" className="sr-only" disabled={save.isPending}
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  event.currentTarget.value = "";
+                  if (file) void inspectFile(kind, file);
+                }} />
+            </label>
+          ))}
+        </div>
+        {reading && <div className="mt-2 flex flex-wrap items-center gap-2">
+          <p role="status" className="text-sm text-white/60">Читаем файл...</p>
+          <Button type="button" variant="ghost" size="sm" onClick={clearReview}>Отмена</Button>
+        </div>}
         {fileError && <p role="alert" className="mt-2 text-sm text-amber-200">{fileError}</p>}
       </div>
 
-      {review && <section aria-label="Проверка импорта" className="mb-6 border-y border-white/10 py-4">
+      {activeReview && <section aria-label="Проверка импорта" className="mb-6 border-y border-white/10 py-4">
         <h3 className="text-sm font-semibold">Проверка импорта</h3>
-        <p className="mb-3 mt-1 break-words text-sm text-white/65">{review.input.name} · Записей: {review.input.entries.length}</p>
-        <DraftEntries entries={review.input.entries} />
+        {archiveRange && (archiveRange.total === 0 ? (
+          <p className="mt-2 text-sm text-white/60">В файле нет сохранённых треков Spotify.</p>
+        ) : <>
+          <div role="group" aria-label="Диапазоны файла Spotify" className="my-2 flex min-w-0 items-center gap-2">
+            {archiveRange.total > MAX_IMPORT_ENTRIES && <Button type="button" size="icon" variant="ghost" className="size-10 shrink-0"
+              aria-label="Предыдущий диапазон" title="Предыдущий диапазон" disabled={save.isPending || archiveRange.offset === 0}
+              onClick={() => changeArchiveRange(archiveRange.offset - MAX_IMPORT_ENTRIES)}><ChevronLeft className="size-4" /></Button>}
+            <p role="status" className="min-w-0 text-sm tabular-nums text-white/65">Позиции {archiveRange.offset + 1}–{archiveRange.end} из {archiveRange.total}</p>
+            {archiveRange.total > MAX_IMPORT_ENTRIES && <Button type="button" size="icon" variant="ghost" className="size-10 shrink-0"
+              aria-label="Следующий диапазон" title="Следующий диапазон" disabled={save.isPending || archiveRange.end >= archiveRange.total}
+              onClick={() => changeArchiveRange(archiveRange.end)}><ChevronRight className="size-4" /></Button>}
+          </div>
+          <p className="mb-2 text-sm tabular-nums text-white/60">Пропущено: {archiveRange.unavailable}</p>
+          {!archiveRange.input && !archiveRange.error && <p className="text-sm text-white/60">В этом диапазоне нет доступных записей.</p>}
+          {archiveRange.error && <p role="alert" className="text-sm text-amber-200">{archiveRange.error}</p>}
+        </>)}
+        {reviewInput && <>
+          <p className="mb-3 mt-1 break-words text-sm text-white/65">{reviewInput.name} · Записей: {reviewInput.entries.length}</p>
+          <DraftEntries entries={reviewInput.entries} />
+        </>}
+        {archiveDraft?.saved && <p role="status" className="mt-3 text-sm text-[#8ddbd4]">Диапазон сохранён как черновик.</p>}
         {save.isError && <p role="alert" className="mt-3 text-sm text-amber-200">{saveErrorMessage(save.error)}</p>}
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button type="button" disabled={save.isPending} onClick={saveReview}>Сохранить черновик</Button>
-          <Button type="button" variant="ghost" disabled={save.isPending} onClick={() => { save.reset(); setReview(null); }}>Отмена</Button>
+          {reviewInput && !archiveDraft?.saved && <Button type="button" disabled={save.isPending} onClick={saveReview}>Сохранить черновик</Button>}
+          <Button type="button" variant="ghost" disabled={save.isPending} onClick={clearReview}>{archiveDraft?.saved ? "Закрыть" : "Отмена"}</Button>
           {save.isPending && <span role="status" className="text-sm text-white/60">Сохраняем...</span>}
         </div>
       </section>}

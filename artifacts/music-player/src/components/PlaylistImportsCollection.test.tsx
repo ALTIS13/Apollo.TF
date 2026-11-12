@@ -29,6 +29,23 @@ function exportFile(tracks: unknown = entries) {
   })], "playlist.json", { type: "application/json" });
 }
 
+const archiveSong = {
+  artist: "Archive Artist", track: "Archive Track", uri: "spotify:track:1234567890123456789012",
+  album: "private-album", audioUrl: "https://example.invalid/private-audio",
+};
+
+function spotifyFile(tracks: unknown[]) {
+  return new File([JSON.stringify({ tracks, account: { username: "private-account" } })],
+    "YourLibrary.json", { type: "application/json" });
+}
+
+async function reviewSpotify(user: ReturnType<typeof userEvent.setup>, tracks: unknown[]) {
+  const picker = await screen.findByLabelText<HTMLInputElement>("Файл библиотеки Spotify");
+  await user.upload(picker, spotifyFile(tracks));
+  expect(picker.files).toHaveLength(0);
+  return within(await screen.findByRole("region", { name: "Проверка импорта" }));
+}
+
 function RefreshAccess() {
   const { refresh } = useTfAuth();
   return <button type="button" onClick={() => void refresh()}>Refresh access</button>;
@@ -179,4 +196,87 @@ it("aborts stale detail on installation change and never displays the old draft 
   await act(async () => finish(json({ draft: { ...saved(id, "Old draft"), entries } })));
   expect(await screen.findByText("Нет сохранённых черновиков.")).toBeInTheDocument();
   expect(screen.queryByText("Quiet Hours")).not.toBeInTheDocument();
+});
+
+it("reviews offline Spotify ranges with collections-only access and saves just the chosen normalized rows", async () => {
+  const archiveName = "Любимые Spotify из файла (201–203)";
+  const entry = { artist: "Archive Artist", title: "Archive Track", durationSeconds: null };
+  const archiveEntries = [entry, entry];
+  let id: string | null = null;
+  const summary = () => ({ ...saved(id!, archiveName), entryCount: archiveEntries.length });
+  const { http, user } = setup((path, init) => {
+    if (path === route) return json({ imports: id ? [summary()] : [] });
+    if (path.startsWith(`${route}/`) && init.method === "PUT") {
+      id = path.split("/").at(-1)!;
+      return json({ draft: { ...summary(), entries: archiveEntries } }, 201);
+    }
+    if (path === `${route}/${id}` && id) return json({ draft: { ...summary(), entries: archiveEntries } });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const archive = await reviewSpotify(user, [...Array(200).fill(null), archiveSong, null, archiveSong]);
+  const next = () => archive.getByRole("button", { name: "Следующий диапазон" });
+  const previous = () => archive.getByRole("button", { name: "Предыдущий диапазон" });
+  const puts = () => http.mock.calls.filter(([, init]) => init?.method === "PUT");
+
+  expect(archive.getByText("Позиции 1–200 из 203")).toBeInTheDocument();
+  expect(archive.getByText(/Пропущено: 200/)).toBeInTheDocument();
+  expect(archive.queryByRole("button", { name: "Сохранить черновик" })).not.toBeInTheDocument();
+  expect(previous()).toBeDisabled();
+  await user.click(next());
+  expect(archive.getByText("Позиции 201–203 из 203")).toBeInTheDocument();
+  expect(archive.getByText(/Пропущено: 1/)).toBeInTheDocument();
+  expect(archive.getAllByText("Archive Track")).toHaveLength(2);
+  expect(next()).toBeDisabled();
+  await user.click(previous());
+  expect(archive.getByText("Позиции 1–200 из 203")).toBeInTheDocument();
+  await user.click(next());
+  expect(puts()).toHaveLength(0);
+  expect(archive.queryByText(/private-account|private-album|private-audio|spotify:track/)).not.toBeInTheDocument();
+  await user.click(archive.getByRole("button", { name: "Сохранить черновик" }));
+  expect(await screen.findByRole("heading", { name: archiveName })).toBeInTheDocument();
+  expect(puts()).toHaveLength(1);
+  expect(JSON.parse(String(puts()[0][1]?.body))).toEqual({
+    name: archiveName, source: "file", entries: archiveEntries,
+  });
+  expect(http.mock.calls.map(([url]) => String(url)).every((path) =>
+    path === "/api/auth/me" || path === route || path === `${route}/${id}`)).toBe(true);
+});
+
+it("keeps navigation out of an oversized Spotify range without exposing its rows or saving it", async () => {
+  const { http, user } = setup((path) => {
+    if (path === route) return json({ imports: [] });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const oversizedSong = { ...archiveSong, artist: "я".repeat(300), track: "ю".repeat(500) };
+  const archive = await reviewSpotify(user, [...Array(200).fill(oversizedSong), archiveSong]);
+  expect(archive.getByText("Позиции 1–200 из 201")).toBeInTheDocument();
+  expect(archive.getByRole("alert")).toHaveTextContent("90 КиБ");
+  expect(archive.queryByText(oversizedSong.track)).not.toBeInTheDocument();
+  expect(archive.queryByRole("button", { name: "Сохранить черновик" })).not.toBeInTheDocument();
+  await user.click(archive.getByRole("button", { name: "Следующий диапазон" }));
+  expect(archive.getByText("Позиции 201–201 из 201")).toBeInTheDocument();
+  expect(archive.getByText("Archive Track")).toBeInTheDocument();
+  expect(archive.queryByRole("alert")).not.toBeInTheDocument();
+  expect(http.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+});
+
+it("clears Spotify review on cancel or installation change and never presents an empty archive as a range", async () => {
+  const { http, user, switchInstallation } = setup((path) => {
+    if (path === route) return json({ imports: [] });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const empty = await reviewSpotify(user, []);
+  expect(empty.getByText("В файле нет сохранённых треков Spotify.")).toBeInTheDocument();
+  expect(empty.queryByText(/Позиции/)).not.toBeInTheDocument();
+  expect(empty.queryByRole("button", { name: "Сохранить черновик" })).not.toBeInTheDocument();
+  await user.click(empty.getByRole("button", { name: "Отмена" }));
+  expect(screen.queryByRole("region", { name: "Проверка импорта" })).not.toBeInTheDocument();
+
+  const loaded = await reviewSpotify(user, [archiveSong]);
+  expect(loaded.getByText("Archive Track")).toBeInTheDocument();
+  switchInstallation();
+  await user.click(screen.getByRole("button", { name: "Refresh access" }));
+  await waitFor(() => expect(screen.queryByText("Archive Track")).not.toBeInTheDocument());
+  expect(screen.queryByRole("region", { name: "Проверка импорта" })).not.toBeInTheDocument();
+  expect(http.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
 });

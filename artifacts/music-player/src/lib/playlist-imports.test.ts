@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_IMPORT_ENTRIES, MAX_IMPORT_FILE_BYTES, readPlaylistImportFile, validatePlaylistImportInput } from "./playlist-imports";
+import {
+  MAX_IMPORT_ENTRIES,
+  MAX_IMPORT_FILE_BYTES,
+  previewSpotifyLibraryRange,
+  readPlaylistImportFile,
+  readSpotifyLibraryExport,
+  validatePlaylistImportInput,
+} from "./playlist-imports";
 
 const first = { artist: "Zeta", title: "First in file", durationSeconds: 1 };
 const second = { artist: "Alpha", title: "Second in file", durationSeconds: null };
@@ -72,5 +79,64 @@ describe("playlist import input", () => {
     value.entries.push(...value.entries.slice(0, 10));
     expect(JSON.stringify(value).length).toBeLessThan(90 * 1024);
     expect(() => validatePlaylistImportInput(value)).toThrow(/^import_payload_too_large$/);
+  });
+});
+
+describe("Spotify saved tracks file", () => {
+  const song = { artist: " Fixture Artist ", track: " Example Track ", uri: "spotify:track:Example123" };
+  const exportFile = (value: unknown) => new File([JSON.stringify(value)], "YourLibrary.json");
+
+  it("previews raw positions without retaining Spotify IDs, unrelated data or unsupported rows", async () => {
+    const library = await readSpotifyLibraryExport(exportFile({
+      tracks: [
+        ...Array.from({ length: 200 }, () => null),
+        { ...song, album: "Not retained", durationMs: 200_000, audioUrl: "Not retained" },
+        { ...song, uri: "spotify:local:artist:album:track:123" },
+        song,
+      ],
+      episodes: [{ name: "Private episode" }],
+      account: { username: "Private account" },
+    }));
+    const entry = { artist: "Fixture Artist", title: "Example Track", durationSeconds: null };
+    expect(library.slots.slice(200)).toEqual([entry, null, entry]);
+    expect(Object.keys(library)).toEqual(["slots"]);
+    expect(previewSpotifyLibraryRange(library, 0)).toEqual({
+      offset: 0, end: 200, total: 203, unavailable: 200, input: null,
+    });
+    expect(previewSpotifyLibraryRange(library, 200)).toEqual({
+      offset: 200, end: 203, total: 203, unavailable: 1,
+      input: { name: "Любимые Spotify из файла (201–203)", source: "file", entries: [entry, entry] },
+    });
+    expect(() => previewSpotifyLibraryRange(library, 201)).toThrow(/^invalid_import_input$/);
+  });
+
+  it("rejects ZIP and unrelated JSON, bounds input size and keeps the TF file limit", async () => {
+    await expect(readSpotifyLibraryExport(exportFile({ playlists: [] }))).rejects.toThrow(/^invalid_import_file$/);
+    await expect(readSpotifyLibraryExport(new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], "data.zip")))
+      .rejects.toThrow(/^invalid_import_file$/);
+    await expect(readSpotifyLibraryExport(exportFile({ tracks: Array(10_001).fill(song) })))
+      .rejects.toThrow(/^invalid_import_file$/);
+    const oversized = new Blob([new Uint8Array(2 * 1024 * 1024 + 1)]);
+    const read = vi.spyOn(FileReader.prototype, "readAsArrayBuffer");
+    try {
+      await expect(readSpotifyLibraryExport(oversized)).rejects.toThrow(/^import_file_too_large$/);
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
+    const boundedLargeFile = exportFile({ tracks: [song], extra: " ".repeat(128 * 1024) });
+    await expect(readSpotifyLibraryExport(boundedLargeFile)).resolves.toMatchObject({ slots: [{ title: "Example Track" }] });
+    await expect(readPlaylistImportFile(boundedLargeFile)).rejects.toThrow(/^import_file_too_large$/);
+  });
+
+  it("keeps a zero-song library read-only and refuses a preview over the draft byte budget", async () => {
+    const empty = await readSpotifyLibraryExport(exportFile({ tracks: [] }));
+    expect(previewSpotifyLibraryRange(empty, 0)).toEqual({
+      offset: 0, end: 0, total: 0, unavailable: 0, input: null,
+    });
+    const large = await readSpotifyLibraryExport(exportFile({
+      tracks: Array(200).fill({ ...song, artist: "я".repeat(300), track: "я".repeat(500) }),
+    }));
+    expect(() => previewSpotifyLibraryRange(large, 0)).toThrow(/^import_payload_too_large$/);
   });
 });
