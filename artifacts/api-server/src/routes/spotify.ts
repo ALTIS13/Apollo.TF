@@ -1,6 +1,10 @@
-import type {
-  NormalizedTrack,
-  TfIntegrationsErrorResponse,
+import {
+  SPOTIFY_PLAYLIST_MAX_OFFSET,
+  SPOTIFY_PLAYLIST_PAGE_SIZE,
+  SPOTIFY_SAVED_ALBUMS_PAGE_SIZE,
+  spotifyCatalogIdSchema,
+  type NormalizedTrack,
+  type TfIntegrationsErrorResponse,
 } from "@workspace/tf-integrations-contract";
 import { Router, type IRouter, type Response } from "express";
 
@@ -117,17 +121,50 @@ function paginationValue(
     : fallback;
 }
 
-function pagination(query: Readonly<Record<string, unknown>>): {
+function pagination(
+  query: Readonly<Record<string, unknown>>,
+  maxPageSize = MAX_PAGE_SIZE,
+): {
   readonly offset: number;
   readonly limit: number;
 } {
   return {
     offset: paginationValue(query["offset"], 0, 1_000_000),
-    limit: Math.max(
-      1,
-      paginationValue(query["limit"], MAX_PAGE_SIZE, MAX_PAGE_SIZE),
-    ),
+    limit: Math.max(1, paginationValue(query["limit"], maxPageSize, maxPageSize)),
   };
+}
+
+function playlistPageQuery(
+  originalUrl: string,
+): { offset: number; limit: number } | null {
+  const queryStart = originalUrl.indexOf("?");
+  if (queryStart < 0 || queryStart === originalUrl.length - 1) {
+    return { offset: 0, limit: SPOTIFY_PLAYLIST_PAGE_SIZE };
+  }
+
+  const fieldCount = originalUrl.slice(queryStart + 1).split("&", 3).length;
+  if (fieldCount > 2) return null;
+  const params = new URLSearchParams(originalUrl.slice(queryStart));
+  const offsets = params.getAll("offset");
+  const limits = params.getAll("limit");
+  if (
+    fieldCount !== params.size ||
+    offsets.length + limits.length !== params.size ||
+    offsets.length > 1 ||
+    limits.length > 1
+  ) {
+    return null;
+  }
+  const offsetText = offsets[0] ?? "0";
+  const limitText = limits[0] ?? String(SPOTIFY_PLAYLIST_PAGE_SIZE);
+  if (!/^[0-9]+$/.test(offsetText) || !/^[0-9]+$/.test(limitText)) return null;
+
+  const offset = Number(offsetText);
+  const limit = Number(limitText);
+  if (offset > SPOTIFY_PLAYLIST_MAX_OFFSET || limit < 1 || limit > SPOTIFY_PLAYLIST_PAGE_SIZE) {
+    return null;
+  }
+  return { offset, limit };
 }
 
 function mapTrack(track: NormalizedTrack) {
@@ -146,6 +183,18 @@ function sendLibraryFailure(
   response: Response,
   failure: TfIntegrationsErrorResponse,
 ): void {
+  if (failure.error.code === "provider_rate_limited") {
+    const { retryAfterSeconds } = failure.error;
+    response.setHeader("Cache-Control", "no-store");
+    if (retryAfterSeconds !== undefined) {
+      response.setHeader("Retry-After", String(retryAfterSeconds));
+    }
+    response.status(429).json({
+      error: "spotify_rate_limited",
+      ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+    });
+    return;
+  }
   if (failure.error.code === "not_connected") {
     response.status(401).json({ error: "not_connected" });
     return;
@@ -305,6 +354,7 @@ export function createSpotifyRouter(
   });
 
   router.get("/spotify/liked", async (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
     const page = pagination(request.query);
     try {
       const result = await dependencies.gateway.execute({
@@ -361,6 +411,7 @@ export function createSpotifyRouter(
   });
 
   router.get("/spotify/playlists", async (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
     try {
       const result = await dependencies.gateway.execute({
         accountId: request.tfPrincipal!.accountId,
@@ -377,9 +428,37 @@ export function createSpotifyRouter(
     }
   });
 
+  router.get("/spotify/playlists/page", async (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    const page = playlistPageQuery(request.originalUrl);
+    if (page === null) {
+      response.status(400).json({ error: "invalid_request" });
+      return;
+    }
+    try {
+      const result = await dependencies.gateway.execute({
+        accountId: request.tfPrincipal!.accountId,
+        operation: "spotify.playlists.page",
+        input: page,
+      });
+      if (isFailure(result)) {
+        sendLibraryFailure(response, result);
+        return;
+      }
+      if (result.result.offset !== page.offset || result.result.limit !== page.limit) {
+        response.status(502).json({ error: "spotify_error" });
+        return;
+      }
+      response.json(result.result);
+    } catch {
+      response.status(502).json({ error: "spotify_error" });
+    }
+  });
+
   router.get(
     "/spotify/playlists/:playlistId/tracks",
     async (request, response) => {
+      response.setHeader("Cache-Control", "no-store");
       const page = pagination(request.query);
       try {
         const result = await dependencies.gateway.execute({
@@ -405,6 +484,47 @@ export function createSpotifyRouter(
       }
     },
   );
+
+  router.get("/spotify/albums", async (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    try {
+      const result = await dependencies.gateway.execute({
+        accountId: request.tfPrincipal!.accountId,
+        operation: "spotify.albums.list",
+        input: pagination(request.query, SPOTIFY_SAVED_ALBUMS_PAGE_SIZE),
+      });
+      if (isFailure(result)) {
+        sendLibraryFailure(response, result);
+        return;
+      }
+      response.json(result.result);
+    } catch {
+      response.status(502).json({ error: "spotify_error" });
+    }
+  });
+
+  router.get("/spotify/albums/:albumId/tracks", async (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    const albumId = spotifyCatalogIdSchema.safeParse(request.params.albumId);
+    if (!albumId.success) {
+      response.status(400).json({ error: "invalid_request" });
+      return;
+    }
+    try {
+      const result = await dependencies.gateway.execute({
+        accountId: request.tfPrincipal!.accountId,
+        operation: "spotify.album-tracks.list",
+        input: { albumId: albumId.data, ...pagination(request.query) },
+      });
+      if (isFailure(result)) {
+        sendLibraryFailure(response, result);
+        return;
+      }
+      response.json(result.result);
+    } catch {
+      response.status(502).json({ error: "spotify_error" });
+    }
+  });
 
   router.get("/spotify/top-tracks", async (request, response) => {
     const suppliedRange = request.query["time_range"];

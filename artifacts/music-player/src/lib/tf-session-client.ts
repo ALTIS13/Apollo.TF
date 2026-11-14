@@ -6,13 +6,37 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CANONICAL_32_BYTE_BASE64URL_PATTERN =
   /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
+const SPOTIFY_READ_PATH = /^\/spotify\/(?:albums(?:\/[^/?]+\/tracks)?|liked(?:-all)?|playlists(?:\/page|\/[^/?]+\/tracks)?|top-tracks)(?:\?|$)/;
 
 let csrfToken: string | null = null;
 let securityGeneration = 0;
 let securitySession: TfBrowserSession | null = null;
 let accessBlocked: TfApiError | null = null;
+let spotifyReadCooldownUntil = 0;
+const spotifyReadCooldownListeners = new Set<() => void>();
 let playbackActive = false;
 const activityListeners = new Set<() => void>();
+
+export function getSpotifyReadCooldownUntil(): number {
+  return spotifyReadCooldownUntil;
+}
+
+export function subscribeSpotifyReadCooldown(listener: () => void): () => void {
+  spotifyReadCooldownListeners.add(listener);
+  return () => { spotifyReadCooldownListeners.delete(listener); };
+}
+
+function setSpotifyReadCooldownUntil(until: number): void {
+  if (spotifyReadCooldownUntil === until) return;
+  spotifyReadCooldownUntil = until;
+  for (const listener of [...spotifyReadCooldownListeners]) listener();
+}
+
+function advanceTfSecurityGeneration(): void {
+  securityGeneration += 1;
+  setSpotifyReadCooldownUntil(0);
+}
+
 export function subscribeTfActivitySuspension(
   listener: () => void,
 ): () => void {
@@ -35,7 +59,7 @@ export function isCurrentTfSecurityGeneration(generation: number): boolean {
 }
 export function suspendTfProtectedActivity(error: TfApiError): void {
   accessBlocked = error;
-  securityGeneration += 1;
+  advanceTfSecurityGeneration();
   for (const listener of [...activityListeners]) listener();
 }
 export function canUseTfProtectedActivity(expectedSession?: TfBrowserSession | null): boolean {
@@ -59,6 +83,7 @@ export interface TfBrowserSession {
 
 export type TfApiErrorKind =
   | "provider"
+  | "rejected"
   | "unauthenticated"
   | "forbidden"
   | "unavailable"
@@ -78,6 +103,12 @@ export class TfApiError extends Error {
   ) {
     super(code);
     this.name = "TfApiError";
+  }
+}
+
+export class SpotifyRateLimitError extends TfApiError {
+  constructor(generation: number) {
+    super(429, "spotify_rate_limited", "rejected", false, generation);
   }
 }
 
@@ -204,11 +235,11 @@ export function normalizeTfApiError(error: unknown): TfApiError {
 }
 
 export function clearTfSessionSecurityState(): void {
-  securityGeneration += 1;
   csrfToken = null;
   securitySession = null;
   accessBlocked = new TfApiError(401, "unauthorized", "unauthenticated");
   playbackActive = false;
+  advanceTfSecurityGeneration();
   for (const listener of [...activityListeners]) listener();
 }
 
@@ -245,8 +276,15 @@ export function tfRequestInit(init: RequestInit = {}): RequestInit {
 }
 
 export async function tfFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const signal = init?.signal;
+  signal?.throwIfAborted();
   const generation = securityGeneration;
   const requestInit = tfRequestInit(init);
+  const spotifyRead = SPOTIFY_READ_PATH.test(path);
+  const spotifyGet = spotifyRead && requestInit.method === "GET";
+  if (spotifyGet && Date.now() < getSpotifyReadCooldownUntil()) {
+    throw new SpotifyRateLimitError(generation);
+  }
   let response: Response;
 
   try {
@@ -254,24 +292,58 @@ export async function tfFetch<T>(path: string, init?: RequestInit): Promise<T> {
   } catch (error) {
     throw normalizeTfApiError(error);
   }
+  signal?.throwIfAborted();
 
   if (!response.ok) {
     const body = await parseJson(response).catch(() => undefined);
+    signal?.throwIfAborted();
     const code =
       isRecord(body) && typeof body.error === "string"
         ? body.error
         : "invalid_response";
+    if (spotifyGet && response.status === 429 && code === "spotify_rate_limited" && isRecord(body) && !("code" in body)) {
+      if (!isCurrentTfSecurityGeneration(generation)) {
+        throw new TfApiError(0, "stale_response", "invalid", false, generation);
+      }
+      const hint = body.retryAfterSeconds;
+      const seconds = typeof hint === "number" && Number.isInteger(hint) && hint >= 0 && hint <= 86_400 ? hint : 30;
+      // A concurrent quota response can extend, but not shorten, a current cooldown.
+      setSpotifyReadCooldownUntil(Math.max(getSpotifyReadCooldownUntil(), Date.now() + seconds * 1_000));
+      throw new SpotifyRateLimitError(generation);
+    }
+    const importDraft = /^\/collections\/imports\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(path);
+    const recordingPath = /^\/collections\/imports\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/entries\/(?:[0-9]|[1-9][0-9]|1[0-9]{2})\/(candidates|selection)$/.exec(path)?.[1];
+    const recordingWrite = recordingPath === "selection" && requestInit.method === "PUT";
+    const recordingRead = recordingPath === "candidates" && requestInit.method === "GET";
+    const expectedRecordingRejection = (recordingRead || recordingWrite) && (
+      (response.status === 503 && code === "recording_catalog_unavailable") ||
+      (response.status === 404 && code === "import_entry_not_found") ||
+      (recordingWrite && response.status === 409 && (code === "recording_selection_changed" || code === "recording_not_full"))
+    );
+    const expectedImportRejection = importDraft && (
+      (response.status === 404 && code === "import_not_found") ||
+      (requestInit.method === "PUT" && (
+        (response.status === 409 && (code === "import_conflict" || code === "import_limit")) ||
+        (response.status === 400 && (code === "bad_request" || code === "invalid_request")) ||
+        (response.status === 413 && code === "request_too_large")
+      ))
+    );
+    const expectedArtistRejection = /^\/tracks\/artist(?:\?|$)/.test(path) &&
+      requestInit.method === "GET" &&
+      response.status === 503 && code === "artist_discovery_unavailable";
     const kind =
-      response.status === 401 && code === "not_connected" &&
-      /^\/spotify\/(?:liked(?:-all)?|playlists(?:\/[^/?]+\/tracks)?|top-tracks)(?:\?|$)/.test(path)
+      spotifyRead && response.status === 401 && code === "not_connected"
         ? "provider"
-        : response.status === 401
-          ? "unauthenticated"
-          : response.status === 403
-            ? "forbidden"
-            : response.status === 503
-              ? "unavailable"
-              : "invalid";
+        : expectedImportRejection || expectedRecordingRejection || expectedArtistRejection ||
+            (spotifyRead && response.status === 502 && code === "spotify_error")
+          ? "rejected"
+          : response.status === 401
+            ? "unauthenticated"
+            : response.status === 403
+              ? "forbidden"
+              : response.status === 503
+                ? "unavailable"
+                : "invalid";
     const apiError =
       isRecord(body) && "code" in body
         ? localRenewalError(response, body, generation)
@@ -282,6 +354,7 @@ export async function tfFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   try {
     const body = (await parseJson(response)) as T;
+    signal?.throwIfAborted();
     if (!isCurrentTfSecurityGeneration(generation))
       throw new TfApiError(0, "stale_response", "invalid", false, generation);
     return body;
@@ -381,9 +454,9 @@ export function commitTfSessionSecurityState(session: TfBrowserSession): void {
   }
 
   csrfToken = session.csrfToken;
-  securityGeneration += 1;
   securitySession = session;
   accessBlocked = null;
+  advanceTfSecurityGeneration();
 }
 
 const RENEWAL_ERRORS: Record<

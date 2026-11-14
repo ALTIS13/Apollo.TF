@@ -35,6 +35,43 @@ describe("TF browser session client", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
+  it("keeps the active session for catalog errors but fails closed on live policy outage", async () => {
+    const base = "/collections/imports/abcdef01-2345-4789-abcd-ef0123456789/entries/0";
+    const securityEvents = vi.fn();
+    const unsubscribe = subscribeTfAuthSecurityEvents(securityEvents);
+    const reply = (status: number, error: string) => Response.json({ error }, { status });
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(Response.json(session))
+      .mockResolvedValueOnce(reply(503, "recording_catalog_unavailable"))
+      .mockResolvedValueOnce(reply(409, "recording_selection_changed"))
+      .mockResolvedValueOnce(reply(503, "policy_unavailable"));
+    try {
+      await fetchAndCommitSession();
+      await expect(tfFetch(`${base}/candidates`)).rejects.toMatchObject({ kind: "rejected" });
+      await expect(tfFetch(`${base}/selection`, { method: "PUT" })).rejects.toMatchObject({ kind: "rejected" });
+      expect(securityEvents).not.toHaveBeenCalled();
+      await expect(tfFetch(`${base}/candidates`)).rejects.toMatchObject({ kind: "unavailable" });
+      expect(securityEvents).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "unavailable" }));
+    } finally { unsubscribe(); }
+  });
+
+  it("keeps artist search outages local without masking a policy outage on the same route", async () => {
+    const securityEvents = vi.fn();
+    const unsubscribe = subscribeTfAuthSecurityEvents(securityEvents);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(Response.json(session))
+      .mockResolvedValueOnce(Response.json({ error: "artist_discovery_unavailable" }, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ error: "policy_unavailable" }, { status: 503 }));
+    try {
+      await fetchAndCommitSession();
+      const path = "/tracks/artist?name=Fixture";
+      await expect(tfFetch(path)).rejects.toMatchObject({ kind: "rejected" });
+      expect(securityEvents).not.toHaveBeenCalled();
+      await expect(tfFetch(path)).rejects.toMatchObject({ kind: "unavailable" });
+      expect(securityEvents).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "unavailable" }));
+    } finally { unsubscribe(); }
+  });
+
   it("fetches and validates the session without committing CSRF until the caller accepts it", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(session), {
       status: 200,
@@ -161,6 +198,95 @@ describe("TF browser session client", () => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ error: code }), { status: 401 }));
     await expect(tfFetch(path)).rejects.toMatchObject({ kind: "unauthenticated" });
     expect(() => tfRequestInit()).toThrow();
+  });
+
+  it("honors the Spotify body deadline across reads without blocking other paths or the next account", async () => {
+    const now = vi.spyOn(Date, "now");
+    const start = Date.now();
+    now.mockReturnValue(start);
+    const securityEvents = vi.fn();
+    const unsubscribe = subscribeTfAuthSecurityEvents(securityEvents);
+    const quota = () => Response.json({ error: "spotify_rate_limited", retryAfterSeconds: 2 }, {
+      status: 429, headers: { "Retry-After": "99" },
+    });
+    commitTfSessionSecurityState(session);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(quota())
+      .mockResolvedValueOnce(Response.json({ connected: true }))
+      .mockResolvedValueOnce(Response.json({ results: [] }))
+      .mockResolvedValueOnce(quota())
+      .mockResolvedValueOnce(Response.json({ albums: [] }));
+    try {
+      await expect(tfFetch("/spotify/liked?offset=0")).rejects.toMatchObject({ status: 429, kind: "rejected", retryable: false });
+      now.mockReturnValue(start + 1_999);
+      await expect(tfFetch("/spotify/albums/AlbumA/tracks?offset=0")).rejects.toMatchObject({ code: "spotify_rate_limited" });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      await expect(tfFetch("/spotify/status")).resolves.toEqual({ connected: true });
+      await expect(tfFetch("/tracks/search?q=example")).resolves.toEqual({ results: [] });
+      now.mockReturnValue(start + 2_000);
+      await expect(tfFetch("/spotify/playlists")).rejects.toMatchObject({ code: "spotify_rate_limited" });
+      expect(fetch).toHaveBeenCalledTimes(4);
+      commitTfSessionSecurityState({ ...session, accountId: "10000000-0000-4000-8000-000000000009" });
+      await expect(tfFetch("/spotify/albums")).resolves.toEqual({ albums: [] });
+      expect(securityEvents).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+      now.mockRestore();
+    }
+  });
+
+  it.each([undefined, "4", -1, 1.5, 86_401])("uses a 30s fallback for a missing or invalid Spotify hint (%s)", async (retryAfterSeconds) => {
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(start);
+    commitTfSessionSecurityState(session);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(Response.json({ error: "spotify_rate_limited", retryAfterSeconds }, {
+        status: 429, headers: { "Retry-After": "1" },
+      }))
+      .mockResolvedValueOnce(Response.json({ tracks: [] }));
+    try {
+      await expect(tfFetch("/spotify/top-tracks")).rejects.toMatchObject({ kind: "rejected" });
+      now.mockReturnValue(start + 29_999);
+      await expect(tfFetch("/spotify/liked-all")).rejects.toMatchObject({ code: "spotify_rate_limited" });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      now.mockReturnValue(start + 30_000);
+      await expect(tfFetch("/spotify/liked-all")).resolves.toEqual({ tracks: [] });
+    } finally { now.mockRestore(); }
+  });
+
+  it("allows a manual Spotify retry immediately for a zero hint and still reports policy denial", async () => {
+    commitTfSessionSecurityState(session);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(Response.json({ error: "spotify_rate_limited", retryAfterSeconds: 0 }, { status: 429 }))
+      .mockResolvedValueOnce(Response.json({ error: "module_access_denied" }, { status: 403 }));
+    await expect(tfFetch("/spotify/playlists/PlaylistA/tracks")).rejects.toMatchObject({ kind: "rejected" });
+    await expect(tfFetch("/spotify/playlists/PlaylistA/tracks")).rejects.toMatchObject({ kind: "forbidden" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["/spotify/liked", "POST", 429, "spotify_rate_limited", "invalid"],
+    ["/spotify/liked/other", "GET", 429, "spotify_rate_limited", "invalid"],
+    ["/spotify/status", "GET", 429, "spotify_rate_limited", "invalid"],
+    ["/spotify/liked", "GET", 429, "policy_unavailable", "invalid"],
+    ["/spotify/liked", "GET", 401, "spotify_rate_limited", "unauthenticated"],
+  ])("keeps existing error handling outside the quota contract: %s %s %s %s", async (path, method, status, error, kind) => {
+    commitTfSessionSecurityState(session);
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({ error }, { status }));
+    await expect(tfFetch(path, { method })).rejects.toMatchObject({ kind });
+    expect(() => tfRequestInit()).toThrow();
+  });
+
+  it("does not start a cooldown from a late Spotify reply in an old security generation", async () => {
+    let resolveReply!: (response: Response) => void;
+    const reply = new Promise<Response>((resolve) => { resolveReply = resolve; });
+    commitTfSessionSecurityState(session);
+    vi.mocked(fetch).mockReturnValueOnce(reply).mockResolvedValueOnce(Response.json({ tracks: [] }));
+    const oldRead = tfFetch("/spotify/liked");
+    commitTfSessionSecurityState({ ...session });
+    resolveReply(Response.json({ error: "spotify_rate_limited", retryAfterSeconds: 120 }, { status: 429 }));
+    await expect(oldRead).rejects.toMatchObject({ code: "stale_response" });
+    await expect(tfFetch("/spotify/liked")).resolves.toEqual({ tracks: [] });
   });
 
   it("blocks further protected requests after a confirmed 401", async () => {

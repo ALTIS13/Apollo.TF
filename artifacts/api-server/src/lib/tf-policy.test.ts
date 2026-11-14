@@ -144,6 +144,8 @@ function protectedRequest(
 function concretePath(path: string): string {
   return path
     .replace(":playlistId", "playlist-1")
+    .replace(":importId", "abcdef01-2345-4789-abcd-ef0123456789")
+    .replace(":revision", "b".repeat(64))
     .replace(":jobId", "job-1")
     .replace(":kind", "2")
     .replace(":uid", "123")
@@ -174,14 +176,14 @@ describe("TF route policy map", () => {
     expect(requiredPolicyForRequest(method, `${path}/extra/path`)).toBeNull();
   });
 
-  it("contains the exact 49 anchored capability policies", () => {
-    expect(TF_ROUTE_POLICIES).toHaveLength(49);
+  it("contains the exact 60 anchored capability policies", () => {
+    expect(TF_ROUTE_POLICIES).toHaveLength(60);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === false),
-    ).toHaveLength(8);
+    ).toHaveLength(9);
     expect(
       TF_ROUTE_POLICIES.filter((policy) => policy.live === true),
-    ).toHaveLength(41);
+    ).toHaveLength(51);
 
     expect(
       requiredPolicyForRequest("POST", "/api/tracks/search?ignored=1"),

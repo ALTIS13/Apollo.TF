@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "id": "cylinder-five-commons-ogg",
+      "artist": "Chris Zabriskie",
+      "title": "Cylinder Five",
+      "matchTitle": "Cylinder Five",
+      "edition": "original",
+      "releaseDate": "2014-01-01",
+      "expectedDurationSeconds": 174,
+      "measuredDurationSeconds": 174,
+      "mediaKind": "full",
+      "streamPermission": "permitted",
+      "downloadPermission": "permitted",
+      "evidence": {
+        "recordId": "cc-by-4-cylinders-2014-commons-857724712",
+        "basis": "Chris Zabriskie licenses Cylinders under CC BY 4.0: https://chriszabriskie.com/cylinders/ and https://chriszabriskie.com/use/. Wikimedia Commons Ogg transcode of the released recording; source SHA-1 df7e46841dfa2b9c706a516da3add66bd391b010. Decoded 173.533 seconds. Apollo TF does not modify the Ogg bytes. Not a claim about the studio master.",
+        "observedDate": "2026-11-12",
+        "reviewed": true
+      },
+      "sourceLabel": "Chris Zabriskie (c) 2014, Cylinders. CC BY 4.0. Ogg from Wikimedia Commons; no changes by Apollo TF.",
+      "sourceUrl": "https://commons.wikimedia.org/w/index.php?title=File:Chris_Zabriskie_-_05_-_Cylinder_Five.ogg&oldid=857724712",
+      "media": {
+        "format": "ogg",
+        "sha256": "ae4e304cde343904b881983502c88fbd4464251301f9dcbe382f28b655a6a803"
+      }
+    }
+  ]
+}

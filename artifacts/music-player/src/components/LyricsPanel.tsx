@@ -6,6 +6,7 @@ import { useTfAuth } from "@/auth/tf-auth";
 import { expectedDurationSeconds, formatDuration } from "@/lib/utils";
 import { tfFetch } from "@/lib/tf-session-client";
 import { parseSyncedLyrics } from "@/lib/lyrics";
+import { isReviewedTrack } from "@/lib/reviewed-recording";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
 interface LyricsResponse {
@@ -48,7 +49,7 @@ export function LyricsPanel({
 }: LyricsPanelProps) {
   const { status, session, hasEntitlement } = useTfAuth();
   const accountId = status === "authenticated" ? session?.accountId : null;
-  const allowed = accountId !== null && hasEntitlement("tf.search");
+  const allowed = accountId !== null && !isReviewedTrack(track) && hasEntitlement("tf.search");
   const [followState, setFollowState] = useState({ trackId: track.id, enabled: true });
   const [feedbackState, setFeedbackState] = useState<FeedbackState | null>(null);
   const feedback = feedbackState?.trackId === track.id ? feedbackState : null;

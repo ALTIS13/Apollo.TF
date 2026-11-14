@@ -197,6 +197,121 @@ afterEach(async () => {
 });
 
 describe("tf-search deployment contract", () => {
+  it("defines a single private image-only Coolify search compute destination", async () => {
+    const template = await composeTemplate(
+      join(
+        repositoryRoot,
+        "deploy/coolify/apollo-tf.search-compute.git.compose.yml",
+      ),
+    );
+    const search = service(template, "tf-search");
+    expect(Object.keys(template).sort()).toEqual([
+      "name",
+      "networks",
+      "secrets",
+      "services",
+    ]);
+    expect(template).toMatchObject({ name: "apollo-tf-search-compute" });
+    expect(Object.keys(template.services)).toEqual(["tf-search"]);
+    expect(Object.keys(search).sort()).toEqual([
+      "cap_drop",
+      "deploy",
+      "environment",
+      "healthcheck",
+      "image",
+      "init",
+      "logging",
+      "networks",
+      "pids_limit",
+      "read_only",
+      "restart",
+      "secrets",
+      "security_opt",
+      "stop_grace_period",
+      "tmpfs",
+      "user",
+    ]);
+    expect(search).toMatchObject({
+      image:
+        "ghcr.io/altis13/apollo-tf-search@sha256:${TF_SEARCH_COMPUTE_IMAGE_DIGEST:?Use the admitted TF search image digest}",
+      deploy: {
+        replicas: 1,
+        resources: { limits: { cpus: "1.0", memory: "512M", pids: 128 } },
+      },
+      user: "10001:10001",
+      read_only: true,
+      init: true,
+      pids_limit: 128,
+      cap_drop: ["ALL"],
+      security_opt: ["no-new-privileges:true"],
+      stop_grace_period: "20s",
+      tmpfs: [
+        "/tmp:rw,noexec,nosuid,size=32m",
+        "/tmp/yt-dlp:rw,noexec,nosuid,size=64m",
+      ],
+    });
+    expect(search.environment).toEqual({
+      APOLLO_API_VERSION:
+        "${TF_SEARCH_VERSION:?Use the admitted TF search version}",
+      APOLLO_DEPLOYED_AT:
+        "${TF_SEARCH_DEPLOYED_AT:?Use the TF search deployment timestamp}",
+      NODE_ENV: "production",
+      PORT: "8080",
+      TF_SEARCH_HEARTBEAT_ALLOW_INSECURE_HTTP: "false",
+      TF_SEARCH_HEARTBEAT_API_ORIGIN:
+        "${TF_SEARCH_COMPUTE_HEARTBEAT_API_ORIGIN:?Use the admitted exact HTTPS TF API origin}",
+      TF_SEARCH_HEARTBEAT_SECRET_FILE:
+        "/run/secrets/tf_search_heartbeat_secret",
+      TF_SEARCH_INTERNAL_AUTH_SECRET_FILE:
+        "/run/secrets/tf_search_internal_auth_secret",
+    });
+    expect(search.secrets).toEqual([
+      {
+        source: "tf_search_internal_auth_secret",
+        target: "tf_search_internal_auth_secret",
+        uid: "10001",
+        gid: "10001",
+        mode: "0400",
+      },
+      {
+        source: "tf_search_heartbeat_secret",
+        target: "tf_search_heartbeat_secret",
+        uid: "10001",
+        gid: "10001",
+        mode: "0400",
+      },
+    ]);
+    expect(template.secrets).toEqual(
+      Object.fromEntries(
+        secretSources(search).map((name) => [
+          name,
+          {
+            file: `\${TF_SEARCH_COMPUTE_SECRET_DIRECTORY:?Use the dedicated absolute search secret directory}/${name}`,
+          },
+        ]),
+      ),
+    );
+    expect(search.networks).toEqual({
+      "tf-search-compute-control": { gw_priority: 0 },
+      "tf-search-compute-egress": { gw_priority: 1 },
+    });
+    expect(template.networks).toEqual({
+      "tf-search-compute-control": {
+        external: true,
+        name: "apollo-tf-search-compute-control-v1",
+      },
+      "tf-search-compute-egress": {
+        name: "apollo-tf-search-compute-egress-v1",
+      },
+    });
+    expect(search.healthcheck?.["test"]).toEqual([
+      "CMD",
+      "node",
+      "-e",
+      expect.stringContaining("http://127.0.0.1:8080/readyz"),
+    ]);
+  });
+
   it.each([
     [
       "root",

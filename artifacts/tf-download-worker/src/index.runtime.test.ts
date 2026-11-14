@@ -54,12 +54,14 @@ interface HarnessOptions {
   readonly queueProbeTimeoutMs?: number;
   readonly cancellationReads?: readonly (string | null | Error)[];
   readonly cancellationScriptResults?: readonly (number | Error)[];
+  readonly sweepQuotaResults?: readonly boolean[];
 }
 
 function createHarness(options: HarnessOptions = {}) {
   const order: string[] = [];
   let cancellationReadIndex = 0;
   let cancellationScriptIndex = 0;
+  let sweepIndex = 0;
   const redis = Array.from({ length: 3 }, (_, index) => ({
     async connect() {
       order.push(`redis:${index}:connect`);
@@ -141,7 +143,7 @@ function createHarness(options: HarnessOptions = {}) {
         removedPartialFiles: 0,
         removedStorageKeys: [],
         bytesRemaining: 0,
-        quotaSatisfied: true,
+        quotaSatisfied: options.sweepQuotaResults?.[sweepIndex++] ?? true,
       };
     },
     async close() {
@@ -531,6 +533,27 @@ describe("TF download worker runtime", () => {
       ).toHaveLength(2),
     );
     await runtime.shutdown();
+  });
+
+  it("reports unresolved storage quota at startup and on periodic sweeps", async () => {
+    const harness = createHarness({ sweepQuotaResults: [false, true, false] });
+    const runtime = await startTfDownloadWorkerRuntime({
+      registerSignals: false,
+      dependencies: harness.dependencies as never,
+    });
+    const { observe } = harness.heartbeatOptions as {
+      observe(): { status: string };
+    };
+
+    try {
+      expect(observe().status).toBe("warning");
+      harness.sweepTask?.();
+      await vi.waitFor(() => expect(observe().status).toBe("healthy"));
+      harness.sweepTask?.();
+      await vi.waitFor(() => expect(observe().status).toBe("warning"));
+    } finally {
+      await runtime.shutdown();
+    }
   });
 
   it("maps non-retriable processing errors to BullMQ UnrecoverableError", async () => {

@@ -34,6 +34,7 @@ import { useToast } from "@/hooks/use-toast";
 import { formatDuration } from "@/lib/utils";
 import { PlaylistAction, type PlaylistBatchResult } from "@/components/PlaylistAction";
 import { LikedRemovalAction } from "@/components/LikedRemovalAction";
+import { ArtistLink } from "@/components/ArtistLink";
 import { planLikedReorder } from "@/lib/liked-order";
 import {
   canUseTfProtectedActivity,
@@ -210,7 +211,7 @@ function LikedTrackRow({
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium" title={item.title ?? "Без названия"}>{item.title ?? "Без названия"}</p>
             <div className="flex min-w-0 items-center gap-2 text-xs text-white/50">
-              <p className="truncate" title={item.artist ?? "Неизвестный исполнитель"}>{item.artist ?? "Неизвестный исполнитель"}</p>
+              <ArtistLink artist={item.artist} enabled={!selecting && !canMove} />
               <span className="shrink-0 tabular-nums text-white/40"
                 aria-label={hasDuration ? `Длительность ${formatDuration(item.durationSeconds!)}` : "Длительность неизвестна"}
               >{hasDuration ? formatDuration(item.durationSeconds!) : "—"}</span>

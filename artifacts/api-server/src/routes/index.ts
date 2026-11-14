@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type RequestHandler } from "express";
 import { createHealthRouter } from "./health.js";
 import { createTracksRouter, type TrackRouteDependencies } from "./tracks.js";
 import {
@@ -8,7 +8,10 @@ import {
 import { createYandexRouter, type YandexRouteDependencies } from "./yandex.js";
 import { adminRouter } from "./admin.js";
 import { createAuthRouter, type AuthRouteDependencies } from "./auth.js";
-import { requireTfCapability } from "../lib/tf-policy.js";
+import {
+  requiredPolicyForRequest,
+  requireTfCapability,
+} from "../lib/tf-policy.js";
 import { hasFamilyCookie } from "../lib/tf-browser-session.js";
 import {
   createFamilyWebSocketTicketRouter,
@@ -24,6 +27,10 @@ import {
   createPlaylistsRouter,
   type PlaylistRouteDependencies,
 } from "./playlists.js";
+import {
+  createPlaylistImportsRouter,
+  type PlaylistImportRouteDependencies,
+} from "./playlist-imports.js";
 
 export interface ApiRouterOptions {
   readonly familyWebSocket?: TfFamilyWebSocket;
@@ -37,11 +44,38 @@ export interface ApiRouterOptions {
   readonly tracks?: Partial<TrackRouteDependencies>;
   readonly collections?: Partial<CollectionRouteDependencies>;
   readonly playlists?: Partial<PlaylistRouteDependencies>;
+  readonly playlistImports?: Partial<PlaylistImportRouteDependencies>;
   readonly readiness?: () => Promise<boolean>;
 }
 
+export const playlistImportNoStore: RequestHandler = (
+  request,
+  response,
+  next,
+) => {
+  if (request.originalUrl.startsWith("/api/collections/imports")) {
+    const path = requiredPolicyForRequest(
+      request.method,
+      request.originalUrl,
+    )?.path;
+    if (
+      path === "/api/collections/imports" ||
+      path?.startsWith("/api/collections/imports/")
+    ) {
+      response.set("Cache-Control", "no-store");
+    }
+  }
+  next();
+};
+
 export function createApiRouter(options: ApiRouterOptions = {}): IRouter {
   const router: IRouter = Router();
+  router.use((request, response, next) => {
+    if (request.method === "GET" && request.path === "/tracks/artist") {
+      response.set("Cache-Control", "no-store");
+    }
+    next();
+  });
   if (options.auth !== undefined) {
     router.use("/auth", createAuthRouter(options.auth));
   }
@@ -89,6 +123,7 @@ export function createApiRouter(options: ApiRouterOptions = {}): IRouter {
   router.use(createTracksRouter(options.tracks));
   router.use(createCollectionsRouter(options.collections));
   router.use(createPlaylistsRouter(options.playlists));
+  router.use(createPlaylistImportsRouter(options.playlistImports));
   router.use(
     createSpotifyRouter({
       ...options.spotify,

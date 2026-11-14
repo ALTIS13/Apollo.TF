@@ -63,6 +63,14 @@ export default defineConfig({
           },
         },
         useDates: false,
+        operations: {
+          getArtistTracks: {
+            zod: {
+              strict: { query: true, response: true },
+              coerce: { query: false },
+            },
+          },
+        },
         tags: {
           collections: {
             zod: {

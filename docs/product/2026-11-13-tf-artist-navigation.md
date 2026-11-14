@@ -1,0 +1,9 @@
+# TF artist navigation
+
+Artist names in search, recommendations and the ordinary liked-track view link to `/artist?name=...` when the current session has `tf.search`. The page uses the same player, queue and collection actions; editing a favorite order or selecting a replacement is not interrupted by an artist link. No new top-level navigation, account, or provider authorization.
+
+`GET /api/tracks/artist?name=...` is an additive version-1, no-store read. It reuses the signed TF search module with up to ten results per source (YouTube and SoundCloud). Matching is against the provider artist label after Unicode, whitespace and case normalization, not against an identity or an authoritative discography. Homonyms can still occur. The API filters, deduplicates and returns only the existing public track DTO, without source media URLs. It does not read recommendation history or record plays. One successful provider returns a partial result; no healthy provider returns a retryable page-local outage. Platform and session failures still fail closed.
+
+An artist result does not establish the original recording, ownership, offline admission, or permission to download. Artist cards do not expose the download action. Verified full-recording selection and the separate authorized file route remain the [reviewed recording flow](2026-11-12-tf-reviewed-audio.md). No runtime, native client, or HomeNode change is included.
+
+Chrome fixture proof: searched for Glass Harbor, opened the artist link for `Écho & Сигнал #2`, saw three results, and added Night Signal to the main queue. The fixture recorded the exact decoded artist GET and no media or out-of-scope requests. Browser identity, catalog and collection replies were synthetic; this is not provider, Platform or hosted API acceptance. The loopback fixture was stopped after verification.

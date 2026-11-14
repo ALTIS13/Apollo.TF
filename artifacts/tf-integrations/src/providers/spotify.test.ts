@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { SPOTIFY_PLAYLIST_MAX_OFFSET, SPOTIFY_PLAYLIST_PAGE_SIZE } from "@workspace/tf-integrations-contract";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -349,7 +350,7 @@ describe("SpotifyProvider", () => {
 
   it("calls only fixed Spotify HTTPS endpoints with bounded query values", async () => {
     const { provider, requests } = makeProvider([
-      jsonResponse({ items: [{ track: spotifyTrack("liked") }], total: 1 }),
+      jsonResponse({ items: [], total: 1, next: null }),
       jsonResponse({
         items: [
           {
@@ -390,7 +391,7 @@ describe("SpotifyProvider", () => {
     expect(requests.map(({ url }) => url)).toEqual([
       "https://api.spotify.com/v1/me/tracks?offset=1000000&limit=50",
       "https://api.spotify.com/v1/me/playlists?limit=50",
-      "https://api.spotify.com/v1/playlists/playlist%20%2F%20identifier/tracks?offset=0&limit=1&fields=items%28track%28id%2Cname%2Cartists%2Calbum%2Cduration_ms%2Cexternal_urls%29%29%2Ctotal",
+      "https://api.spotify.com/v1/playlists/playlist%20%2F%20identifier/tracks?offset=0&limit=1&fields=items%28track%28id%2Cname%2Cartists%2Calbum%2Cduration_ms%2Cexternal_urls%29%29%2Ctotal%2Cnext",
       "https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=long_term",
     ]);
     expectRedirectError(requests);
@@ -469,6 +470,192 @@ describe("SpotifyProvider", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it.each(["liked", "playlist-items"] as const)("rejects a zero-progress %s track page without rejecting unavailable positions", async (kind) => {
+    const wrapper = kind === "liked" ? "track" : "item";
+    const { provider } = makeProvider([
+      jsonResponse({ items: [], total: 80 }),
+      jsonResponse({ items: [{ [wrapper]: null }], total: 51 }),
+      jsonResponse({ items: [], total: 50 }),
+    ], { playlistApi: "items" });
+    const read = () => kind === "liked"
+      ? provider.likedTracks({ accessToken: "access", offset: 50, limit: 1 })
+      : provider.playlistTracks({ accessToken: "access", playlistId: "owned", offset: 50, limit: 1 });
+
+    await expect(read()).rejects.toMatchObject({ code: "provider_unavailable" });
+    await expect(read()).resolves.toEqual({ offset: 50, limit: 1, total: 51, tracks: [] });
+    await expect(read()).resolves.toEqual({ offset: 50, limit: 1, total: 50, tracks: [] });
+  });
+
+  it("retains neighboring Spotify tracks when an album was taken down", async () => {
+    const removed = spotifyTrack("RemovedAlbumTrack");
+    const { provider } = makeProvider([jsonResponse({
+      items: [
+        { item: spotifyTrack("FirstTrack") },
+        { item: { ...removed, album: { ...removed.album, name: "" } } },
+        { item: spotifyTrack("LastTrack") },
+      ],
+      total: 3,
+    })], { playlistApi: "items" });
+
+    const result = await provider.playlistTracks({ accessToken: "access", playlistId: "owned", offset: 0, limit: 3 });
+    expect(result.total).toBe(3);
+    expect(result.tracks.map(({ id }) => id)).toEqual(["FirstTrack", "LastTrack"]);
+  });
+
+  it("rejects a track response larger than its requested page", async () => {
+    const { provider } = makeProvider([jsonResponse({
+      items: [{ track: spotifyTrack("FirstTrack") }, { track: spotifyTrack("LastTrack") }],
+      total: 2,
+    })]);
+
+    await expect(provider.likedTracks({ accessToken: "access", offset: 0, limit: 1 }))
+      .rejects.toMatchObject({ code: "invalid_provider_response" });
+  });
+
+  it("fills a short playlist window using only the validated Spotify continuation offset", async () => {
+    const { provider, requests } = makeProvider([
+      jsonResponse({ items: [{ item: spotifyTrack("FirstTrack") }, { item: null }], total: 8,
+        next: "https://api.spotify.com/v1/playlists/owned/items?offset=2&limit=50&market=US" }),
+      jsonResponse({ items: [{ item: spotifyTrack("LastTrack") }], total: 8,
+        next: "https://api.spotify.com/v1/playlists/owned/items?offset=4&limit=2" }),
+    ], { playlistApi: "items" });
+
+    const result = await provider.playlistTracks({ accessToken: "access", playlistId: "owned", offset: 0, limit: 4 });
+    expect(result).toMatchObject({ offset: 0, limit: 4, total: 8 });
+    expect(result.tracks.map(({ id }) => id)).toEqual(["FirstTrack", "LastTrack"]);
+    expect(requests.map(({ url }) => {
+      const request = new URL(url);
+      return [request.pathname, request.searchParams.get("offset"), request.searchParams.get("limit"), request.searchParams.has("market")];
+    })).toEqual([["/v1/playlists/owned/items", "0", "4", false], ["/v1/playlists/owned/items", "2", "2", false]]);
+  });
+
+  it("does not return partial liked tracks when the provider continuation is foreign", async () => {
+    const { provider, requests } = makeProvider([jsonResponse({
+      items: [{ track: spotifyTrack("FirstTrack") }], total: 8,
+      next: "https://example.invalid/v1/me/tracks?offset=1",
+    })]);
+
+    await expect(provider.likedTracks({ accessToken: "access", offset: 0, limit: 4 }))
+      .rejects.toMatchObject({ code: "invalid_provider_response" });
+    expect(requests).toHaveLength(1);
+  });
+
+  it("bounds fragmented liked-track windows without accepting a partial result", async () => {
+    const { provider, requests } = makeProvider(Array.from({ length: 4 }, (_, offset) => jsonResponse({
+      items: [{ track: spotifyTrack(`Track${offset}`) }], total: 12,
+      next: `https://api.spotify.com/v1/me/tracks?offset=${offset + 1}`,
+    })));
+
+    await expect(provider.likedTracks({ accessToken: "access", offset: 0, limit: 8 }))
+      .rejects.toMatchObject({ code: "provider_unavailable" });
+    expect(requests).toHaveLength(4);
+  });
+
+  it("rejects an album changing total between fragments of the same track window", async () => {
+    const track = { ...spotifyTrack("AlbumTrack"), disc_number: 1, track_number: 1 };
+    const { provider, requests } = makeProvider([
+      jsonResponse({ offset: 0, limit: 4, total: 8, items: [track], next: "https://api.spotify.com/v1/albums/album1/tracks?offset=1" }),
+      jsonResponse({ offset: 1, limit: 3, total: 9, items: [{ ...track, id: "OtherTrack" }], next: "https://api.spotify.com/v1/albums/album1/tracks?offset=4" }),
+    ]);
+
+    await expect(provider.albumTracks({ accessToken: "access", albumId: "album1", offset: 0, limit: 4 }))
+      .rejects.toMatchObject({ code: "provider_unavailable" });
+    expect(requests).toHaveLength(2);
+  });
+
+  it.each([
+    { total: 2, limit: 2, count: 1, code: "provider_unavailable" },
+    { total: 1, limit: 2, count: 2, code: "invalid_provider_response" },
+  ])("rejects terminal track pages with $count raw rows for $total positions", async ({ total, limit, count, code }) => {
+    const { provider } = makeProvider([jsonResponse({
+      items: Array.from({ length: count }, (_, index) => ({ track: spotifyTrack(`Track${index}`) })),
+      total,
+      next: null,
+    })]);
+
+    await expect(provider.likedTracks({ accessToken: "access", offset: 0, limit }))
+      .rejects.toMatchObject({ code });
+  });
+
+  describe("playlist catalog pages", () => {
+    const metadata = {
+      id: "playlistA", name: "Playlist A", description: null, images: [],
+      owner: { display_name: null, id: "ownerA" },
+    };
+
+    it("advances over an empty filtered page using its partial raw count, not the next URL", async () => {
+      const { provider, requests } = makeProvider([jsonResponse({
+        offset: 40, limit: 50, total: 120,
+        next: "https://untrusted.invalid/?offset=90",
+        items: [metadata, { ...metadata, id: "playlistB" }],
+      })], { playlistApi: "items" });
+      const signal = new AbortController().signal;
+
+      await expect(provider.playlistsPage({ accessToken: "access", offset: 40, limit: 50, signal }))
+        .resolves.toStrictEqual({ offset: 40, limit: 50, total: 120, nextOffset: 42, playlists: [] });
+      expect(requests.map(({ url }) => url)).toEqual(["https://api.spotify.com/v1/me/playlists?offset=40&limit=50"]);
+      expect(requests[0]?.init.signal).toBe(signal);
+    });
+
+    it.each(["tracks", "items"] as const)("normalizes only readable %s-profile metadata on a terminal page", async (profile) => {
+      const { provider, requests } = makeProvider([jsonResponse({
+        offset: 10, limit: 3, total: 11,
+        items: [{ ...metadata, [profile]: { total: 4 }, unrelated: "not exposed" }],
+      })], { playlistApi: profile });
+
+      await expect(provider.playlistsPage({ accessToken: "access", offset: 10, limit: 3 }))
+        .resolves.toStrictEqual({ offset: 10, limit: 3, total: 11, nextOffset: null, playlists: [
+          { id: "playlistA", name: "Playlist A", description: "", trackCount: 4, thumbnailUrl: null, owner: "ownerA" },
+        ] });
+      expect(requests).toHaveLength(1);
+    });
+
+    it.each([
+      { name: "mismatched offset", change: { offset: 1 } },
+      { name: "mismatched limit", change: { limit: 2 } },
+      { name: "excess raw rows", change: { items: [metadata, metadata] } },
+      { name: "rows beyond total", change: { total: 0 } },
+      { name: "wrong profile", change: { items: [{ ...metadata, tracks: { total: 2 } }] } },
+      { name: "zero progress before total", change: { items: [] }, code: "provider_unavailable" },
+    ])("rejects $name without fetching another page", async ({ change, code }) => {
+      const { provider, requests } = makeProvider([jsonResponse({
+        offset: 0, limit: 1, total: 2, items: [metadata], ...change,
+      })], { playlistApi: "items" });
+
+      await expect(provider.playlistsPage({ accessToken: "access", offset: 0, limit: 1 }))
+        .rejects.toMatchObject({ code: code ?? "invalid_provider_response" });
+      expect(requests).toHaveLength(1);
+    });
+
+    it.each([
+      [SPOTIFY_PLAYLIST_MAX_OFFSET - 1, SPOTIFY_PLAYLIST_MAX_OFFSET],
+      [SPOTIFY_PLAYLIST_MAX_OFFSET, null],
+    ] as const)("keeps readable rows at offset %s with bounded successor %s", async (offset, nextOffset) => {
+      const total = SPOTIFY_PLAYLIST_MAX_OFFSET + 2;
+      const { provider, requests } = makeProvider([jsonResponse({
+        offset, limit: 1, total, items: [{ ...metadata, items: { total: 4 } }],
+      })], { playlistApi: "items" });
+
+      await expect(provider.playlistsPage({ accessToken: "access", offset, limit: 1 }))
+        .resolves.toStrictEqual({ offset, limit: 1, total, nextOffset, playlists: [
+          { id: "playlistA", name: "Playlist A", description: "", trackCount: 4, thumbnailUrl: null, owner: "ownerA" },
+        ] });
+      expect(requests).toHaveLength(1);
+    });
+
+    it("rejects inputs outside the playlist-specific bounds without a request", async () => {
+      const { provider, requests } = makeProvider([]);
+      for (const input of [
+        { offset: SPOTIFY_PLAYLIST_MAX_OFFSET + 1, limit: 1 },
+        { offset: 0, limit: SPOTIFY_PLAYLIST_PAGE_SIZE + 1 },
+      ]) {
+        await expect(provider.playlistsPage({ accessToken: "access", ...input }))
+          .rejects.toMatchObject({ code: "provider_rejected" });
+      }
+      expect(requests).toEqual([]);
+    });
+  });
+
   it("does not fall back to the legacy endpoint after a playlist access refusal", async () => {
     const { provider, requests } = makeProvider([
       jsonResponse({ error: { status: 403 } }, 403),
@@ -479,6 +666,58 @@ describe("SpotifyProvider", () => {
     expect(requests.map(({ url }) => new URL(url).pathname)).toEqual([
       "/v1/playlists/followed/items",
     ]);
+  });
+
+  it("reads saved albums and ordered simplified tracks as attributed metadata only", async () => {
+    const signal = new AbortController().signal;
+    const { provider, requests } = makeProvider([
+      jsonResponse({ offset: 10, limit: 2, total: 12, items: [{ album: { id: "removed1", name: "" } }, { album: {
+        id: "album1", name: "Album", artists: [{ name: "Artist" }], total_tracks: 2,
+        images: [{ url: "https://i.scdn.co/image/cover", width: null }],
+        tracks: { items: [{ preview_url: "https://p.scdn.co/preview" }] },
+      } }] }),
+      jsonResponse({ offset: 0, limit: 2, total: 2, items: [
+        { id: "track2", name: "Second Disc", artists: [{ name: "Artist" }], duration_ms: 181250,
+          disc_number: 2, track_number: 1, preview_url: "https://p.scdn.co/preview" },
+        { id: "track1", name: "First Disc", artists: [{ name: "Artist" }], duration_ms: 193000,
+          disc_number: 1, track_number: 1 },
+      ] }),
+    ]);
+    await expect(provider.savedAlbums({ accessToken: "access", offset: 10, limit: 2, signal })).resolves.toEqual({
+      offset: 10, limit: 2, total: 12, albums: [{ id: "album1", title: "Album", artist: "Artist",
+        trackCount: 2, thumbnailUrl: "https://i.scdn.co/image/cover", providerUrl: "https://open.spotify.com/album/album1" }],
+    });
+    await expect(provider.albumTracks({ accessToken: "access", albumId: "album1", offset: 0, limit: 2, signal })).resolves.toEqual({
+      offset: 0, limit: 2, total: 2, tracks: [
+        { id: "track2", title: "Second Disc", artist: "Artist", duration: 181, discNumber: 2, trackNumber: 1,
+          providerUrl: "https://open.spotify.com/track/track2" },
+        { id: "track1", title: "First Disc", artist: "Artist", duration: 193, discNumber: 1, trackNumber: 1,
+          providerUrl: "https://open.spotify.com/track/track1" },
+      ],
+    });
+    expect(requests.map(({ url }) => url)).toEqual([
+      "https://api.spotify.com/v1/me/albums?offset=10&limit=2",
+      "https://api.spotify.com/v1/albums/album1/tracks?offset=0&limit=2",
+    ]);
+    expect(requests.every(({ init }) => init.signal === signal)).toBe(true);
+  });
+
+  it("bounds saved album pages before asking Spotify for embedded track data", async () => {
+    const { provider, requests } = makeProvider([]);
+    await expect(provider.savedAlbums({ accessToken: "access", offset: 0, limit: 11 }))
+      .rejects.toMatchObject({ code: "provider_rejected" });
+    expect(requests).toHaveLength(0);
+  });
+
+  it("does not fetch invalid album IDs or accept a mismatched upstream page", async () => {
+    const { provider, requests } = makeProvider([
+      jsonResponse({ offset: 50, limit: 1, total: 51, items: [] }),
+    ]);
+    await expect(provider.albumTracks({ accessToken: "access", albumId: "album%2F1", offset: 0, limit: 1 }))
+      .rejects.toMatchObject({ code: "provider_rejected" });
+    expect(requests).toHaveLength(0);
+    await expect(provider.savedAlbums({ accessToken: "access", offset: 0, limit: 1 }))
+      .rejects.toMatchObject({ code: "invalid_provider_response" });
   });
 
   it("forwards the command abort signal to every fixed Spotify request", async () => {
@@ -495,6 +734,57 @@ describe("SpotifyProvider", () => {
     });
 
     expect(requests[0]?.init.signal).toBe(controller.signal);
+  });
+
+  it.each([
+    ["0", 0],
+    ["00042", 42],
+    ["86400", 86_400],
+    ["86401", undefined],
+    ["+3", undefined],
+    ["-1", undefined],
+    ["3.0", undefined],
+    ["1e2", undefined],
+    ["4, 5", undefined],
+    ["Wed, 21 Oct 2015 07:28:00 GMT", undefined],
+    ["", undefined],
+    [null, undefined],
+  ] as const)("handles Spotify 429 with Retry-After %j without retrying or reading its body", async (header, seconds) => {
+    const response = new Response("private provider body", {
+      status: 429,
+      headers: header === null ? undefined : { "Retry-After": header },
+    });
+    const cancel = vi.spyOn(response.body!, "cancel");
+    const getReader = vi.spyOn(response.body!, "getReader");
+    const { provider, requests } = makeProvider([response]);
+    const error = await provider.likedTracks({ accessToken: "access", offset: 0, limit: 1 })
+      .catch((failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error).toMatchObject({ code: "provider_rate_limited", retryAfterSeconds: seconds });
+    expect(JSON.stringify(error)).not.toContain("private provider body");
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(getReader).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+  });
+
+  it.each(["token exchange", "profile lookup"])("keeps Spotify OAuth %s 429 as a provider rejection", async (stage) => {
+    const throttled = new Response("private provider body", {
+      status: 429,
+      headers: { "Retry-After": "5" },
+    });
+    const cancel = vi.spyOn(throttled.body!, "cancel");
+    const responses = stage === "token exchange" ? [throttled] : [
+      jsonResponse({ access_token: "access", refresh_token: "refresh", expires_in: 3_600 }),
+      throttled,
+    ];
+    const { provider, requests } = makeProvider(responses);
+
+    await expect(provider.exchangeCode({ code: "code", callbackUri })).rejects.toMatchObject({
+      code: "provider_rejected",
+    });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(responses.length);
   });
 
   it("cancels non-OK and oversized declared response bodies before throwing", async () => {
@@ -616,7 +906,7 @@ describe("SpotifyProvider", () => {
       }),
     ).resolves.toMatchObject({ total: 1 });
     expect(requests[0]!.url).toBe(
-      "https://api.spotify.com/v1/playlists/playlist..safe/tracks?offset=0&limit=1&fields=items%28track%28id%2Cname%2Cartists%2Calbum%2Cduration_ms%2Cexternal_urls%29%29%2Ctotal",
+      "https://api.spotify.com/v1/playlists/playlist..safe/tracks?offset=0&limit=1&fields=items%28track%28id%2Cname%2Cartists%2Calbum%2Cduration_ms%2Cexternal_urls%29%29%2Ctotal%2Cnext",
     );
   });
 
@@ -631,7 +921,7 @@ describe("SpotifyProvider", () => {
       providerUrl: "https://open.spotify.com/track/track-1",
     };
     const { provider } = makeProvider([
-      jsonResponse({ items: [{ track: spotifyTrack() }], total: 7 }),
+      jsonResponse({ items: [{ track: spotifyTrack() }, { track: null }], total: 7, next: null }),
       jsonResponse({
         items: [
           {
@@ -645,7 +935,7 @@ describe("SpotifyProvider", () => {
         ],
         total: 1,
       }),
-      jsonResponse({ items: [{ track: spotifyTrack() }], total: 7 }),
+      jsonResponse({ items: [{ track: spotifyTrack() }, { track: null }], total: 7, next: null }),
       jsonResponse({ items: [spotifyTrack()] }),
     ]);
 

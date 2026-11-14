@@ -21,11 +21,15 @@ import type {
   SpotifyAccount,
   SpotifyExchangeResult,
   SpotifyPlaylistsResult,
+  SpotifyProvider,
   SpotifyRefreshResult,
   SpotifyTracksResult,
   TracksPage,
 } from "./providers/spotify.js";
-import { SpotifyRefreshInvalidGrantError } from "./providers/spotify.js";
+import {
+  SpotifyRateLimitError,
+  SpotifyRefreshInvalidGrantError,
+} from "./providers/spotify.js";
 import type {
   YandexAccount,
   YandexPlaylistsResult,
@@ -38,6 +42,9 @@ import {
 } from "./token-keyring.js";
 
 export interface SpotifyProviderAdapter {
+  savedAlbums: SpotifyProvider["savedAlbums"];
+  albumTracks: SpotifyProvider["albumTracks"];
+  playlistsPage: SpotifyProvider["playlistsPage"];
   authorizationUrl(input: {
     readonly state: string;
     readonly callbackUri: string;
@@ -360,6 +367,16 @@ export class TfIntegrationsService {
           return this.#success(command, result);
         }
 
+        case "spotify.playlists.page": {
+          const secret = await this.#refreshedSpotifySecret(command.accountId, context);
+          const result = await this.#provider(context, () => this.#spotify.playlistsPage({
+            ...command.input,
+            accessToken: secret.accessToken,
+            signal: context.signal,
+          }));
+          return this.#success(command, result);
+        }
+
         case "spotify.playlist-tracks.list": {
           const secret = await this.#refreshedSpotifySecret(
             command.accountId,
@@ -387,6 +404,16 @@ export class TfIntegrationsService {
               signal: context.signal,
             }),
           );
+          return this.#success(command, result);
+        }
+
+        case "spotify.albums.list":
+        case "spotify.album-tracks.list": {
+          const secret = await this.#refreshedSpotifySecret(command.accountId, context);
+          const request = { accessToken: secret.accessToken, signal: context.signal };
+          const result = command.operation === "spotify.albums.list"
+            ? await this.#provider(context, () => this.#spotify.savedAlbums({ ...command.input, ...request }))
+            : await this.#provider(context, () => this.#spotify.albumTracks({ ...command.input, ...request }));
           return this.#success(command, result);
         }
 
@@ -479,15 +506,24 @@ export class TfIntegrationsService {
         }
       }
     } catch (error) {
-      const code =
-        error instanceof ServiceError ? error.code : providerErrorCode(error);
-      this.#log(command.operation, code);
+      const failure: TfIntegrationsErrorResponse["error"] =
+        error instanceof SpotifyRateLimitError
+          ? {
+              code: "provider_rate_limited",
+              ...(error.retryAfterSeconds === undefined
+                ? {}
+                : { retryAfterSeconds: error.retryAfterSeconds }),
+            }
+          : {
+              code: error instanceof ServiceError ? error.code : providerErrorCode(error),
+            };
+      this.#log(command.operation, failure.code);
       return {
         schemaVersion: 1,
         requestId: command.requestId,
         accountId: command.accountId,
         operation: command.operation,
-        error: { code },
+        error: failure,
       };
     }
   }
@@ -785,7 +821,12 @@ export class TfIntegrationsService {
     try {
       result = await this.#providerLimiter.run(context.signal, operation);
     } catch (error) {
-      if (error instanceof SpotifyRefreshInvalidGrantError) throw error;
+      if (
+        error instanceof SpotifyRefreshInvalidGrantError ||
+        error instanceof SpotifyRateLimitError
+      ) {
+        throw error;
+      }
       throw new ServiceError(providerErrorCode(error));
     }
     requireActive(context);

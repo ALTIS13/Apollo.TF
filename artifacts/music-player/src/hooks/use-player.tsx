@@ -24,6 +24,8 @@ import { successorWebSocketEnabled } from "@/lib/tf-successor-ws-config";
 import { clearUpcoming, getNextQueueIndex, insertNext, moveUpcoming, reorderUpcoming, shuffleUpcomingIds } from "@/lib/queue-operations";
 import type { RepeatMode } from "@/lib/queue-operations";
 import { readQueueSnapshot, writeQueueSnapshot } from "@/lib/queue-persistence";
+import { apiUrl } from "@/lib/api-config";
+import { isReviewedTrack, reviewedMediaPath } from "@/lib/reviewed-recording";
 import { expectedDurationSeconds } from "@/lib/utils";
 import { usePlayerMediaSession } from "./use-media-session";
 
@@ -92,6 +94,19 @@ interface PlayerSyncState {
 
 const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
 
+function reviewedAudioPath(track: TrackResult): string | null {
+  return track.source === "reviewed" ? reviewedMediaPath(track.id, "audio") : null;
+}
+
+function resetAudioSource(audio: HTMLAudioElement, reload = false) {
+  audio.pause();
+  const credentialed = audio.crossOrigin === "use-credentials";
+  if (typeof audio.removeAttribute === "function") audio.removeAttribute("src");
+  else audio.src = "";
+  if (reload || credentialed) audio.load();
+  if (credentialed) audio.crossOrigin = null;
+}
+
 function playbackErrorDescription(error: unknown): string {
   const data = typeof error === "object" && error !== null && "data" in error
     ? error.data
@@ -117,7 +132,8 @@ function isUnavailableTrackSource(error: unknown): boolean {
 }
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
-  const { session, status, webSocketRecoveryBudget } = useTfAuth();
+  const { session, status, webSocketRecoveryBudget, hasEntitlement } = useTfAuth();
+  const canPlayReviewed = useCallback(() => hasEntitlement("tf.collections") && hasEntitlement("tf.search"), [hasEntitlement]);
   const [currentTrack, setCurrentTrack] = useState<TrackResult | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -173,7 +189,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     loadingRef.current = false;
     currentTrackRef.current = null;
     suspendedPosition.current = 0;
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ""; audioRef.current.load(); }
+    if (audioRef.current) resetAudioSource(audioRef.current, true);
     setCurrentTrack(null);
     setIsPlaying(false);
     setIsLoading(false);
@@ -258,7 +274,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       failedStreamRef.current = false;
       if (suspendedPosition.current === null) suspendedPosition.current = audio.currentTime;
       setProgress(suspendedPosition.current);
-      audio.pause(); audio.src = ""; audio.load(); loadingRef.current = false; setIsLoading(false);
+      resetAudioSource(audio, true); loadingRef.current = false; setIsLoading(false);
     });
 
     audio.addEventListener("timeupdate", handleTimeUpdate);
@@ -279,8 +295,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.removeEventListener("play", handlePlay);
       audio.removeEventListener("pause", handlePause);
       audio.removeEventListener("error", handleError);
-      audio.pause();
-      audio.src = "";
+      resetAudioSource(audio);
     };
   }, []);
 
@@ -329,12 +344,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // ── Internal load helper (no toggle check, no queue reset) ────────────────
 
   const _loadTrack = useCallback(async (track: TrackResult, originLive?: () => boolean, refresh = false) => {
-    if (!audioRef.current || !canUseTfProtectedActivity() || originLive?.() === false) return;
+    const audio = audioRef.current;
+    if (!audio || !canUseTfProtectedActivity() || originLive?.() === false) return;
+    const reviewed = isReviewedTrack(track);
+    const reviewedPath = reviewed ? reviewedAudioPath(track) : null;
+    if (reviewed && (!reviewedPath || !canPlayReviewed())) return;
     cancelRecordingReplacement();
     const load = ++loadGeneration.current, security = captureTfSecurityGeneration();
     appliedLoadGeneration.current = null;
     failedStreamRef.current = false;
-    const live = () => mountedRef.current && load === loadGeneration.current && isCurrentTfSecurityGeneration(security) && canUseTfProtectedActivity() && originLive?.() !== false;
+    const live = () => mountedRef.current && audio === audioRef.current && load === loadGeneration.current &&
+      isCurrentTfSecurityGeneration(security) && canUseTfProtectedActivity() && (!reviewed || canPlayReviewed()) && originLive?.() !== false;
     const resumePosition = currentTrackRef.current?.id === track.id ? suspendedPosition.current : null;
     suspendedPosition.current = resumePosition ?? 0;
     try {
@@ -344,31 +364,39 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setIsPlaying(false);
       setProgress(resumePosition ?? 0);
       setDuration(track.duration || 0);
-      audioRef.current.pause();
-      audioRef.current.src = "";
-      const expectedDuration = expectedDurationSeconds(track.duration);
-      const params = {
-        ...(track.source === "deezer" ? { artist: track.artist, title: track.title } : {}),
-        ...(expectedDuration !== undefined
-          ? { expectedDurationSeconds: expectedDuration }
-          : {}),
-        ...(refresh ? { refresh: 1 as const } : {}),
-      };
-      const res = await queryClient.fetchQuery(getGetTrackStreamQueryOptions(track.id, params, {
-        request: tfRequestInit({ method: "GET" }),
-      }));
+      resetAudioSource(audio, reviewed);
+      let streamUrl: string | undefined;
+      if (reviewedPath) {
+        currentTrackRef.current = track;
+        if (session && canUseTfProtectedActivity(session)) {
+          try { writeQueueSnapshot(window.localStorage, session, [], -1, 0); } catch { /* storage may be disabled */ }
+        }
+        streamUrl = apiUrl(reviewedPath);
+      } else {
+        const expectedDuration = expectedDurationSeconds(track.duration);
+        const params = {
+          ...(track.source === "deezer" ? { artist: track.artist, title: track.title } : {}),
+          ...(expectedDuration !== undefined ? { expectedDurationSeconds: expectedDuration } : {}),
+          ...(refresh ? { refresh: 1 as const } : {}),
+        };
+        const response = await queryClient.fetchQuery(getGetTrackStreamQueryOptions(track.id, params, {
+          request: tfRequestInit({ method: "GET" }),
+        }));
+        streamUrl = response.streamUrl;
+      }
       if (!live()) return;
-      if (!res.streamUrl) throw new Error("No stream URL");
-      audioRef.current.src = res.streamUrl;
+      if (!streamUrl) throw new Error("No stream URL");
+      if (reviewedPath) audio.crossOrigin = "use-credentials";
+      audio.src = streamUrl;
       const playbackPosition = suspendedPosition.current ?? resumePosition;
       suspendedPosition.current = null;
-      if (playbackPosition !== null) { audioRef.current.currentTime = playbackPosition; setProgress(playbackPosition); }
-      await audioRef.current.play();
+      if (playbackPosition !== null) { audio.currentTime = playbackPosition; setProgress(playbackPosition); }
+      await audio.play();
       if (!live()) return;
       appliedLoadGeneration.current = load;
       restoredAwaitingPlaybackRef.current = false;
       setIsPlaying(true);
-      void tfFetch<void>("/tracks/play", {
+      if (!reviewed) void tfFetch<void>("/tracks/play", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ trackId: track.id, artist: track.artist, title: track.title }),
@@ -376,6 +404,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       if (!live()) return;
       reportTfAuthError(err);
+      if (reviewed) resetAudioSource(audio, true);
       if (refresh) {
         failedStreamRef.current = true;
         suspendedPosition.current = resumePosition;
@@ -384,7 +413,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setCurrentTrack(null);
       }
       setIsPlaying(false);
-      const recoverableSource = isUnavailableTrackSource(err);
+      const recoverableSource = !reviewed && isUnavailableTrackSource(err);
       const index = queueIndexRef.current;
       const occurrenceId = queueIdsRef.current[index];
       const marker = recoverableSource && occurrenceId !== undefined &&
@@ -415,7 +444,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (mountedRef.current && load === loadGeneration.current) { loadingRef.current = false; setIsLoading(false); }
     }
     return undefined;
-  }, [queryClient, toast, cancelRecordingReplacement, isRecordingReplacementCurrent]);
+  }, [queryClient, toast, cancelRecordingReplacement, isRecordingReplacementCurrent, canPlayReviewed, session]);
 
   const _loadTrackRef = useRef(_loadTrack);
   _loadTrackRef.current = _loadTrack;
@@ -457,6 +486,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const playTrack = useCallback(async (track: TrackResult, originLive?: () => boolean) => {
     if (!audioRef.current || !canUseTfProtectedActivity() || originLive?.() === false) return;
+    if (isReviewedTrack(track) && (!reviewedAudioPath(track) || !canPlayReviewed())) return;
     if (currentTrack?.id === track.id) {
       togglePlayPause();
       return;
@@ -471,7 +501,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     originalOrderRef.current = [id];
     await _loadTrackRef.current(track, originLive);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTrack?.id]);
+  }, [currentTrack?.id, canPlayReviewed]);
 
   playTrackRef.current = playTrack;
 
@@ -609,7 +639,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       // Queue fully emptied — stop playback
       queueIndexRef.current = 0;
       setQueueIndex(0);
-      if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ""; }
+      if (audioRef.current) resetAudioSource(audioRef.current);
       setCurrentTrack(null);
       setIsPlaying(false);
       setProgress(0);
@@ -639,7 +669,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (currentTrackRef.current !== null) return;
     queueIndexRef.current = 0;
     setQueueIndex(0);
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ""; }
+    if (audioRef.current) resetAudioSource(audioRef.current);
     setCurrentTrack(null);
     setIsPlaying(false);
     setProgress(0);
@@ -668,7 +698,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const pausePlayback = useCallback(() => {
     const audio = audioRef.current;
     if (!audio || !currentTrackRef.current || !canUseTfProtectedActivity()) return;
-    audio.pause();
+    if (!loadingRef.current) audio.pause();
     isPlayingRef.current = false;
     setIsPlaying(false);
     setTfPlaybackActive(false);
@@ -678,8 +708,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       suspendedPosition.current ??= progressRef.current;
       loadingRef.current = false;
       setIsLoading(false);
-      audio.src = "";
-      audio.load();
+      resetAudioSource(audio, true);
     }
   }, []);
 
@@ -735,7 +764,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     try {
       const msg = JSON.parse(event.data) as PlayerSyncState;
       if (msg.type !== "player_state") return;
-      if (!msg.track) return;
+      if (!msg.track || isReviewedTrack(msg.track)) return;
 
       const local = currentTrackRef.current;
 
@@ -851,6 +880,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const track = currentTrackRef.current;
+    if (track && isReviewedTrack(track)) return;
     const msg: PlayerSyncState = {
       type: "player_state",
       track: track ? { id: track.id, title: track.title, artist: track.artist, thumbnailUrl: track.thumbnailUrl ?? null, duration: track.duration ?? 0, source: track.source } : null,
@@ -886,7 +916,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 }
 
 export function usePlayer() {
-  const context = useContext(PlayerContext);
+  const context = useOptionalPlayer();
   if (context === undefined) throw new Error("usePlayer must be used within a PlayerProvider");
   return context;
+}
+
+export function useOptionalPlayer() {
+  return useContext(PlayerContext);
 }

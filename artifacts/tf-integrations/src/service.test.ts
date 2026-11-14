@@ -195,6 +195,9 @@ function spotifyAdapter(
         total: 1,
       };
     },
+    async playlistsPage({ offset, limit }) {
+      return { offset, limit, total: 0, nextOffset: null, playlists: [] };
+    },
     async playlistTracks(input) {
       return {
         offset: input.offset,
@@ -205,6 +208,12 @@ function spotifyAdapter(
     },
     async topTracks() {
       return { tracks: [normalizedTrack] };
+    },
+    async savedAlbums({ offset, limit }) {
+      return { offset, limit, total: 0, albums: [] };
+    },
+    async albumTracks({ offset, limit }) {
+      return { offset, limit, total: 0, tracks: [] };
     },
     ...overrides,
   };
@@ -334,6 +343,51 @@ describe("TfIntegrationsService", () => {
       fetch: async () => respond(),
     });
   }
+
+  it.each([
+    { stage: "refresh", header: "0", retryAfterSeconds: 0 },
+    { stage: "library", header: "invalid-delay", retryAfterSeconds: undefined },
+    { stage: "playlist page", header: "12", retryAfterSeconds: 12 },
+  ])("reports throttling during Spotify $stage without changing stored credentials", async ({
+    stage, header, retryAfterSeconds,
+  }) => {
+    const tokenVault = vault();
+    const repository = new MemoryRepository();
+    const record = storedRecord(tokenVault, "spotify");
+    repository.records.set(`${accountId}:spotify`, record);
+    const requests: string[] = [];
+    let cancelled = 0;
+    const provider = new SpotifyProvider({
+      clientId: "fixture-client",
+      clientSecret: "fixture-secret",
+      callbackUri: "https://api.tf.apollot.ru/api/spotify/callback",
+      now: () => Date.parse(stage === "refresh" ? "2026-07-25T14:00:00Z" : "2026-07-25T12:00:00Z"),
+      fetch: async (input) => {
+        requests.push(String(input));
+        return new Response(new ReadableStream({
+          cancel() { cancelled++; },
+        }), { status: 429, headers: { "Retry-After": header } });
+      },
+    });
+    const target = service(repository, tokenVault, provider);
+    const input = command(stage === "playlist page" ? "spotify.playlists.page" : "spotify.liked.list", { offset: 0, limit: 1 });
+
+    expect(await target.execute(input)).toStrictEqual({
+      schemaVersion: 1,
+      requestId,
+      accountId,
+      operation: input.operation,
+      error: retryAfterSeconds === undefined
+        ? { code: "provider_rate_limited" }
+        : { code: "provider_rate_limited", retryAfterSeconds },
+    });
+    expect(requests).toEqual([stage === "refresh"
+      ? "https://accounts.spotify.com/api/token"
+      : `https://api.spotify.com/v1/me/${stage === "playlist page" ? "playlists" : "tracks"}?offset=0&limit=1`]);
+    expect(cancelled).toBe(1);
+    expect(repository.mutationContexts).toEqual([]);
+    expect(repository.records.get(`${accountId}:spotify`)).toBe(record);
+  });
 
   it("discards invalid_grant credentials, reports disconnected and never refreshes them again", async () => {
     const tokenVault = vault();
@@ -1190,6 +1244,11 @@ describe("TfIntegrationsService", () => {
         providerCalls.push("spotify.playlists.list");
         return spotifyAdapter().playlists(input);
       },
+      async playlistsPage(input) {
+        providerCalls.push("spotify.playlists.page");
+        expect(input).toMatchObject({ accessToken: "stored-access", offset: 41, limit: 50, signal: expect.any(AbortSignal) });
+        return { offset: 41, limit: 50, total: 100, nextOffset: 43, playlists: [] };
+      },
       async playlistTracks(input) {
         providerCalls.push("spotify.playlist-tracks.list");
         return spotifyAdapter().playlistTracks(input);
@@ -1197,6 +1256,16 @@ describe("TfIntegrationsService", () => {
       async topTracks(input) {
         providerCalls.push("spotify.top-tracks.list");
         return spotifyAdapter().topTracks(input);
+      },
+      async savedAlbums(input) {
+        providerCalls.push("spotify.albums.list");
+        expect(input).toMatchObject({ accessToken: "stored-access", offset: 0, limit: 1 });
+        return spotifyAdapter().savedAlbums(input);
+      },
+      async albumTracks(input) {
+        providerCalls.push("spotify.album-tracks.list");
+        expect(input).toMatchObject({ accessToken: "stored-access", albumId: "album1", offset: 0, limit: 1 });
+        return spotifyAdapter().albumTracks(input);
       },
     });
     const yandex = yandexAdapter({
@@ -1240,11 +1309,14 @@ describe("TfIntegrationsService", () => {
       ["spotify.disconnect", {}],
       ["spotify.liked.list", { offset: 0, limit: 1 }],
       ["spotify.playlists.list", {}],
+      ["spotify.playlists.page", { offset: 41, limit: 50 }],
       [
         "spotify.playlist-tracks.list",
         { playlistId: "playlist", offset: 0, limit: 1 },
       ],
       ["spotify.top-tracks.list", { timeRange: "medium_term" }],
+      ["spotify.albums.list", { offset: 0, limit: 1 }],
+      ["spotify.album-tracks.list", { albumId: "album1", offset: 0, limit: 1 }],
       ["yandex.token.upsert", { token: "yandex-token" }],
       ["yandex.status", {}],
       ["yandex.disconnect", {}],
@@ -1275,6 +1347,9 @@ describe("TfIntegrationsService", () => {
         yandex,
       ).execute(command(operation, input));
       expect(response).not.toHaveProperty("error");
+      if (operation === "spotify.playlists.page") expect(response).toMatchObject({
+        result: { offset: 41, limit: 50, total: 100, nextOffset: 43, playlists: [] },
+      });
       operations.push(response.operation);
     }
 
@@ -1287,9 +1362,15 @@ describe("TfIntegrationsService", () => {
       "spotify.refresh",
       "spotify.playlists.list",
       "spotify.refresh",
+      "spotify.playlists.page",
+      "spotify.refresh",
       "spotify.playlist-tracks.list",
       "spotify.refresh",
       "spotify.top-tracks.list",
+      "spotify.refresh",
+      "spotify.albums.list",
+      "spotify.refresh",
+      "spotify.album-tracks.list",
       "yandex.token.upsert",
       "yandex.liked.list",
       "yandex.playlists.list",

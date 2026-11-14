@@ -102,6 +102,10 @@ export interface TrackRouteDependencies {
 }
 
 const ALL_SEARCH_SOURCES: readonly TfSearchSource[] = ["yt", "sc", "bc", "dz"];
+const ARTIST_DISCOVERY_SOURCES = ["yt", "sc"] as const;
+const ARTIST_DISCOVERY_SOURCE_LIMIT = 10;
+const ARTIST_NAME_MAX_LENGTH = 200;
+const INVALID_ARTIST_NAME_CHARACTER = /[\p{Cc}\p{Cs}\p{Bidi_Control}\u2028\u2029]/u;
 const mediaLinkBodySchema = z.object({
   url: z.string().trim().min(1).max(500),
 }).strict();
@@ -276,6 +280,31 @@ function publicSearchResult({
   ...result
 }: TfSearchResult): Omit<TfSearchResult, "sourceUrl"> {
   return result;
+}
+
+function normalizeArtistName(value: string): string {
+  return value.trim().replace(/\s+/gu, " ").normalize("NFC");
+}
+
+function artistNameKey(value: string): string {
+  return normalizeArtistName(value).toLowerCase().normalize("NFC");
+}
+
+function artistQueryName(originalUrl: string): string | null {
+  const queryStart = originalUrl.indexOf("?");
+  if (queryStart < 0) return null;
+  const query = originalUrl.slice(queryStart + 1);
+  if (!query || query.length > 2_048 || query.startsWith("?") || query.includes("&")) return null;
+  try {
+    // URLSearchParams otherwise silently replaces invalid percent-encoded UTF-8.
+    decodeURIComponent(query);
+  } catch {
+    return null;
+  }
+  const name = new URLSearchParams(query).get("name");
+  if (!name || name.length > ARTIST_NAME_MAX_LENGTH || INVALID_ARTIST_NAME_CHARACTER.test(name)) return null;
+  const normalized = normalizeArtistName(name);
+  return normalized && normalized.length <= ARTIST_NAME_MAX_LENGTH ? normalized : null;
 }
 
 function preferredSourceUrl(
@@ -1284,6 +1313,43 @@ export function createTracksRouter(
     } catch {
       req.log?.warn("Recommendation preferences unavailable");
       res.status(503).json({ error: "recommendations_unavailable" });
+    }
+  });
+
+  router.get("/tracks/artist", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const artist = artistQueryName(req.originalUrl);
+    if (artist === null) {
+      res.status(400).json({ error: "bad_request" });
+      return;
+    }
+    try {
+      const response = await routeDependencies.searchGateway.discoverArtist({
+        artist,
+        sources: [...ARTIST_DISCOVERY_SOURCES],
+        limitPerSource: ARTIST_DISCOVERY_SOURCE_LIMIT,
+      });
+      const healthy = ARTIST_DISCOVERY_SOURCES.filter((source) => response.providerStatus[source] === "ok");
+      if (healthy.length === 0) {
+        res.status(503).json({ error: "artist_discovery_unavailable" });
+        return;
+      }
+
+      const requested = artistNameKey(artist);
+      const counts = { yt: 0, sc: 0 };
+      const seen = new Set<string>();
+      const results: ReturnType<typeof publicSearchResult>[] = [];
+      for (const track of response.results) {
+        const source = track.source === "youtube" ? "yt" : track.source === "soundcloud" ? "sc" : null;
+        if (!source || !healthy.includes(source) || counts[source] >= ARTIST_DISCOVERY_SOURCE_LIMIT ||
+          seen.has(track.id) || artistNameKey(track.artist) !== requested) continue;
+        seen.add(track.id);
+        counts[source]++;
+        results.push(publicSearchResult(track));
+      }
+      res.json({ schemaVersion: 1, artist, results, partial: healthy.length < ARTIST_DISCOVERY_SOURCES.length });
+    } catch {
+      res.status(503).json({ error: "artist_discovery_unavailable" });
     }
   });
 

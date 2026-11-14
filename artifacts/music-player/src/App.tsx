@@ -19,6 +19,7 @@ import Home from "@/pages/Home";
 import Favorites from "@/pages/Favorites";
 import Integrations from "@/pages/Integrations";
 import Discover from "@/pages/Discover";
+import Artist from "@/pages/Artist";
 import Queue from "@/pages/Queue";
 import NotFound from "@/pages/not-found";
 import { setBaseUrl } from "@workspace/api-client-react";
@@ -38,6 +39,7 @@ function Router() {
     <Switch>
       <Route path="/" component={Home} />
       <Route path="/discover" component={Discover} />
+      <Route path="/artist" component={Artist} />
       <Route path="/queue" component={Queue} />
       <Route path="/favorites" component={Favorites} />
       <Route path="/integrations" component={Integrations} />

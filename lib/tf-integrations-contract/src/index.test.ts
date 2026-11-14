@@ -41,6 +41,35 @@ const yandexAccount = {
   },
 } as const;
 
+it("accepts bounded playlist windows that advance past filtered slots", () => {
+  const command = {
+    schemaVersion: 1,
+    requestId,
+    accountId,
+    operation: "spotify.playlists.page",
+    input: { offset: 250, limit: 50 },
+  };
+  const reply = {
+    schemaVersion: 1,
+    requestId,
+    accountId,
+    operation: command.operation,
+    result: { offset: 250, limit: 50, total: 302, nextOffset: 300, playlists: [] },
+  };
+
+  expect(tfIntegrationsCommandSchema.safeParse(command).success).toBe(true);
+  expect(tfIntegrationsCommandSchema.safeParse({
+    ...command, input: { ...command.input, offset: 100_001 },
+  }).success).toBe(false);
+  expect(tfIntegrationsSuccessResponseSchema.safeParse(reply).success).toBe(true);
+  expect(tfIntegrationsSuccessResponseSchema.safeParse({
+    ...reply, result: { ...reply.result, nextOffset: 250 },
+  }).success).toBe(false);
+  expect(tfIntegrationsSuccessResponseSchema.safeParse({
+    ...reply, result: { ...reply.result, nextOffset: 301 },
+  }).success).toBe(false);
+});
+
 const commands = [
   {
     operation: "spotify.oauth.authorize",
@@ -59,6 +88,8 @@ const commands = [
     input: { playlistId: "playlist-1", offset: 0, limit: 50 },
   },
   { operation: "spotify.top-tracks.list", input: { timeRange: "medium_term" } },
+  { operation: "spotify.albums.list", input: { offset: 0, limit: 10 } },
+  { operation: "spotify.album-tracks.list", input: { albumId: "album1", offset: 50, limit: 50 } },
   { operation: "yandex.token.upsert", input: { token: "t".repeat(10) } },
   { operation: "yandex.status", input: {} },
   { operation: "yandex.disconnect", input: {} },
@@ -71,6 +102,18 @@ const commands = [
 ] as const;
 
 describe("tf integrations contract", () => {
+  it("admits only attributed album-track metadata, not a preview or a mismatched link", () => {
+    const item = { id: "track1", title: "Track", artist: "Artist", duration: 181,
+      discNumber: 2, trackNumber: 1, providerUrl: "https://open.spotify.com/track/track1" };
+    const receipt = (value: object) => tfIntegrationsSuccessResponseSchema.safeParse({
+      schemaVersion: 1, requestId, accountId, operation: "spotify.album-tracks.list",
+      result: { offset: 0, limit: 50, total: 1, tracks: [value] },
+    }).success;
+    expect(receipt(item)).toBe(true);
+    expect(receipt({ ...item, previewUrl: "https://p.scdn.co/preview" })).toBe(false);
+    expect(receipt({ ...item, providerUrl: "https://open.spotify.com/track/other" })).toBe(false);
+  });
+
   it("accepts every documented operation with canonical account and request IDs", () => {
     expect(TF_INTEGRATIONS_COMMAND_PATH).toBe("/v1/commands");
 
@@ -128,6 +171,7 @@ describe("tf integrations contract", () => {
         operation,
         input,
       }).success;
+    expect(command("spotify.albums.list", { offset: 0, limit: 11 })).toBe(false);
 
     expect(
       command("spotify.oauth.complete", {
@@ -534,6 +578,31 @@ describe("tf integrations contract", () => {
         operation: "spotify.disconnect",
       }).success,
     ).toBe(false);
+  });
+
+  it("accepts a rate limit with no delay or a bounded integer delay only", () => {
+    const base = { schemaVersion: 1, requestId, accountId, operation: "spotify.liked.list" };
+    const parse = (error: Record<string, unknown>) =>
+      tfIntegrationsErrorResponseSchema.safeParse({ ...base, error });
+    const code = "provider_rate_limited";
+
+    for (const error of [{ code }, { code, retryAfterSeconds: 0 }, { code, retryAfterSeconds: 86_400 }]) {
+      expect(parse(error)).toMatchObject({ success: true, data: { error } });
+    }
+    for (const retryAfterSeconds of [-1, 86_401, 0.5, "60", null]) {
+      expect(parse({ code, retryAfterSeconds }).success).toBe(false);
+    }
+    expect(parse({ code, retryAfter: "60" }).success).toBe(false);
+    for (const otherCode of [
+      "not_connected",
+      "provider_rejected",
+      "provider_unavailable",
+      "storage_unavailable",
+      "invalid_provider_response",
+    ]) {
+      expect(parse({ code: otherCode }).success).toBe(true);
+      expect(parse({ code: otherCode, retryAfterSeconds: 60 }).success).toBe(false);
+    }
   });
 
   it("cannot serialize provider tokens or credentials in any success or error result", () => {

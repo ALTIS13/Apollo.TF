@@ -10,6 +10,7 @@ import {
   type TrackResult,
 } from "@workspace/api-client-react";
 import { apiUrl } from "@/lib/api-config";
+import { isReviewedTrack } from "@/lib/reviewed-recording";
 import { expectedDurationSeconds } from "@/lib/utils";
 import { reportTfAuthError, tfRequestInit } from "@/lib/tf-session-client";
 
@@ -252,7 +253,7 @@ export function useTrackDownload(): TrackDownloadController {
       quality: DownloadQuality = DownloadQuality.NUMBER_320,
     ) => {
       if (
-        pendingQueuesRef.current.size > 0 ||
+        isReviewedTrack(track) || pendingQueuesRef.current.size > 0 ||
         snapshotRef.current.state === "waiting" ||
         snapshotRef.current.state === "active"
       ) {

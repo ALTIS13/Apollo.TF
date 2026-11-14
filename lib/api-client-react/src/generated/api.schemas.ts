@@ -35,6 +35,7 @@ export const TrackSource = {
   soundcloud: "soundcloud",
   bandcamp: "bandcamp",
   deezer: "deezer",
+  reviewed: "reviewed",
 } as const;
 
 export interface TrackResult {
@@ -52,6 +53,30 @@ export interface TrackResult {
   viewCount?: number | null;
   /** Ranking score (higher is better match) */
   score: number;
+}
+
+export type ArtistTracksResponseSchemaVersion =
+  (typeof ArtistTracksResponseSchemaVersion)[keyof typeof ArtistTracksResponseSchemaVersion];
+
+export const ArtistTracksResponseSchemaVersion = {
+  NUMBER_1: 1,
+} as const;
+
+export interface ArtistTracksResponse {
+  schemaVersion: ArtistTracksResponseSchemaVersion;
+  /**
+   * The requested display name after trimming, collapsing whitespace, and NFC normalization, with its case preserved.
+   * @minLength 1
+   * @maxLength 200
+   */
+  artist: string;
+  /**
+   * Provider order, with duplicate IDs removed and at most ten results per provider.
+   * @maxItems 20
+   */
+  results: TrackResult[];
+  /** True if only one of the two requested providers completed successfully, even when its exact-match result list is empty. */
+  partial: boolean;
 }
 
 export interface MediaLinkMetadataRequest {
@@ -527,6 +552,259 @@ export interface CollectionErrorResponse {
   error: CollectionErrorResponseError;
 }
 
+/**
+ * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+ */
+export type PlaylistImportId = string;
+
+/**
+ * Client-supplied provenance label only; not provider authorization.
+ */
+export type PlaylistImportSource =
+  (typeof PlaylistImportSource)[keyof typeof PlaylistImportSource];
+
+export const PlaylistImportSource = {
+  file: "file",
+  spotify_album: "spotify_album",
+  spotify_playlist: "spotify_playlist",
+  spotify_liked: "spotify_liked",
+} as const;
+
+export interface PlaylistImportEntry {
+  /**
+   * Trimmed artist name
+   * @minLength 1
+   * @maxLength 300
+   * @pattern ^(?=[\s\S]*\S)(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$
+   */
+  artist: string;
+  /**
+   * Trimmed track title
+   * @minLength 1
+   * @maxLength 500
+   * @pattern ^(?=[\s\S]*\S)(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$
+   */
+  title: string;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   * @nullable
+   */
+  durationSeconds: number | null;
+}
+
+export interface PlaylistImportSummary {
+  id: PlaylistImportId;
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  name: string;
+  source: PlaylistImportSource;
+  /**
+   * @minimum 1
+   * @maximum 200
+   */
+  entryCount: number;
+  createdAt: string;
+}
+
+export interface PlaylistImportDraft {
+  id: PlaylistImportId;
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  name: string;
+  source: PlaylistImportSource;
+  /**
+   * @minimum 1
+   * @maximum 200
+   */
+  entryCount: number;
+  createdAt: string;
+  /**
+   * @minItems 1
+   * @maxItems 200
+   */
+  entries: PlaylistImportEntry[];
+}
+
+export interface PutPlaylistImportRequest {
+  /**
+   * Draft name, trimmed before validation and storage
+   * @minLength 1
+   * @maxLength 200
+   * @pattern ^(?=[\s\S]*\S)(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$
+   */
+  name: string;
+  source: PlaylistImportSource;
+  /**
+   * @minItems 1
+   * @maxItems 200
+   */
+  entries: PlaylistImportEntry[];
+}
+
+export interface PlaylistImportListResponse {
+  imports: PlaylistImportSummary[];
+}
+
+export interface PlaylistImportDetailResponse {
+  draft: PlaylistImportDraft;
+}
+
+export type PlaylistImportErrorResponseError =
+  (typeof PlaylistImportErrorResponseError)[keyof typeof PlaylistImportErrorResponseError];
+
+export const PlaylistImportErrorResponseError = {
+  bad_request: "bad_request",
+  invalid_request: "invalid_request",
+  import_not_found: "import_not_found",
+  import_conflict: "import_conflict",
+  import_limit: "import_limit",
+  request_too_large: "request_too_large",
+} as const;
+
+export interface PlaylistImportErrorResponse {
+  error: PlaylistImportErrorResponseError;
+}
+
+/**
+ * @pattern ^[a-z0-9][a-z0-9_-]{0,63}$
+ */
+export type ImportRecordingCandidateId = string;
+
+/**
+ * @pattern ^[a-f0-9]{64}$
+ */
+export type ImportRecordingEvidenceRevision = string;
+
+export type ImportRecordingMediaBinary = Blob;
+
+export type ImportRecordingCandidateEdition =
+  (typeof ImportRecordingCandidateEdition)[keyof typeof ImportRecordingCandidateEdition];
+
+export const ImportRecordingCandidateEdition = {
+  original: "original",
+  clean_edit: "clean_edit",
+  alternate: "alternate",
+  unknown: "unknown",
+} as const;
+
+export type ImportRecordingCandidateAccess =
+  (typeof ImportRecordingCandidateAccess)[keyof typeof ImportRecordingCandidateAccess];
+
+export const ImportRecordingCandidateAccess = {
+  full: "full",
+  preview: "preview",
+  blocked: "blocked",
+  unverified: "unverified",
+} as const;
+
+export type ImportRecordingCandidateDownload =
+  (typeof ImportRecordingCandidateDownload)[keyof typeof ImportRecordingCandidateDownload];
+
+export const ImportRecordingCandidateDownload = {
+  permitted: "permitted",
+  not_permitted: "not_permitted",
+  unverified: "unverified",
+} as const;
+
+export interface ImportRecordingCandidate {
+  id: ImportRecordingCandidateId;
+  evidenceRevision: ImportRecordingEvidenceRevision;
+  /**
+   * @minLength 1
+   * @maxLength 300
+   */
+  artist: string;
+  /**
+   * @minLength 1
+   * @maxLength 500
+   */
+  title: string;
+  edition: ImportRecordingCandidateEdition;
+  /** @nullable */
+  releaseDate: string | null;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   * @nullable
+   */
+  expectedDurationSeconds: number | null;
+  /**
+   * @minimum 1
+   * @maximum 86400
+   * @nullable
+   */
+  measuredDurationSeconds: number | null;
+  access: ImportRecordingCandidateAccess;
+  download: ImportRecordingCandidateDownload;
+  /**
+   * @minLength 1
+   * @maxLength 160
+   */
+  sourceLabel: string;
+  /**
+   * HTTPS attribution page, never a media URL or grant.
+   * @maxLength 4096
+   * @nullable
+   * @pattern ^https://
+   */
+  sourceUrl: string | null;
+  /** Present only when the full recording has a reviewed local media binding. This is not a playback or download grant. */
+  mediaBound?: boolean;
+}
+
+export interface PutImportRecordingSelectionRequest {
+  candidateId: ImportRecordingCandidateId;
+  evidenceRevision: ImportRecordingEvidenceRevision;
+}
+
+export interface ImportRecordingSelection {
+  candidateId: ImportRecordingCandidateId;
+  evidenceRevision: ImportRecordingEvidenceRevision;
+  selectedAt: string;
+}
+
+export type ImportRecordingCandidatesResponseStatus =
+  (typeof ImportRecordingCandidatesResponseStatus)[keyof typeof ImportRecordingCandidatesResponseStatus];
+
+export const ImportRecordingCandidatesResponseStatus = {
+  ready: "ready",
+  unconfigured: "unconfigured",
+} as const;
+
+export interface ImportRecordingCandidatesResponse {
+  status: ImportRecordingCandidatesResponseStatus;
+  /** @maxItems 12 */
+  candidates: ImportRecordingCandidate[];
+  selection: ImportRecordingSelection | null;
+}
+
+export interface ImportRecordingSelectionResponse {
+  selection: ImportRecordingSelection;
+}
+
+export type ImportRecordingErrorResponseError =
+  (typeof ImportRecordingErrorResponseError)[keyof typeof ImportRecordingErrorResponseError];
+
+export const ImportRecordingErrorResponseError = {
+  import_entry_not_found: "import_entry_not_found",
+  recording_selection_not_found: "recording_selection_not_found",
+  recording_selection_changed: "recording_selection_changed",
+  recording_not_full: "recording_not_full",
+  recording_media_not_permitted: "recording_media_not_permitted",
+  recording_catalog_unavailable: "recording_catalog_unavailable",
+  recording_media_unavailable: "recording_media_unavailable",
+  policy_unavailable: "policy_unavailable",
+} as const;
+
+export interface ImportRecordingErrorResponse {
+  error: ImportRecordingErrorResponseError;
+}
+
 export interface Playlist {
   /** @minimum 1 */
   id: number;
@@ -657,6 +935,53 @@ export const SearchUnavailableResponseValue = {
 export type SearchUnavailableResponse = typeof SearchUnavailableResponseValue;
 
 /**
+ * Noncanonical import UUID, unexpected query, or invalid draft payload
+ */
+export type PlaylistImportBadRequestResponse = PlaylistImportErrorResponse;
+
+/**
+ * Import draft absent from the current account
+ */
+export type PlaylistImportNotFoundResponse = PlaylistImportErrorResponse;
+
+/**
+ * The draft or occurrence is not present for the current account
+ */
+export type ImportRecordingEntryNotFoundResponse = ImportRecordingErrorResponse;
+
+/**
+ * Live policy or the recording catalog could not be checked
+ */
+export type ImportRecordingCatalogUnavailableResponse =
+  ImportRecordingErrorResponse;
+
+/**
+ * Complete verified recording or the requested single byte range
+ */
+export type ImportRecordingMediaBytesResponse = Blob;
+
+/**
+ * The owned import occurrence or its saved selection does not exist
+ */
+export type ImportRecordingMediaNotFoundResponse = ImportRecordingErrorResponse;
+
+/**
+ * The saved revision is stale or current recording rights do not permit this operation
+ */
+export type ImportRecordingMediaConflictResponse = ImportRecordingErrorResponse;
+
+/**
+ * The requested byte range is invalid, unsatisfiable, or contains multiple ranges
+ */
+export type ImportRecordingRangeNotSatisfiableResponse = void;
+
+/**
+ * Live policy, catalog, selection storage, or verified media is unavailable
+ */
+export type ImportRecordingMediaUnavailableResponse =
+  ImportRecordingErrorResponse;
+
+/**
  * Invalid playlist input
  */
 export type CollectionBadRequestResponse = CollectionErrorResponse;
@@ -681,12 +1006,61 @@ export type PlaylistNotFoundResponse = CollectionErrorResponse;
  */
 export type CollectionUnavailableResponse = CollectionErrorResponse;
 
+/**
+ * One byte range, including an open end or a suffix range. Multiple ranges are not supported.
+ */
+export type ImportRecordingByteRangeParameter = string;
+
 export type GetTrackSuggestionsParams = {
   /**
    * @minLength 2
    * @maxLength 200
    */
   q: string;
+};
+
+export type GetArtistTracksParams = {
+  /**
+   * Exactly one nonblank name value without control characters or other query parameters. The length limit applies before trimming or normalization.
+   * @minLength 1
+   * @maxLength 200
+   */
+  name: string;
+};
+
+export type GetArtistTracks400Error =
+  (typeof GetArtistTracks400Error)[keyof typeof GetArtistTracks400Error];
+
+export const GetArtistTracks400Error = {
+  bad_request: "bad_request",
+} as const;
+
+export type GetArtistTracks400 = {
+  error: GetArtistTracks400Error;
+};
+
+export type GetArtistTracks403Error =
+  (typeof GetArtistTracks403Error)[keyof typeof GetArtistTracks403Error];
+
+export const GetArtistTracks403Error = {
+  module_access_denied: "module_access_denied",
+  forbidden: "forbidden",
+} as const;
+
+export type GetArtistTracks403 = {
+  error: GetArtistTracks403Error;
+};
+
+export type GetArtistTracks503Error =
+  (typeof GetArtistTracks503Error)[keyof typeof GetArtistTracks503Error];
+
+export const GetArtistTracks503Error = {
+  artist_discovery_unavailable: "artist_discovery_unavailable",
+  policy_unavailable: "policy_unavailable",
+} as const;
+
+export type GetArtistTracks503 = {
+  error: GetArtistTracks503Error;
 };
 
 export type GetTrackStreamParams = {

@@ -10,6 +10,8 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { TfWebSocketRecoveryBudget } from "@/lib/tf-websocket";
+import { clearQueueSnapshot } from "@/lib/queue-persistence";
+import { clearRecentSearches } from "@/lib/recent-searches";
 import {
   clearTfSessionSecurityState,
   commitTfSessionSecurityState,
@@ -350,8 +352,13 @@ export function TfAuthProvider({ children }: { children: ReactNode }) {
     startTfLogin();
   }, [discard, publish]);
   const logout = useCallback(async () => {
+    const session = current.current.session;
     const remote = logoutTfSession().catch(() => {});
     discard();
+    if (session) {
+      clearQueueSnapshot(session);
+      clearRecentSearches(session);
+    }
     publish({ status: "unauthenticated", session: null, error: null });
     await remote;
   }, [discard, publish]);

@@ -452,6 +452,21 @@ describe("YandexProvider", () => {
     expect(exposed).not.toContain(pathCanary);
   });
 
+  it("keeps Yandex 429 as a provider rejection", async () => {
+    const response = new Response("private provider body", {
+      status: 429,
+      headers: { "Retry-After": "5" },
+    });
+    const cancel = vi.spyOn(response.body!, "cancel");
+    const { provider, requests } = makeProvider([response]);
+
+    await expect(provider.validateToken({ oauthToken: "oauth-token" })).rejects.toMatchObject({
+      code: "provider_rejected",
+    });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(1);
+  });
+
   it("forwards aborts and cancels non-OK, oversized, and stalled Yandex bodies", async () => {
     const token = `oauth-${randomUUID()}`;
     const nonOk = new Response("provider-error-body", { status: 503 });

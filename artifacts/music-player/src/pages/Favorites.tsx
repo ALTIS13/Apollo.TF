@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Link, useLocation } from "wouter";
-import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
+import { motion, AnimatePresence, useIsPresent, useReducedMotion } from "framer-motion";
 import {
   Music2,
   ChevronLeft,
@@ -12,13 +12,19 @@ import {
   AlertCircle,
   ExternalLink,
   Search,
+  Disc3,
 } from "lucide-react";
 import {
   useSpotifyStatus,
   useSpotifyLiked,
-  useSpotifyPlaylists,
+  useSpotifyPlaylistPage,
   useSpotifyPlaylistTracks,
   useSpotifyTopTracks,
+  useSpotifyAlbums,
+  useSpotifyAlbumTracks,
+  useSpotifyRateLimit,
+  type SpotifyAlbum,
+  type SpotifyAlbumOwner,
   type SpotifyTrack,
   type SpotifyPlaylist,
 } from "@/hooks/use-spotify";
@@ -33,13 +39,16 @@ import {
 import { useTfAuth } from "@/auth/tf-auth";
 import { LikedCollection } from "@/components/LikedCollection";
 import { PlaylistsCollection } from "@/components/PlaylistsCollection";
+import { PlaylistImportsCollection } from "@/components/PlaylistImportsCollection";
+import { SpotifyImportAction } from "@/components/SpotifyImportAction";
 import { ProviderCandidatePanel } from "@/components/ProviderCandidatePanel";
+import { formatDuration as formatDurationSeconds } from "@/lib/utils";
 
 const SPOTIFY_GREEN = "#1DB954";
 const YANDEX_YELLOW = "#FFCC00";
 
 type ServiceTab = "apollo" | "spotify" | "yandex";
-type CatalogTab = "liked" | "playlists" | "top";
+type CatalogTab = "liked" | "playlists" | "albums" | "top";
 
 function formatDuration(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -67,26 +76,30 @@ function ErrorState({ message }: { message: string }) {
 }
 
 function Pagination({
-  offset, limit, total, onPageChange,
-}: { offset: number; limit: number; total: number; onPageChange: (o: number) => void }) {
+  offset, limit, total, onPageChange, countLabel, showSinglePage,
+}: { offset: number; limit: number; total: number; onPageChange: (o: number) => void; countLabel?: string; showSinglePage?: boolean }) {
   const currentPage = Math.floor(offset / limit) + 1;
   const totalPages = Math.ceil(total / limit);
-  if (totalPages <= 1) return null;
+  if (totalPages <= 1 && !showSinglePage) return null;
   return (
     <div className="flex items-center justify-center gap-3 pt-4 pb-2">
       <button
-        className="p-2 rounded-full hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        type="button"
+        aria-label="Предыдущая страница"
+        className="p-2 rounded-full hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors focus-visible:outline-2 focus-visible:outline-white"
         onClick={() => onPageChange(Math.max(0, offset - limit))}
         disabled={offset === 0}
       >
         <ChevronLeft className="w-5 h-5 text-white" />
       </button>
       <span className="text-white/60 text-sm">
-        Page {currentPage} of {totalPages}
-        <span className="text-white/30 ml-2">({total} tracks)</span>
+        {countLabel ? `${currentPage} / ${totalPages}` : `Page ${currentPage} of ${totalPages}`}
+        <span className="text-white/30 ml-2">{countLabel ? `(${countLabel}: ${total})` : `(${total} tracks)`}</span>
       </span>
       <button
-        className="p-2 rounded-full hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        type="button"
+        aria-label="Следующая страница"
+        className="p-2 rounded-full hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors focus-visible:outline-2 focus-visible:outline-white"
         onClick={() => onPageChange(offset + limit)}
         disabled={offset + limit >= total}
       >
@@ -170,23 +183,35 @@ function ProviderCollectionUnavailable({ name }: { name: string }) {
   );
 }
 
-function SpotifyCatalog({ onSearchVariants }: { onSearchVariants: (title: string, artist: string) => void }) {
+function SpotifyCatalog({ owner, onSearchVariants, onOpenAlbums }: {
+  owner: SpotifyAlbumOwner | null;
+  onSearchVariants: (title: string, artist: string) => void;
+  onOpenAlbums: () => void;
+}) {
   const [activeTab, setActiveTab] = useState<CatalogTab>("liked");
+  const isPresent = useIsPresent();
+  const reduceMotion = useReducedMotion();
 
   const tabs = [
     { id: "liked" as CatalogTab, label: "Любимые", icon: <Heart className="w-4 h-4" /> },
     { id: "playlists" as CatalogTab, label: "Плейлисты", icon: <List className="w-4 h-4" /> },
+    { id: "albums" as CatalogTab, label: "Альбомы", icon: <Disc3 className="w-4 h-4" /> },
     { id: "top" as CatalogTab, label: "Топ", icon: <TrendingUp className="w-4 h-4" /> },
   ];
 
   return (
     <div>
-      <div className="mb-5 flex w-full gap-1 rounded-md bg-white/5 p-1 sm:w-fit">
+      <div role="group" aria-label="Коллекция Spotify" className="mb-5 grid w-full grid-cols-2 gap-1 rounded-md bg-white/5 p-1 min-[440px]:grid-cols-4 sm:w-fit">
         {tabs.map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className="flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-2 text-xs font-medium transition-colors sm:flex-none sm:px-4 sm:text-sm"
+            type="button"
+            aria-pressed={activeTab === tab.id}
+            onClick={() => {
+              if (tab.id === "albums") onOpenAlbums();
+              setActiveTab(tab.id);
+            }}
+            className="flex min-h-10 min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-2 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-white sm:px-4 sm:text-sm"
             style={activeTab === tab.id ? { background: "rgba(255,255,255,0.12)", color: "#fff" } : { color: "rgba(255,255,255,0.45)" }}
           >
             {tab.icon}
@@ -195,31 +220,163 @@ function SpotifyCatalog({ onSearchVariants }: { onSearchVariants: (title: string
         ))}
       </div>
 
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={activeTab}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -8 }}
-          transition={{ duration: 0.15 }}
-        >
-          {activeTab === "liked" && <SpotifyLikedTab onSearchVariants={onSearchVariants} />}
-          {activeTab === "playlists" && <SpotifyPlaylistsTab onSearchVariants={onSearchVariants} />}
-          {activeTab === "top" && <SpotifyTopTab onSearchVariants={onSearchVariants} />}
-        </motion.div>
-      </AnimatePresence>
+      <motion.div
+        key={activeTab}
+        initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: reduceMotion ? 0 : 0.15 }}
+      >
+        {activeTab === "liked" && <SpotifyLikedTab owner={isPresent ? owner : null} onSearchVariants={onSearchVariants} />}
+        {activeTab === "playlists" && isPresent && <SpotifyPlaylistsTab key={JSON.stringify(owner)} owner={owner} onSearchVariants={onSearchVariants} />}
+        {activeTab === "albums" && isPresent && <SpotifyAlbumsTab key={JSON.stringify(owner)} owner={owner} />}
+        {activeTab === "top" && <SpotifyTopTab onSearchVariants={onSearchVariants} />}
+      </motion.div>
     </div>
   );
 }
 
-function SpotifyLikedTab({ onSearchVariants }: { onSearchVariants: (title: string, artist: string) => void }) {
+const SPOTIFY_ALBUM_PAGE_SIZE = 10;
+const SPOTIFY_ALBUM_TRACK_PAGE_SIZE = 50;
+
+function SpotifyAlbumCover({ album }: { album: SpotifyAlbum }) {
+  const frame = "size-12 shrink-0 rounded-md bg-white/8";
+  return album.thumbnailUrl ? (
+    <img src={album.thumbnailUrl} alt="" loading="lazy" referrerPolicy="no-referrer" className={`${frame} object-contain`} />
+  ) : (
+    <span className={`${frame} grid place-items-center`}><Disc3 className="size-5 text-white/40" /></span>
+  );
+}
+
+function SpotifyItemLink({ item, kind }: {
+  item: { id: string; title: string; providerUrl: string | null };
+  kind: "album" | "track";
+}) {
+  if (!item.providerUrl) return null;
+  let url: URL;
+  try {
+    url = new URL(item.providerUrl);
+  } catch {
+    return null;
+  }
+  if (url.origin !== "https://open.spotify.com" || url.username || url.password || url.pathname !== `/${kind}/${item.id}`) return null;
+  const label = `Открыть в Spotify: ${item.title}`;
+  return (
+    <a href={item.providerUrl} target="_blank" rel="noopener noreferrer" title={label} aria-label={label}
+      className="grid size-10 shrink-0 place-items-center rounded-md text-white/55 hover:bg-white/10 hover:text-white focus-visible:outline-2 focus-visible:outline-white">
+      <ExternalLink className="size-4" />
+    </a>
+  );
+}
+
+function SpotifyReadError({ error, message, retry, previous }: { error: Error; message?: string; retry: () => void; previous?: () => void }) {
+  const quota = useSpotifyRateLimit(error);
+  if (!quota && !message) return <ErrorState message={error.message} />;
+  return (
+    <div role="alert" className="py-8 text-sm text-amber-300">
+      <p>{quota?.message ?? message}</p>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+        <button type="button" onClick={retry} disabled={quota?.waiting} className="min-h-10 underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-white disabled:opacity-50">Повторить</button>
+        {previous && <button type="button" onClick={previous} className="min-h-10 underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-white">Предыдущая страница</button>}
+      </div>
+    </div>
+  );
+}
+
+function SpotifyAlbumGrid({ owner, offset, onPageChange, onSelect }: {
+  owner: SpotifyAlbumOwner | null;
+  offset: number;
+  onPageChange: (offset: number) => void;
+  onSelect: (album: SpotifyAlbum) => void;
+}) {
+  const { data, isFetching, error, refetch } = useSpotifyAlbums(owner, offset, SPOTIFY_ALBUM_PAGE_SIZE);
+  if (owner === null) return <p className="py-8 text-sm text-muted-foreground">Не удалось подтвердить аккаунт Spotify.</p>;
+  if (isFetching) return <div role="status"><LoadingState label="Загружаем альбомы…" color={SPOTIFY_GREEN} /></div>;
+  if (error) return <SpotifyReadError error={error} message="Не удалось загрузить альбомы Spotify." retry={() => void refetch()} previous={offset > 0 ? () => onPageChange(Math.max(0, offset - SPOTIFY_ALBUM_PAGE_SIZE)) : undefined} />;
+  if (!data) return null;
+
+  return (
+    <>
+      {data.albums.length ? (
+        <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {data.albums.map((album) => (
+            <li key={album.id} className="flex min-w-0 items-center rounded-lg bg-white/5 pr-2 hover:bg-white/10">
+              <button type="button" onClick={() => onSelect(album)}
+                className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-3 text-left focus-visible:outline-2 focus-visible:outline-white">
+                <SpotifyAlbumCover album={album} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-white">{album.title}</span>
+                  <span className="block truncate text-xs text-white/55">{album.artist}</span>
+                </span>
+                <ChevronRight className="size-4 shrink-0 text-white/40" />
+              </button>
+              <SpotifyItemLink item={album} kind="album" />
+            </li>
+          ))}
+        </ul>
+      ) : <p className="py-8 text-sm text-muted-foreground">{data.total > 0 ? "На этой странице нет альбомов." : "Нет сохранённых альбомов Spotify."}</p>}
+      <Pagination {...data} countLabel="Альбомов" onPageChange={onPageChange} showSinglePage={data.total > 0 && data.albums.length === 0} />
+    </>
+  );
+}
+
+function SpotifyAlbumDetail({ owner, album, onBack }: { owner: SpotifyAlbumOwner | null; album: SpotifyAlbum; onBack: () => void }) {
+  const [offset, setOffset] = useState(0);
+  const { data, isFetching, error, refetch } = useSpotifyAlbumTracks(owner, album.id, offset, SPOTIFY_ALBUM_TRACK_PAGE_SIZE);
+
+  return (
+    <div>
+      <button type="button" onClick={onBack} className="mb-3 flex min-h-10 items-center gap-2 rounded-md text-sm text-white/65 hover:text-white focus-visible:outline-2 focus-visible:outline-white">
+        <ChevronLeft className="size-4" /> К альбомам
+      </button>
+      <div className="mb-4 flex items-center gap-3 rounded-lg bg-white/5 p-3">
+        <SpotifyAlbumCover album={album} />
+        <div className="min-w-0 flex-1">
+          <h2 className="break-words text-sm font-semibold text-white">{album.title}</h2>
+          <p className="break-words text-xs text-white/55">{album.artist} · Треков: {album.trackCount}</p>
+        </div>
+        <SpotifyItemLink item={album} kind="album" />
+      </div>
+      {album.trackCount > 0 && <SpotifyImportAction owner={owner} selection={{ kind: "album", id: album.id, name: album.title }} />}
+      {isFetching ? <div role="status"><LoadingState label="Загружаем треки…" color={SPOTIFY_GREEN} /></div> :
+        error ? <SpotifyReadError error={error} message="Не удалось загрузить треки альбома." retry={() => void refetch()} previous={offset > 0 ? () => setOffset(Math.max(0, offset - SPOTIFY_ALBUM_TRACK_PAGE_SIZE)) : undefined} /> :
+        data && <>
+          {data.tracks.length ? (
+            <ol className="divide-y divide-white/8">
+              {data.tracks.map((track, index) => (
+                <li key={`${offset + index}:${track.id}`} className="flex items-center gap-2 px-2 py-1 sm:gap-3">
+                  <span className="w-9 shrink-0 text-center text-xs tabular-nums text-white/50" aria-label={`Диск ${track.discNumber}, трек ${track.trackNumber}`}>{track.discNumber}.{track.trackNumber}</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-white">{track.title}</p>
+                    <p className="truncate text-xs text-white/55">{track.artist}</p>
+                  </div>
+                  <span className="shrink-0 text-xs tabular-nums text-white/55">{formatDurationSeconds(track.duration)}</span>
+                  <SpotifyItemLink item={track} kind="track" />
+                </li>
+              ))}
+            </ol>
+          ) : <p className="py-8 text-sm text-muted-foreground">{offset ? "На этой странице нет треков." : "В альбоме нет треков."}</p>}
+          <Pagination {...data} countLabel="Треков" onPageChange={setOffset} />
+        </>}
+    </div>
+  );
+}
+
+function SpotifyAlbumsTab({ owner }: { owner: SpotifyAlbumOwner | null }) {
+  const [offset, setOffset] = useState(0);
+  const [selected, setSelected] = useState<SpotifyAlbum | null>(null);
+  return selected
+    ? <SpotifyAlbumDetail owner={owner} album={selected} onBack={() => setSelected(null)} />
+    : <SpotifyAlbumGrid owner={owner} offset={offset} onPageChange={setOffset} onSelect={setSelected} />;
+}
+
+function SpotifyLikedTab({ owner, onSearchVariants }: { owner: SpotifyAlbumOwner | null; onSearchVariants: (title: string, artist: string) => void }) {
   const [offset, setOffset] = useState(0);
   const { data, isFetching, error, refetch } = useSpotifyLiked(offset, 50);
   useEffect(() => { refetch(); }, [offset]);
   useEffect(() => { refetch(); }, []);
 
   if (isFetching) return <LoadingState label="Loading liked songs..." color={SPOTIFY_GREEN} />;
-  if (error) return <ErrorState message={(error as Error).message} />;
+  if (error) return <SpotifyReadError error={error} retry={() => void refetch()} />;
   if (!data) return null;
 
   const tracks: GenericTrack[] = data.tracks.map((t: SpotifyTrack) => ({
@@ -229,77 +386,104 @@ function SpotifyLikedTab({ onSearchVariants }: { onSearchVariants: (title: strin
 
   return (
     <>
+      {data.total > 0 && <SpotifyImportAction owner={owner} selection={{ kind: "liked", name: "Любимые треки Spotify" }} />}
       <TrackList tracks={tracks} offset={offset} accentColor={SPOTIFY_GREEN} onSearchVariants={onSearchVariants} />
       <Pagination offset={offset} limit={50} total={data.total} onPageChange={setOffset} />
     </>
   );
 }
 
-function SpotifyPlaylistsTab({ onSearchVariants }: { onSearchVariants: (title: string, artist: string) => void }) {
-  const [selected, setSelected] = useState<SpotifyPlaylist | null>(null);
+function SpotifyPlaylistDetail({ owner, playlist, onBack, onSearchVariants }: {
+  owner: SpotifyAlbumOwner;
+  playlist: SpotifyPlaylist;
+  onBack: () => void;
+  onSearchVariants: (title: string, artist: string) => void;
+}) {
   const [offset, setOffset] = useState(0);
-  const { data: pData, isFetching: loadingP, error: pErr, refetch: refetchP } = useSpotifyPlaylists();
-  const { data: tData, isFetching: loadingT, error: tErr, refetch: refetchT } = useSpotifyPlaylistTracks(selected?.id ?? null, offset, 50);
-
-  useEffect(() => { refetchP(); }, []);
-  useEffect(() => { if (selected) { setOffset(0); } }, [selected?.id]);
-  useEffect(() => { if (selected) refetchT(); }, [selected?.id, offset]);
-
-  if (selected) {
-    const tracks: GenericTrack[] = (tData?.tracks ?? []).map((t: SpotifyTrack) => ({
-      id: t.id, title: t.title, artist: t.artist, album: t.album,
-      durationMs: t.durationMs, thumbnailUrl: t.thumbnailUrl, externalUrl: t.spotifyUrl,
-    }));
-    return (
-      <div>
-        <button className="flex items-center gap-2 text-white/50 hover:text-white mb-4 text-sm transition-colors" onClick={() => { setSelected(null); setOffset(0); }}>
-          <ChevronLeft className="w-4 h-4" /> Back to playlists
-        </button>
-        <div className="flex items-center gap-3 mb-4 p-3 rounded-xl bg-white/5">
-          {selected.thumbnailUrl && <img src={selected.thumbnailUrl} alt={selected.name} className="w-12 h-12 rounded-lg object-cover" />}
-          <div>
-            <h3 className="font-semibold text-white text-sm">{selected.name}</h3>
-            <p className="text-white/40 text-xs">{selected.trackCount} tracks</p>
-          </div>
-        </div>
-        {loadingT ? <LoadingState label="Loading tracks..." color={SPOTIFY_GREEN} /> :
-          tErr ? <ErrorState message={(tErr as Error).message} /> : (
-            <>
-              <TrackList tracks={tracks} offset={offset} accentColor={SPOTIFY_GREEN} onSearchVariants={onSearchVariants} />
-              {tData && <Pagination offset={offset} limit={50} total={tData.total} onPageChange={setOffset} />}
-            </>
-          )}
-      </div>
-    );
-  }
-
-  if (loadingP) return <LoadingState label="Loading playlists..." color={SPOTIFY_GREEN} />;
-  if (pErr) return <ErrorState message={(pErr as Error).message} />;
-  if (!pData) return null;
-
+  const { data, isFetching, error, refetch } = useSpotifyPlaylistTracks(owner, playlist.id, offset, 50);
+  const tracks: GenericTrack[] = (data?.tracks ?? []).map((t) => ({
+    id: t.id, title: t.title, artist: t.artist, album: t.album,
+    durationMs: t.durationMs, thumbnailUrl: t.thumbnailUrl, externalUrl: t.spotifyUrl,
+  }));
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-      {pData.playlists.map((p: SpotifyPlaylist, i: number) => (
-        <motion.button
-          key={p.id}
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: Math.min(i * 0.03, 0.4) }}
-          onClick={() => setSelected(p)}
-          className="flex items-center gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-all text-left group"
-        >
-          {p.thumbnailUrl
-            ? <img src={p.thumbnailUrl} alt={p.name} className="w-12 h-12 rounded-md object-cover shrink-0" />
-            : <div className="w-12 h-12 rounded-md bg-white/8 flex items-center justify-center shrink-0"><List className="w-5 h-5 text-white/25" /></div>
-          }
-          <div className="min-w-0 flex-1">
-            <p className="font-medium text-white text-sm truncate">{p.name}</p>
-            <p className="text-white/35 text-xs">{p.trackCount} tracks</p>
-          </div>
-          <ChevronLeft className="w-4 h-4 text-white/15 group-hover:text-white/50 rotate-180 shrink-0 transition-colors" />
-        </motion.button>
-      ))}
+    <div>
+      <button type="button" className="flex items-center gap-2 text-white/50 hover:text-white mb-4 text-sm transition-colors" onClick={onBack}>
+        <ChevronLeft className="w-4 h-4" /> Back to playlists
+      </button>
+      <div className="flex items-center gap-3 mb-4 p-3 rounded-xl bg-white/5">
+        {playlist.thumbnailUrl && <img src={playlist.thumbnailUrl} alt={playlist.name} className="w-12 h-12 rounded-lg object-cover" />}
+        <div>
+          <h3 className="font-semibold text-white text-sm">{playlist.name}</h3>
+          <p className="text-white/40 text-xs">{playlist.trackCount} tracks</p>
+        </div>
+      </div>
+      {playlist.trackCount > 0 && <SpotifyImportAction owner={owner} selection={{ kind: "playlist", id: playlist.id, name: playlist.name }} />}
+      {isFetching ? <LoadingState label="Loading tracks..." color={SPOTIFY_GREEN} /> :
+        error ? <SpotifyReadError error={error} retry={() => void refetch()} /> : (
+          <>
+            <TrackList tracks={tracks} offset={offset} accentColor={SPOTIFY_GREEN} onSearchVariants={onSearchVariants} />
+            {data && <Pagination offset={offset} limit={50} total={data.total} onPageChange={setOffset} />}
+          </>
+        )}
     </div>
+  );
+}
+
+function SpotifyPlaylistsTab({ owner, onSearchVariants }: { owner: SpotifyAlbumOwner | null; onSearchVariants: (title: string, artist: string) => void }) {
+  const [selected, setSelected] = useState<SpotifyPlaylist | null>(null);
+  const [history, setHistory] = useState([0]);
+  const offset = history.at(-1) ?? 0;
+  const { data, isFetching, error, refetch } = useSpotifyPlaylistPage(owner, offset);
+  const previous = history.length > 1 ? () =>
+    setHistory((offsets) => offsets.at(-1) === offset ? offsets.slice(0, -1) : offsets) : undefined;
+
+  if (owner === null) return <p className="py-8 text-sm text-muted-foreground">Не удалось подтвердить аккаунт Spotify.</p>;
+  if (selected) return <SpotifyPlaylistDetail owner={owner} playlist={selected} onBack={() => setSelected(null)} onSearchVariants={onSearchVariants} />;
+  if (isFetching) return <div role="status"><LoadingState label="Загружаем плейлисты…" color={SPOTIFY_GREEN} /></div>;
+  if (error) return <SpotifyReadError error={error} message="Не удалось загрузить плейлисты Spotify." retry={() => void refetch()} previous={previous} />;
+  if (!data) return null;
+
+  const nextOffset = data.nextOffset !== null && Number.isSafeInteger(data.nextOffset) && data.nextOffset > offset ? data.nextOffset : null;
+  const next = nextOffset === null ? undefined : () =>
+    setHistory((offsets) => offsets.at(-1) === offset ? [...offsets, nextOffset] : offsets);
+  const pageButtonClass = "grid size-10 shrink-0 place-items-center rounded-full hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-white";
+  return (
+    <>
+      {data.playlists.length ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {data.playlists.map((playlist, index) => (
+            <motion.button
+              key={playlist.id}
+              type="button"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ delay: Math.min(index * 0.03, 0.4) }}
+              onClick={() => setSelected(playlist)}
+              className="flex min-w-0 items-center gap-3 p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-all text-left group focus-visible:outline-2 focus-visible:outline-white"
+            >
+              {playlist.thumbnailUrl
+                ? <img src={playlist.thumbnailUrl} alt={playlist.name} className="w-12 h-12 rounded-md object-cover shrink-0" />
+                : <div className="w-12 h-12 rounded-md bg-white/8 flex items-center justify-center shrink-0"><List className="w-5 h-5 text-white/25" /></div>
+              }
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-white text-sm truncate">{playlist.name}</p>
+                <p className="text-white/35 text-xs">{playlist.trackCount} tracks</p>
+              </div>
+              <ChevronRight className="w-4 h-4 text-white/15 group-hover:text-white/50 shrink-0 transition-colors" />
+            </motion.button>
+          ))}
+        </div>
+      ) : <p className="py-8 text-sm text-muted-foreground">{data.total > 0 ? "На этой странице нет доступных плейлистов." : "Нет плейлистов Spotify."}</p>}
+      {(previous || next) && <nav aria-label="Страницы плейлистов Spotify" className="flex items-center justify-center gap-3 pt-4 pb-2">
+        <button type="button" aria-label="Предыдущая страница" className={pageButtonClass} onClick={previous} disabled={!previous}>
+          <ChevronLeft className="size-5" />
+        </button>
+        <span className="text-sm text-white/60 tabular-nums">Страница {history.length}</span>
+        <button type="button" aria-label="Следующая страница" className={pageButtonClass} onClick={next} disabled={!next}>
+          <ChevronRight className="size-5" />
+        </button>
+      </nav>}
+    </>
   );
 }
 
@@ -331,7 +515,7 @@ function SpotifyTopTab({ onSearchVariants }: { onSearchVariants: (title: string,
         ))}
       </div>
       {isFetching ? <LoadingState label="Loading top tracks..." color={SPOTIFY_GREEN} /> :
-        error ? <ErrorState message={(error as Error).message} /> :
+        error ? <SpotifyReadError error={error} retry={() => void refetch()} /> :
           <TrackList tracks={tracks} offset={0} accentColor={SPOTIFY_GREEN} onSearchVariants={onSearchVariants} />}
     </div>
   );
@@ -474,10 +658,10 @@ export default function Favorites() {
   const reduceMotion = useReducedMotion();
   const [, navigate] = useLocation();
   const [service, setService] = useState<ServiceTab>("apollo");
-  const [apolloTab, setApolloTab] = useState<"liked" | "playlists">("liked");
+  const [apolloTab, setApolloTab] = useState<"liked" | "playlists" | "imports">("liked");
   const [selectedTrack, setSelectedTrack] = useState<{ title: string; artist: string } | null>(null);
   const candidateRef = useRef<HTMLDivElement>(null);
-  const { hasEntitlement } = useTfAuth();
+  const { hasEntitlement, session } = useTfAuth();
   const integrationsAllowed = hasEntitlement("tf.integrations");
   const callbackQuery = new URLSearchParams(window.location.search);
   const callback = callbackQuery.has("spotify_error") ? "spotify_error=1" : callbackQuery.get("spotify_connected") === "1" ? "spotify_connected=1" : null;
@@ -578,8 +762,9 @@ export default function Favorites() {
               <div role="group" aria-label="Коллекция Apollo" className="mb-5 flex gap-4 border-b border-white/10">
                 <button type="button" aria-pressed={apolloTab === "liked"} onClick={() => setApolloTab("liked")} className={`min-h-11 border-b-2 px-1 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-[#8ddbd4] ${apolloTab === "liked" ? "border-[#8ddbd4] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Любимые</button>
                 <button type="button" aria-pressed={apolloTab === "playlists"} onClick={() => setApolloTab("playlists")} className={`min-h-11 border-b-2 px-1 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-[#8ddbd4] ${apolloTab === "playlists" ? "border-[#8ddbd4] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Плейлисты</button>
+                <button type="button" aria-pressed={apolloTab === "imports"} onClick={() => setApolloTab("imports")} className={`min-h-11 border-b-2 px-1 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-[#8ddbd4] ${apolloTab === "imports" ? "border-[#8ddbd4] text-white" : "border-transparent text-white/50 hover:text-white"}`}>Импорты</button>
               </div>
-              {apolloTab === "liked" ? <LikedCollection /> : <PlaylistsCollection />}
+              {apolloTab === "liked" ? <LikedCollection /> : apolloTab === "playlists" ? <PlaylistsCollection /> : <PlaylistImportsCollection />}
             </> : !integrationsAllowed ? (
               <div className="py-8 text-sm text-muted-foreground">Подключение музыкальных сервисов недоступно для этого аккаунта.</div>
             ) : activeLoading ? (
@@ -591,7 +776,11 @@ export default function Favorites() {
               </div>
             ) : service === "spotify" ? (
               spotifyStatus?.connected
-                ? <SpotifyCatalog onSearchVariants={handleSearchVariants} />
+                ? <SpotifyCatalog
+                    owner={session && spotifyStatus.spotifyUserId ? [session.accountId, session.installationId, spotifyStatus.spotifyUserId] : null}
+                    onSearchVariants={handleSearchVariants}
+                    onOpenAlbums={() => setSelectedTrack(null)}
+                  />
                 : <ProviderCollectionUnavailable name="Spotify" />
             ) : (
               yandexStatus?.connected

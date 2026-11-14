@@ -42,6 +42,81 @@ export const GetTrackSuggestionsResponse = zod.object({
 });
 
 /**
+ * Requires tf.search. The lookup is read-only and no-store. It searches YouTube and SoundCloud and filters by exact artist name after case, whitespace, and NFC normalization. Results are provider-supplied candidates, not verification of an artist identity, homonym, or recording version.
+ * @summary Discover track candidates by artist name
+ */
+export const getArtistTracksQueryNameMax = 200;
+
+export const GetArtistTracksQueryParams = zod
+  .object({
+    name: zod
+      .string()
+      .min(1)
+      .max(getArtistTracksQueryNameMax)
+      .describe(
+        "Exactly one nonblank name value without control characters or other query parameters. The length limit applies before trimming or normalization.",
+      ),
+  })
+  .strict();
+
+export const getArtistTracksResponseArtistMax = 200;
+
+export const getArtistTracksResponseResultsMax = 20;
+
+export const GetArtistTracksResponse = zod
+  .object({
+    schemaVersion: zod.literal(1),
+    artist: zod
+      .string()
+      .min(1)
+      .max(getArtistTracksResponseArtistMax)
+      .describe(
+        "The requested display name after trimming, collapsing whitespace, and NFC normalization, with its case preserved.",
+      ),
+    results: zod
+      .array(
+        zod
+          .object({
+            id: zod
+              .string()
+              .describe(
+                "Unique track ID. Format: yt_<base64url(https:\/\/www.youtube.com\/watch?v=ID)> for YouTube or sc_<base64url(permalink_url)> for SoundCloud. Pass this ID to \/stream or \/download endpoints.",
+              ),
+            title: zod.string(),
+            artist: zod.string(),
+            type: zod.enum(["original", "remix", "live", "cover"]),
+            duration: zod.number().describe("Duration in seconds"),
+            source: zod.enum([
+              "youtube",
+              "soundcloud",
+              "bandcamp",
+              "deezer",
+              "reviewed",
+            ]),
+            thumbnailUrl: zod.string().nullish(),
+            quality: zod
+              .array(zod.string())
+              .describe('Available quality options (e.g. [\"128\", \"320\"])'),
+            viewCount: zod.number().nullish(),
+            score: zod
+              .number()
+              .describe("Ranking score (higher is better match)"),
+          })
+          .strict(),
+      )
+      .max(getArtistTracksResponseResultsMax)
+      .describe(
+        "Provider order, with duplicate IDs removed and at most ten results per provider.",
+      ),
+    partial: zod
+      .boolean()
+      .describe(
+        "True if only one of the two requested providers completed successfully, even when its exact-match result list is empty.",
+      ),
+  })
+  .strict();
+
+/**
  * @summary Search open sources by free text
  */
 export const freeSearchTracksBodyQueryMin = 2;
@@ -84,7 +159,13 @@ export const FreeSearchTracksResponse = zod.object({
       artist: zod.string(),
       type: zod.enum(["original", "remix", "live", "cover"]),
       duration: zod.number().describe("Duration in seconds"),
-      source: zod.enum(["youtube", "soundcloud", "bandcamp", "deezer"]),
+      source: zod.enum([
+        "youtube",
+        "soundcloud",
+        "bandcamp",
+        "deezer",
+        "reviewed",
+      ]),
       thumbnailUrl: zod.string().nullish(),
       quality: zod
         .array(zod.string())
@@ -191,7 +272,13 @@ export const SearchTracksResponse = zod.object({
       artist: zod.string(),
       type: zod.enum(["original", "remix", "live", "cover"]),
       duration: zod.number().describe("Duration in seconds"),
-      source: zod.enum(["youtube", "soundcloud", "bandcamp", "deezer"]),
+      source: zod.enum([
+        "youtube",
+        "soundcloud",
+        "bandcamp",
+        "deezer",
+        "reviewed",
+      ]),
       thumbnailUrl: zod.string().nullish(),
       quality: zod
         .array(zod.string())
@@ -816,6 +903,594 @@ export const RemoveLikedTrackParams = zod
       .regex(removeLikedTrackPathTrackIdRegExp),
   })
   .strict();
+
+/**
+ * @summary List the current account's metadata-only import drafts
+ */
+export const listPlaylistImportsResponseImportsItemIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+export const listPlaylistImportsResponseImportsItemNameMax = 200;
+
+export const listPlaylistImportsResponseImportsItemEntryCountMax = 200;
+export const listPlaylistImportsResponseImportsItemEntryCountMultipleOf = 1;
+
+export const ListPlaylistImportsResponse = zod
+  .object({
+    imports: zod.array(
+      zod
+        .object({
+          id: zod
+            .string()
+            .regex(listPlaylistImportsResponseImportsItemIdRegExp),
+          name: zod
+            .string()
+            .min(1)
+            .max(listPlaylistImportsResponseImportsItemNameMax),
+          source: zod
+            .enum([
+              "file",
+              "spotify_album",
+              "spotify_playlist",
+              "spotify_liked",
+            ])
+            .describe(
+              "Client-supplied provenance label only; not provider authorization.",
+            ),
+          entryCount: zod
+            .number()
+            .min(1)
+            .max(listPlaylistImportsResponseImportsItemEntryCountMax)
+            .multipleOf(
+              listPlaylistImportsResponseImportsItemEntryCountMultipleOf,
+            ),
+          createdAt: zod.string().datetime({}),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+/**
+ * @summary Get an import draft with its ordered metadata entries
+ */
+export const getPlaylistImportPathImportIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+
+export const GetPlaylistImportParams = zod
+  .object({
+    importId: zod.string().regex(getPlaylistImportPathImportIdRegExp),
+  })
+  .strict();
+
+export const getPlaylistImportResponseDraftIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+export const getPlaylistImportResponseDraftNameMax = 200;
+
+export const getPlaylistImportResponseDraftEntryCountMax = 200;
+export const getPlaylistImportResponseDraftEntryCountMultipleOf = 1;
+
+export const getPlaylistImportResponseDraftEntriesItemArtistMax = 300;
+
+export const getPlaylistImportResponseDraftEntriesItemArtistRegExp = new RegExp(
+  "^(?=[\\s\\S]\*\\S)(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+);
+export const getPlaylistImportResponseDraftEntriesItemTitleMax = 500;
+
+export const getPlaylistImportResponseDraftEntriesItemTitleRegExp = new RegExp(
+  "^(?=[\\s\\S]\*\\S)(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+);
+export const getPlaylistImportResponseDraftEntriesItemDurationSecondsMax = 86400;
+export const getPlaylistImportResponseDraftEntriesItemDurationSecondsMultipleOf = 1;
+
+export const getPlaylistImportResponseDraftEntriesMax = 200;
+
+export const GetPlaylistImportResponse = zod
+  .object({
+    draft: zod
+      .object({
+        id: zod.string().regex(getPlaylistImportResponseDraftIdRegExp),
+        name: zod.string().min(1).max(getPlaylistImportResponseDraftNameMax),
+        source: zod
+          .enum(["file", "spotify_album", "spotify_playlist", "spotify_liked"])
+          .describe(
+            "Client-supplied provenance label only; not provider authorization.",
+          ),
+        entryCount: zod
+          .number()
+          .min(1)
+          .max(getPlaylistImportResponseDraftEntryCountMax)
+          .multipleOf(getPlaylistImportResponseDraftEntryCountMultipleOf),
+        createdAt: zod.string().datetime({}),
+        entries: zod
+          .array(
+            zod
+              .object({
+                artist: zod
+                  .string()
+                  .min(1)
+                  .max(getPlaylistImportResponseDraftEntriesItemArtistMax)
+                  .regex(getPlaylistImportResponseDraftEntriesItemArtistRegExp)
+                  .describe("Trimmed artist name"),
+                title: zod
+                  .string()
+                  .min(1)
+                  .max(getPlaylistImportResponseDraftEntriesItemTitleMax)
+                  .regex(getPlaylistImportResponseDraftEntriesItemTitleRegExp)
+                  .describe("Trimmed track title"),
+                durationSeconds: zod
+                  .number()
+                  .min(1)
+                  .max(
+                    getPlaylistImportResponseDraftEntriesItemDurationSecondsMax,
+                  )
+                  .multipleOf(
+                    getPlaylistImportResponseDraftEntriesItemDurationSecondsMultipleOf,
+                  )
+                  .nullable(),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(getPlaylistImportResponseDraftEntriesMax),
+      })
+      .strict(),
+  })
+  .strict();
+
+/**
+ * The existing TF session and browser CSRF checks apply. The source is a provenance label, not proof of access to a provider. The normalized JSON body must fit within 90 KiB of UTF-8.
+ * @summary Create or replay an import draft at a client-selected UUID
+ */
+export const putPlaylistImportPathImportIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+
+export const PutPlaylistImportParams = zod
+  .object({
+    importId: zod.string().regex(putPlaylistImportPathImportIdRegExp),
+  })
+  .strict();
+
+export const putPlaylistImportBodyNameMax = 200;
+
+export const putPlaylistImportBodyNameRegExp = new RegExp(
+  "^(?=[\\s\\S]\*\\S)(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+);
+export const putPlaylistImportBodyEntriesItemArtistMax = 300;
+
+export const putPlaylistImportBodyEntriesItemArtistRegExp = new RegExp(
+  "^(?=[\\s\\S]\*\\S)(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+);
+export const putPlaylistImportBodyEntriesItemTitleMax = 500;
+
+export const putPlaylistImportBodyEntriesItemTitleRegExp = new RegExp(
+  "^(?=[\\s\\S]\*\\S)(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+);
+export const putPlaylistImportBodyEntriesItemDurationSecondsMax = 86400;
+export const putPlaylistImportBodyEntriesItemDurationSecondsMultipleOf = 1;
+
+export const putPlaylistImportBodyEntriesMax = 200;
+
+export const PutPlaylistImportBody = zod
+  .object({
+    name: zod
+      .string()
+      .min(1)
+      .max(putPlaylistImportBodyNameMax)
+      .regex(putPlaylistImportBodyNameRegExp)
+      .describe("Draft name, trimmed before validation and storage"),
+    source: zod
+      .enum(["file", "spotify_album", "spotify_playlist", "spotify_liked"])
+      .describe(
+        "Client-supplied provenance label only; not provider authorization.",
+      ),
+    entries: zod
+      .array(
+        zod
+          .object({
+            artist: zod
+              .string()
+              .min(1)
+              .max(putPlaylistImportBodyEntriesItemArtistMax)
+              .regex(putPlaylistImportBodyEntriesItemArtistRegExp)
+              .describe("Trimmed artist name"),
+            title: zod
+              .string()
+              .min(1)
+              .max(putPlaylistImportBodyEntriesItemTitleMax)
+              .regex(putPlaylistImportBodyEntriesItemTitleRegExp)
+              .describe("Trimmed track title"),
+            durationSeconds: zod
+              .number()
+              .min(1)
+              .max(putPlaylistImportBodyEntriesItemDurationSecondsMax)
+              .multipleOf(
+                putPlaylistImportBodyEntriesItemDurationSecondsMultipleOf,
+              )
+              .nullable(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(putPlaylistImportBodyEntriesMax),
+  })
+  .strict();
+
+export const putPlaylistImportResponseDraftIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+export const putPlaylistImportResponseDraftNameMax = 200;
+
+export const putPlaylistImportResponseDraftEntryCountMax = 200;
+export const putPlaylistImportResponseDraftEntryCountMultipleOf = 1;
+
+export const putPlaylistImportResponseDraftEntriesItemArtistMax = 300;
+
+export const putPlaylistImportResponseDraftEntriesItemArtistRegExp = new RegExp(
+  "^(?=[\\s\\S]\*\\S)(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+);
+export const putPlaylistImportResponseDraftEntriesItemTitleMax = 500;
+
+export const putPlaylistImportResponseDraftEntriesItemTitleRegExp = new RegExp(
+  "^(?=[\\s\\S]\*\\S)(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+);
+export const putPlaylistImportResponseDraftEntriesItemDurationSecondsMax = 86400;
+export const putPlaylistImportResponseDraftEntriesItemDurationSecondsMultipleOf = 1;
+
+export const putPlaylistImportResponseDraftEntriesMax = 200;
+
+export const PutPlaylistImportResponse = zod
+  .object({
+    draft: zod
+      .object({
+        id: zod.string().regex(putPlaylistImportResponseDraftIdRegExp),
+        name: zod.string().min(1).max(putPlaylistImportResponseDraftNameMax),
+        source: zod
+          .enum(["file", "spotify_album", "spotify_playlist", "spotify_liked"])
+          .describe(
+            "Client-supplied provenance label only; not provider authorization.",
+          ),
+        entryCount: zod
+          .number()
+          .min(1)
+          .max(putPlaylistImportResponseDraftEntryCountMax)
+          .multipleOf(putPlaylistImportResponseDraftEntryCountMultipleOf),
+        createdAt: zod.string().datetime({}),
+        entries: zod
+          .array(
+            zod
+              .object({
+                artist: zod
+                  .string()
+                  .min(1)
+                  .max(putPlaylistImportResponseDraftEntriesItemArtistMax)
+                  .regex(putPlaylistImportResponseDraftEntriesItemArtistRegExp)
+                  .describe("Trimmed artist name"),
+                title: zod
+                  .string()
+                  .min(1)
+                  .max(putPlaylistImportResponseDraftEntriesItemTitleMax)
+                  .regex(putPlaylistImportResponseDraftEntriesItemTitleRegExp)
+                  .describe("Trimmed track title"),
+                durationSeconds: zod
+                  .number()
+                  .min(1)
+                  .max(
+                    putPlaylistImportResponseDraftEntriesItemDurationSecondsMax,
+                  )
+                  .multipleOf(
+                    putPlaylistImportResponseDraftEntriesItemDurationSecondsMultipleOf,
+                  )
+                  .nullable(),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(putPlaylistImportResponseDraftEntriesMax),
+      })
+      .strict(),
+  })
+  .strict();
+
+/**
+ * The existing TF session and browser CSRF checks apply.
+ * @summary Delete an import draft from the current account
+ */
+export const removePlaylistImportPathImportIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+
+export const RemovePlaylistImportParams = zod
+  .object({
+    importId: zod.string().regex(removePlaylistImportPathImportIdRegExp),
+  })
+  .strict();
+
+/**
+ * Requires live tf.collections and tf.search. A candidate is not playback or download authorization.
+ * @summary Review recording evidence for one owned import occurrence
+ */
+export const listImportRecordingCandidatesPathImportIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+export const listImportRecordingCandidatesPathPositionRegExp = new RegExp(
+  "^(?:[0-9]|[1-9][0-9]|1[0-9]{2})$",
+);
+
+export const ListImportRecordingCandidatesParams = zod
+  .object({
+    importId: zod
+      .string()
+      .regex(listImportRecordingCandidatesPathImportIdRegExp),
+    position: zod
+      .string()
+      .regex(listImportRecordingCandidatesPathPositionRegExp)
+      .describe("Zero-based occurrence in the immutable import draft."),
+  })
+  .strict();
+
+export const listImportRecordingCandidatesResponseCandidatesItemIdRegExp =
+  new RegExp("^[a-z0-9][a-z0-9_-]{0,63}$");
+export const listImportRecordingCandidatesResponseCandidatesItemEvidenceRevisionRegExp =
+  new RegExp("^[a-f0-9]{64}$");
+export const listImportRecordingCandidatesResponseCandidatesItemArtistMax = 300;
+
+export const listImportRecordingCandidatesResponseCandidatesItemTitleMax = 500;
+
+export const listImportRecordingCandidatesResponseCandidatesItemExpectedDurationSecondsMax = 86400;
+export const listImportRecordingCandidatesResponseCandidatesItemExpectedDurationSecondsMultipleOf = 1;
+
+export const listImportRecordingCandidatesResponseCandidatesItemMeasuredDurationSecondsMax = 86400;
+export const listImportRecordingCandidatesResponseCandidatesItemMeasuredDurationSecondsMultipleOf = 1;
+
+export const listImportRecordingCandidatesResponseCandidatesItemSourceLabelMax = 160;
+
+export const listImportRecordingCandidatesResponseCandidatesItemSourceUrlMax = 4096;
+
+export const listImportRecordingCandidatesResponseCandidatesItemSourceUrlRegExp =
+  new RegExp("^https:\/");
+export const listImportRecordingCandidatesResponseCandidatesMax = 12;
+
+export const listImportRecordingCandidatesResponseSelectionOneCandidateIdRegExp =
+  new RegExp("^[a-z0-9][a-z0-9_-]{0,63}$");
+export const listImportRecordingCandidatesResponseSelectionOneEvidenceRevisionRegExp =
+  new RegExp("^[a-f0-9]{64}$");
+
+export const ListImportRecordingCandidatesResponse = zod
+  .object({
+    status: zod.enum(["ready", "unconfigured"]),
+    candidates: zod
+      .array(
+        zod
+          .object({
+            id: zod
+              .string()
+              .regex(
+                listImportRecordingCandidatesResponseCandidatesItemIdRegExp,
+              ),
+            evidenceRevision: zod
+              .string()
+              .regex(
+                listImportRecordingCandidatesResponseCandidatesItemEvidenceRevisionRegExp,
+              ),
+            artist: zod
+              .string()
+              .min(1)
+              .max(
+                listImportRecordingCandidatesResponseCandidatesItemArtistMax,
+              ),
+            title: zod
+              .string()
+              .min(1)
+              .max(listImportRecordingCandidatesResponseCandidatesItemTitleMax),
+            edition: zod.enum([
+              "original",
+              "clean_edit",
+              "alternate",
+              "unknown",
+            ]),
+            releaseDate: zod.string().date().nullable(),
+            expectedDurationSeconds: zod
+              .number()
+              .min(1)
+              .max(
+                listImportRecordingCandidatesResponseCandidatesItemExpectedDurationSecondsMax,
+              )
+              .multipleOf(
+                listImportRecordingCandidatesResponseCandidatesItemExpectedDurationSecondsMultipleOf,
+              )
+              .nullable(),
+            measuredDurationSeconds: zod
+              .number()
+              .min(1)
+              .max(
+                listImportRecordingCandidatesResponseCandidatesItemMeasuredDurationSecondsMax,
+              )
+              .multipleOf(
+                listImportRecordingCandidatesResponseCandidatesItemMeasuredDurationSecondsMultipleOf,
+              )
+              .nullable(),
+            access: zod.enum(["full", "preview", "blocked", "unverified"]),
+            download: zod.enum(["permitted", "not_permitted", "unverified"]),
+            sourceLabel: zod
+              .string()
+              .min(1)
+              .max(
+                listImportRecordingCandidatesResponseCandidatesItemSourceLabelMax,
+              ),
+            sourceUrl: zod
+              .string()
+              .max(
+                listImportRecordingCandidatesResponseCandidatesItemSourceUrlMax,
+              )
+              .regex(
+                listImportRecordingCandidatesResponseCandidatesItemSourceUrlRegExp,
+              )
+              .nullable()
+              .describe("HTTPS attribution page, never a media URL or grant."),
+            mediaBound: zod
+              .literal(true)
+              .optional()
+              .describe(
+                "Present only when the full recording has a reviewed local media binding. This is not a playback or download grant.",
+              ),
+          })
+          .strict(),
+      )
+      .max(listImportRecordingCandidatesResponseCandidatesMax),
+    selection: zod.union([
+      zod
+        .object({
+          candidateId: zod
+            .string()
+            .regex(
+              listImportRecordingCandidatesResponseSelectionOneCandidateIdRegExp,
+            ),
+          evidenceRevision: zod
+            .string()
+            .regex(
+              listImportRecordingCandidatesResponseSelectionOneEvidenceRevisionRegExp,
+            ),
+          selectedAt: zod.string().datetime({}),
+        })
+        .strict(),
+      zod.null(),
+    ]),
+  })
+  .strict();
+
+/**
+ * Requires live tf.collections and tf.search plus browser CSRF. The catalog must still advertise full access and the identical evidence revision; the selection does not grant playback or download access.
+ * @summary Confirm a full recording for one owned import occurrence
+ */
+export const putImportRecordingSelectionPathImportIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+export const putImportRecordingSelectionPathPositionRegExp = new RegExp(
+  "^(?:[0-9]|[1-9][0-9]|1[0-9]{2})$",
+);
+
+export const PutImportRecordingSelectionParams = zod
+  .object({
+    importId: zod.string().regex(putImportRecordingSelectionPathImportIdRegExp),
+    position: zod
+      .string()
+      .regex(putImportRecordingSelectionPathPositionRegExp)
+      .describe("Zero-based occurrence in the immutable import draft."),
+  })
+  .strict();
+
+export const putImportRecordingSelectionBodyCandidateIdRegExp = new RegExp(
+  "^[a-z0-9][a-z0-9_-]{0,63}$",
+);
+export const putImportRecordingSelectionBodyEvidenceRevisionRegExp = new RegExp(
+  "^[a-f0-9]{64}$",
+);
+
+export const PutImportRecordingSelectionBody = zod
+  .object({
+    candidateId: zod
+      .string()
+      .regex(putImportRecordingSelectionBodyCandidateIdRegExp),
+    evidenceRevision: zod
+      .string()
+      .regex(putImportRecordingSelectionBodyEvidenceRevisionRegExp),
+  })
+  .strict();
+
+export const putImportRecordingSelectionResponseSelectionCandidateIdRegExp =
+  new RegExp("^[a-z0-9][a-z0-9_-]{0,63}$");
+export const putImportRecordingSelectionResponseSelectionEvidenceRevisionRegExp =
+  new RegExp("^[a-f0-9]{64}$");
+
+export const PutImportRecordingSelectionResponse = zod
+  .object({
+    selection: zod
+      .object({
+        candidateId: zod
+          .string()
+          .regex(putImportRecordingSelectionResponseSelectionCandidateIdRegExp),
+        evidenceRevision: zod
+          .string()
+          .regex(
+            putImportRecordingSelectionResponseSelectionEvidenceRevisionRegExp,
+          ),
+        selectedAt: zod.string().datetime({}),
+      })
+      .strict(),
+  })
+  .strict();
+
+/**
+ * Requires live tf.collections and tf.search, a current saved revision, and reviewed full playback permission. Every request rechecks rights, including requests for a byte range.
+ * @summary Play the verified recording selected for one owned import occurrence
+ */
+export const streamImportRecordingAudioPathImportIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+export const streamImportRecordingAudioPathPositionRegExp = new RegExp(
+  "^(?:[0-9]|[1-9][0-9]|1[0-9]{2})$",
+);
+export const streamImportRecordingAudioPathRevisionRegExp = new RegExp(
+  "^[a-f0-9]{64}$",
+);
+
+export const StreamImportRecordingAudioParams = zod
+  .object({
+    importId: zod.string().regex(streamImportRecordingAudioPathImportIdRegExp),
+    position: zod
+      .string()
+      .regex(streamImportRecordingAudioPathPositionRegExp)
+      .describe("Zero-based occurrence in the immutable import draft."),
+    revision: zod.string().regex(streamImportRecordingAudioPathRevisionRegExp),
+  })
+  .strict();
+
+export const StreamImportRecordingAudioHeader = zod.object({
+  Range: zod
+    .string()
+    .optional()
+    .describe(
+      "One byte range, including an open end or a suffix range. Multiple ranges are not supported.",
+    ),
+});
+
+/**
+ * Requires live tf.collections, tf.search, and tf.downloads plus explicit current download permission. Returns an attachment directly, without creating a download job.
+ * @summary Download the verified recording selected for one owned import occurrence
+ */
+export const downloadImportRecordingFilePathImportIdRegExp = new RegExp(
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+);
+export const downloadImportRecordingFilePathPositionRegExp = new RegExp(
+  "^(?:[0-9]|[1-9][0-9]|1[0-9]{2})$",
+);
+export const downloadImportRecordingFilePathRevisionRegExp = new RegExp(
+  "^[a-f0-9]{64}$",
+);
+
+export const DownloadImportRecordingFileParams = zod
+  .object({
+    importId: zod.string().regex(downloadImportRecordingFilePathImportIdRegExp),
+    position: zod
+      .string()
+      .regex(downloadImportRecordingFilePathPositionRegExp)
+      .describe("Zero-based occurrence in the immutable import draft."),
+    revision: zod.string().regex(downloadImportRecordingFilePathRevisionRegExp),
+  })
+  .strict();
+
+export const DownloadImportRecordingFileHeader = zod.object({
+  Range: zod
+    .string()
+    .optional()
+    .describe(
+      "One byte range, including an open end or a suffix range. Multiple ranges are not supported.",
+    ),
+});
 
 /**
  * @summary List playlists owned by the current TF account

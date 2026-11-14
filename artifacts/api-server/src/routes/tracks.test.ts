@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import express, { type Response as ExpressResponse } from "express";
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GetArtistTracksQueryParams } from "@workspace/api-zod";
 
 import type { TfSearchGateway } from "../lib/tf-search-client.js";
 import { HttpTfSearchClient } from "../lib/tf-search-client.js";
@@ -292,6 +293,122 @@ afterEach(async () => {
 });
 
 describe("TF search module routing", () => {
+  describe("artist discovery", () => {
+    it("generates a strict non-coercing artist query schema", () => {
+      const name = "Caf\u00e9 & L\u2019Orchestre \u{1F3B5}";
+      expect(GetArtistTracksQueryParams.parse({ name })).toEqual({ name });
+      for (const query of [
+        { name: ["Artist", "Other"] }, { name: 123 }, { name, extra: "x" },
+        { name: "" }, { name: "x".repeat(201) },
+      ]) expect(GetArtistTracksQueryParams.safeParse(query).success).toBe(false);
+    });
+
+    it("returns exact normalized artist-name matches in provider order without duplicates or private URLs", async () => {
+      const gateway = searchGateway();
+      const requested = "Caf\u00e9 & L\u2019Orchestre";
+      const first = { ...result(1), artist: "CAFE\u0301   & L\u2019ORCHESTRE" };
+      const second = {
+        ...result(2, { source: "soundcloud", id: "sc_result_2" }),
+        artist: requested,
+      };
+      gateway.discoverArtist.mockResolvedValueOnce(artistDiscoveryResponse({
+        query: requested,
+        results: [
+          first,
+          { ...first, title: "Duplicate" },
+          { ...result(3), artist: `${requested} & Guest` },
+          { ...result(4), artist: "Caf\u00e9 & L'Orchestre" },
+          { ...result(5, { source: "bandcamp" }), artist: requested },
+          second,
+        ],
+      }));
+      const dependencies = routeDependencies({ searchGateway: gateway });
+      const baseUrl = await startTracksServer(dependencies);
+      const name = encodeURIComponent("  Cafe\u0301   &  L\u2019Orchestre  ");
+      const response = await fetch(`${baseUrl}/tracks/artist?name=${name}`);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const { sourceUrl: _firstUrl, ...publicFirst } = first;
+      const { sourceUrl: _secondUrl, ...publicSecond } = second;
+      await expect(response.json()).resolves.toEqual({
+        schemaVersion: 1,
+        artist: requested,
+        results: [publicFirst, publicSecond],
+        partial: false,
+      });
+      expect(gateway.discoverArtist).toHaveBeenCalledExactlyOnceWith({
+        artist: requested, sources: ["yt", "sc"], limitPerSource: 10,
+      });
+      expect(gateway.search).not.toHaveBeenCalled();
+      expect(dependencies.loadRecentTracks).not.toHaveBeenCalled();
+      expect(dependencies.loadTopArtists).not.toHaveBeenCalled();
+      expect(dependencies.loadLikedArtists).not.toHaveBeenCalled();
+      expect(dependencies.recordPlay).not.toHaveBeenCalled();
+    });
+
+    it("rejects malformed, repeated, extra, controlled and overlong queries before dispatch", async () => {
+      const gateway = searchGateway();
+      const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+      for (const query of [
+        "", "?name", "?name=+++", "?name=Artist&name=Artist",
+        "?name=Artist&n%61me=Artist", "?name=Artist&accountId=foreign",
+        "?name%5B%5D=Artist", "?name=Artist&&", "??name=Artist", "?name=%ZZ",
+        "?name=%E2%82", "?name=%ED%A0%80", "?name=Bad%09Artist", "?name=Bad%7FArtist",
+        "?name=Bad%E2%80%AEArtist", `?name=${encodeURIComponent(`${" ".repeat(195)}Artist`)}`,
+      ]) {
+        const response = await fetch(`${baseUrl}/tracks/artist${query}`);
+        expect(response.status, query).toBe(400);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        await expect(response.json()).resolves.toEqual({ error: "bad_request" });
+      }
+      expect(gateway.discoverArtist).not.toHaveBeenCalled();
+    });
+
+    it("distinguishes a partial or empty lookup from whole discovery failure", async () => {
+      const gateway = searchGateway();
+      const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+      const request = () => fetch(`${baseUrl}/tracks/artist?name=Artist`);
+      const complete = artistDiscoveryResponse({ results: [] });
+      gateway.discoverArtist.mockResolvedValueOnce(complete).mockResolvedValueOnce({
+        ...complete,
+        results: [result(1, { source: "soundcloud" })],
+        providerStatus: { ...complete.providerStatus, sc: "failed" },
+      }).mockResolvedValueOnce({
+        ...complete,
+        providerStatus: { ...complete.providerStatus, yt: "failed", sc: "skipped" },
+      }).mockRejectedValueOnce(new Error("private provider error"));
+
+      for (const partial of [false, true]) {
+        const response = await request();
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toEqual({ schemaVersion: 1, artist: "Artist", results: [], partial });
+      }
+      for (let failure = 0; failure < 2; failure++) {
+        const response = await request();
+        expect(response.status).toBe(503);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        await expect(response.json()).resolves.toEqual({ error: "artist_discovery_unavailable" });
+      }
+    });
+
+    it("keeps at most ten results per requested source", async () => {
+      const gateway = searchGateway();
+      gateway.discoverArtist.mockResolvedValueOnce(artistDiscoveryResponse({ results: [
+        ...Array.from({ length: 12 }, (_, index) => result(index)),
+        ...Array.from({ length: 12 }, (_, index) => result(index, { id: `sc_result_${index}`, source: "soundcloud" })),
+      ] }));
+      const baseUrl = await startTracksServer(routeDependencies({ searchGateway: gateway }));
+      const response = await fetch(`${baseUrl}/tracks/artist?name=Artist`);
+      expect(response.status).toBe(200);
+      const payload = await response.json() as { results: { id: string }[] };
+      expect(payload.results.map(({ id }) => id)).toEqual([
+        ...Array.from({ length: 10 }, (_, index) => `yt_result_${index}`),
+        ...Array.from({ length: 10 }, (_, index) => `sc_result_${index}`),
+      ]);
+    });
+  });
+
   it("returns pasted track-link metadata without selecting playable media", async () => {
     const dependencies = routeDependencies();
     const baseUrl = await startTracksServer(dependencies);

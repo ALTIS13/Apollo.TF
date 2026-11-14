@@ -1,4 +1,5 @@
 import type { TrackResult, TrackSource, TrackType } from "@workspace/api-client-react";
+import { isReviewedTrack } from "@/lib/reviewed-recording";
 
 const VERSION = 1;
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -23,6 +24,15 @@ function key(identity: QueueIdentity): string {
   return `apollo_tf_queue_v1:${identity.accountId}:${identity.installationId}`;
 }
 
+export function clearQueueSnapshot(identity: QueueIdentity, storage?: Storage): boolean {
+  try {
+    (storage ?? window.localStorage).removeItem(key(identity));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function safeTrack(value: unknown): TrackResult | null {
   if (typeof value !== "object" || value === null) return null;
   const track = value as Record<string, unknown>;
@@ -35,11 +45,6 @@ function safeTrack(value: unknown): TrackResult | null {
     !Number.isInteger(track.duration) || (track.duration as number) < 0 || (track.duration as number) > 86_400 ||
     track.source !== SOURCE_BY_PREFIX[prefix] || !TYPES.has(track.type as TrackType)
   ) return null;
-  const thumbnail = track.thumbnailUrl;
-  if (thumbnail != null && (
-    typeof thumbnail !== "string" || thumbnail.length > 2048 ||
-    !/^https?:\/\//.test(thumbnail)
-  )) return null;
   return {
     id: track.id,
     title: track.title,
@@ -47,7 +52,8 @@ function safeTrack(value: unknown): TrackResult | null {
     duration: track.duration as number,
     source: track.source as TrackSource,
     type: track.type as TrackType,
-    thumbnailUrl: thumbnail ?? null,
+    // Provider artwork URLs may be signed; do not persist or replay them.
+    thumbnailUrl: null,
     quality: [],
     score: 0,
   };
@@ -62,9 +68,8 @@ export function writeQueueSnapshot(
   now = Date.now(),
 ): boolean {
   try {
-    if (queue.length === 0) {
-      storage.removeItem(key(identity));
-      return true;
+    if (queue.length === 0 || queue.some(isReviewedTrack)) {
+      return clearQueueSnapshot(identity, storage);
     }
     if (
       queue.length > MAX_TRACKS || !Number.isInteger(index) || index < -1 || index >= queue.length ||
@@ -87,7 +92,8 @@ export function readQueueSnapshot(
   now = Date.now(),
 ): QueueSnapshot | null {
   try {
-    const raw = storage.getItem(key(identity));
+    const storageKey = key(identity);
+    const raw = storage.getItem(storageKey);
     if (!raw) return null;
     const value: unknown = JSON.parse(raw);
     if (typeof value !== "object" || value === null) return null;
@@ -95,13 +101,24 @@ export function readQueueSnapshot(
     if (
       snapshot.version !== VERSION ||
       typeof snapshot.savedAt !== "number" || !Number.isFinite(snapshot.savedAt) ||
-      snapshot.savedAt > now + 60_000 || now - snapshot.savedAt > MAX_AGE_MS ||
+      snapshot.savedAt > now + 60_000
+    ) return null;
+    if (now - snapshot.savedAt > MAX_AGE_MS) {
+      // Recheck in case another tab refreshed the snapshot while it was being read.
+      if (storage.getItem(storageKey) === raw) storage.removeItem(storageKey);
+      return null;
+    }
+    if (
       !Array.isArray(snapshot.queue) || snapshot.queue.length === 0 || snapshot.queue.length > MAX_TRACKS ||
       !Number.isInteger(snapshot.index) || (snapshot.index as number) < -1 ||
       (snapshot.index as number) >= snapshot.queue.length ||
       typeof snapshot.positionSeconds !== "number" || !Number.isFinite(snapshot.positionSeconds) ||
       snapshot.positionSeconds < 0 || snapshot.positionSeconds > 86_400
     ) return null;
+    if (snapshot.queue.some((track: unknown) => typeof track === "object" && track !== null && isReviewedTrack(track))) {
+      if (storage.getItem(storageKey) === raw) storage.removeItem(storageKey);
+      return null;
+    }
     const queue = snapshot.queue.map(safeTrack);
     if (queue.some((track) => track === null)) return null;
     return {

@@ -31,21 +31,7 @@ RUN pnpm --filter @workspace/music-player run build
 FROM docker.io/library/nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752 AS runner
 
 COPY --from=builder /app/artifacts/music-player/dist/public /usr/share/nginx/html
-
-RUN printf 'server {\n\
-    listen 80;\n\
-    server_name _;\n\
-    root /usr/share/nginx/html;\n\
-    index index.html;\n\
-    location = /healthz {\n\
-        access_log off;\n\
-        default_type text/plain;\n\
-        return 200 "ok\\n";\n\
-    }\n\
-    location / {\n\
-        try_files $uri $uri/ /index.html;\n\
-    }\n\
-}\n' > /etc/nginx/conf.d/default.conf
+COPY artifacts/music-player/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 HEALTHCHECK CMD wget -qO- http://127.0.0.1/healthz || exit 1

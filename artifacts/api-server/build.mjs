@@ -22,6 +22,8 @@ const apiDatabaseSchema = [
   "playlists.ts",
   "lyricsFeedback.ts",
   "recommendationHidden.ts",
+  "playlistImportDrafts.ts",
+  "playlistImportSelections.ts",
 ].map((file) => path.resolve(repositoryRoot, "lib/db/src/schema", file));
 
 const apiDatabaseSchemaPlugin = {

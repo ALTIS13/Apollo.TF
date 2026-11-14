@@ -132,8 +132,11 @@ export const tfIntegrationOperationSchema = z.enum([
   "spotify.disconnect",
   "spotify.liked.list",
   "spotify.playlists.list",
+  "spotify.playlists.page",
   "spotify.playlist-tracks.list",
   "spotify.top-tracks.list",
+  "spotify.albums.list",
+  "spotify.album-tracks.list",
   "yandex.token.upsert",
   "yandex.status",
   "yandex.disconnect",
@@ -157,6 +160,21 @@ const spotifyCompleteInputSchema = z
 const emptyInputSchema = z.object({}).strict();
 const spotifyPlaylistTracksInputSchema = paginationInputSchema
   .extend({ playlistId: identifierSchema })
+  .strict();
+export const spotifyCatalogIdSchema = z.string().regex(/^[A-Za-z0-9]{1,64}$/);
+export const SPOTIFY_PLAYLIST_MAX_OFFSET = 100_000;
+export const SPOTIFY_PLAYLIST_PAGE_SIZE = 50;
+const playlistCatalogOffsetSchema = z.number().int().min(0).max(SPOTIFY_PLAYLIST_MAX_OFFSET);
+const playlistCatalogLimitSchema = z.number().int().min(1).max(SPOTIFY_PLAYLIST_PAGE_SIZE);
+const spotifyPlaylistsPageInputSchema = z.object({
+  offset: playlistCatalogOffsetSchema,
+  limit: playlistCatalogLimitSchema,
+}).strict();
+export const SPOTIFY_SAVED_ALBUMS_PAGE_SIZE = 10;
+const savedAlbumsLimitSchema = z.number().int().min(1).max(SPOTIFY_SAVED_ALBUMS_PAGE_SIZE);
+const spotifySavedAlbumsInputSchema = paginationInputSchema.extend({ limit: savedAlbumsLimitSchema }).strict();
+const spotifyAlbumTracksInputSchema = paginationInputSchema
+  .extend({ albumId: spotifyCatalogIdSchema })
   .strict();
 const spotifyTopTracksInputSchema = z
   .object({ timeRange: z.enum(["short_term", "medium_term", "long_term"]) })
@@ -220,6 +238,11 @@ const tfIntegrationsCommandObjectSchema = z.discriminatedUnion("operation", [
       input: emptyInputSchema,
     })
     .strict(),
+  z.object({
+    ...commandBaseSchema,
+    operation: z.literal("spotify.playlists.page"),
+    input: spotifyPlaylistsPageInputSchema,
+  }).strict(),
   z
     .object({
       ...commandBaseSchema,
@@ -234,6 +257,16 @@ const tfIntegrationsCommandObjectSchema = z.discriminatedUnion("operation", [
       input: spotifyTopTracksInputSchema,
     })
     .strict(),
+  z.object({
+    ...commandBaseSchema,
+    operation: z.literal("spotify.albums.list"),
+    input: spotifySavedAlbumsInputSchema,
+  }).strict(),
+  z.object({
+    ...commandBaseSchema,
+    operation: z.literal("spotify.album-tracks.list"),
+    input: spotifyAlbumTracksInputSchema,
+  }).strict(),
   z
     .object({
       ...commandBaseSchema,
@@ -369,12 +402,43 @@ const tracksPageSchema = z
     tracks: z.array(normalizedTrackObjectSchema).max(MAX_COLLECTION_ITEMS),
   })
   .strict();
+const albumPageBounds = tracksPageSchema.pick({ offset: true, limit: true, total: true });
+const spotifyAlbumObjectSchema = normalizedTrackObjectSchema
+  .pick({ title: true, artist: true, thumbnailUrl: true, providerUrl: true })
+  .extend({ id: spotifyCatalogIdSchema, trackCount: z.number().int().min(0).max(MAX_OFFSET) })
+  .strict()
+  .refine((album) => album.providerUrl === `https://open.spotify.com/album/${album.id}`, "Expected exact Spotify album link");
+const spotifyAlbumTrackObjectSchema = normalizedTrackObjectSchema
+  .pick({ title: true, artist: true, duration: true, providerUrl: true })
+  .extend({
+    id: spotifyCatalogIdSchema,
+    discNumber: z.number().int().min(1).max(MAX_OFFSET),
+    trackNumber: z.number().int().min(1).max(MAX_OFFSET),
+  })
+  .strict()
+  .refine((track) => track.providerUrl === `https://open.spotify.com/track/${track.id}`, "Expected exact Spotify track link");
+const spotifyAlbumsPageSchema = albumPageBounds
+  .extend({ limit: savedAlbumsLimitSchema, albums: z.array(spotifyAlbumObjectSchema).max(SPOTIFY_SAVED_ALBUMS_PAGE_SIZE) }).strict();
+const spotifyAlbumTracksPageSchema = albumPageBounds
+  .extend({ tracks: z.array(spotifyAlbumTrackObjectSchema).max(MAX_COLLECTION_ITEMS) }).strict();
 const spotifyPlaylistsResultSchema = z
   .object({
     playlists: z.array(spotifyPlaylistObjectSchema).max(MAX_COLLECTION_ITEMS),
     total: z.number().finite().int().min(0).max(MAX_OFFSET),
   })
   .strict();
+const spotifyPlaylistsPageSchema = spotifyPlaylistsResultSchema
+  .extend({
+    ...spotifyPlaylistsPageInputSchema.shape,
+    nextOffset: playlistCatalogOffsetSchema.nullable(),
+  })
+  .refine(({ offset, limit, total, nextOffset, playlists }) => {
+    const readableCount = playlists.length;
+    return readableCount <= Math.min(limit, Math.max(0, total - offset)) &&
+      (nextOffset === null ||
+        (nextOffset > offset && nextOffset < total &&
+          nextOffset >= offset + readableCount && nextOffset <= offset + limit));
+  }, "Invalid Spotify playlist page");
 const yandexPlaylistsResultSchema = z
   .object({
     playlists: z.array(yandexPlaylistObjectSchema).max(MAX_COLLECTION_ITEMS),
@@ -454,6 +518,11 @@ const tfIntegrationsSuccessResponseObjectSchema = z.discriminatedUnion(
         result: spotifyPlaylistsResultSchema,
       })
       .strict(),
+    z.object({
+      ...responseBaseSchema,
+      operation: z.literal("spotify.playlists.page"),
+      result: spotifyPlaylistsPageSchema,
+    }).strict(),
     z
       .object({
         ...responseBaseSchema,
@@ -468,6 +537,16 @@ const tfIntegrationsSuccessResponseObjectSchema = z.discriminatedUnion(
         result: tracksResultSchema,
       })
       .strict(),
+    z.object({
+      ...responseBaseSchema,
+      operation: z.literal("spotify.albums.list"),
+      result: spotifyAlbumsPageSchema,
+    }).strict(),
+    z.object({
+      ...responseBaseSchema,
+      operation: z.literal("spotify.album-tracks.list"),
+      result: spotifyAlbumTracksPageSchema,
+    }).strict(),
     z
       .object({
         ...responseBaseSchema,
@@ -513,7 +592,9 @@ const tfIntegrationsSuccessResponseObjectSchema = z.discriminatedUnion(
   ],
 );
 
-export const tfIntegrationErrorCodeSchema = z.enum([
+export const TF_INTEGRATIONS_MAX_RETRY_AFTER_SECONDS = 86_400;
+
+const otherIntegrationErrorCodeSchema = z.enum([
   "not_connected",
   "provider_rejected",
   "provider_unavailable",
@@ -521,11 +602,29 @@ export const tfIntegrationErrorCodeSchema = z.enum([
   "invalid_provider_response",
 ]);
 
+export const tfIntegrationErrorCodeSchema = z.enum([
+  ...otherIntegrationErrorCodeSchema.options,
+  "provider_rate_limited",
+]);
+
 const tfIntegrationsErrorResponseObjectSchema = z
   .object({
     ...responseBaseSchema,
     operation: tfIntegrationOperationSchema,
-    error: z.object({ code: tfIntegrationErrorCodeSchema }).strict(),
+    error: z.discriminatedUnion("code", [
+      z.object({ code: otherIntegrationErrorCodeSchema }).strict(),
+      z
+        .object({
+          code: z.literal(tfIntegrationErrorCodeSchema.enum.provider_rate_limited),
+          retryAfterSeconds: z
+            .number()
+            .int()
+            .min(0)
+            .max(TF_INTEGRATIONS_MAX_RETRY_AFTER_SECONDS)
+            .optional(),
+        })
+        .strict(),
+    ]),
   })
   .strict();
 
@@ -534,6 +633,9 @@ export type TfIntegrationOperation = z.infer<
 >;
 export type NormalizedTrack = z.infer<typeof normalizedTrackObjectSchema>;
 export type SpotifyPlaylist = z.infer<typeof spotifyPlaylistObjectSchema>;
+export type SpotifyPlaylistsPage = z.infer<typeof spotifyPlaylistsPageSchema>;
+export type SpotifyAlbumsPage = z.infer<typeof spotifyAlbumsPageSchema>;
+export type SpotifyAlbumTracksPage = z.infer<typeof spotifyAlbumTracksPageSchema>;
 export type YandexPlaylist = z.infer<typeof yandexPlaylistObjectSchema>;
 export type TfIntegrationsAccountSummary =
   | z.infer<typeof spotifyAccountSummaryObjectSchema>

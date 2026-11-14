@@ -56,6 +56,71 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SearchUnavailableResponse"
+  /tracks/artist:
+    get:
+      operationId: getArtistTracks
+      tags: [tracks]
+      summary: Discover track candidates by artist name
+      description: Requires tf.search. The lookup is read-only and no-store. It searches YouTube and SoundCloud and filters by exact artist name after case, whitespace, and NFC normalization. Results are provider-supplied candidates, not verification of an artist identity, homonym, or recording version.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: Exactly one nonblank name value without control characters or other query parameters. The length limit applies before trimming or normalization.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      responses:
+        "200":
+          description: Discovery completed for at least one provider, with zero or more exact-name candidates
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtistTracksResponse"
+        "400":
+          description: Missing, malformed, repeated, or unexpected query input
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  error:
+                    type: string
+                    enum: [bad_request]
+                required: [error]
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          description: The current account lacks tf.search or session policy denied the request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  error:
+                    type: string
+                    enum: [module_access_denied, forbidden]
+                required: [error]
+        "503":
+          description: Artist discovery wholly failed, or TF policy could not be checked before dispatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  error:
+                    type: string
+                    enum: [artist_discovery_unavailable, policy_unavailable]
+                required: [error]
   /tracks/free-search:
     post:
       operationId: freeSearchTracks
@@ -797,6 +862,236 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CollectionErrorResponse"
+  /collections/imports:
+    get:
+      operationId: listPlaylistImports
+      tags: [collections]
+      summary: List the current account's metadata-only import drafts
+      responses:
+        "200":
+          description: Import draft summaries, without entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistImportListResponse"
+        "400":
+          $ref: "#/components/responses/PlaylistImportBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+  /collections/imports/{importId}:
+    parameters:
+      - $ref: "#/components/parameters/PlaylistImportId"
+    get:
+      operationId: getPlaylistImport
+      tags: [collections]
+      summary: Get an import draft with its ordered metadata entries
+      responses:
+        "200":
+          $ref: "#/components/responses/PlaylistImportDetail"
+        "400":
+          $ref: "#/components/responses/PlaylistImportBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistImportNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+    put:
+      operationId: putPlaylistImport
+      tags: [collections]
+      summary: Create or replay an import draft at a client-selected UUID
+      description: The existing TF session and browser CSRF checks apply. The source is a provenance label, not proof of access to a provider. The normalized JSON body must fit within 90 KiB of UTF-8.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutPlaylistImportRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/PlaylistImportDetail"
+        "201":
+          description: Draft created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistImportDetailResponse"
+        "400":
+          $ref: "#/components/responses/PlaylistImportBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "409":
+          description: The UUID already holds a different draft (import_conflict), or the account has reached its draft limit (import_limit)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistImportErrorResponse"
+        "413":
+          description: Request body exceeds the raw parser or normalized draft size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistImportErrorResponse"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+    delete:
+      operationId: removePlaylistImport
+      tags: [collections]
+      summary: Delete an import draft from the current account
+      description: The existing TF session and browser CSRF checks apply.
+      responses:
+        "204":
+          description: Draft deleted
+        "400":
+          $ref: "#/components/responses/PlaylistImportBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/PlaylistImportNotFound"
+        "503":
+          $ref: "#/components/responses/CollectionUnavailable"
+  /collections/imports/{importId}/entries/{position}/candidates:
+    parameters:
+      - $ref: "#/components/parameters/PlaylistImportId"
+      - $ref: "#/components/parameters/PlaylistImportEntryPosition"
+    get:
+      operationId: listImportRecordingCandidates
+      tags: [collections]
+      summary: Review recording evidence for one owned import occurrence
+      description: Requires live tf.collections and tf.search. A candidate is not playback or download authorization.
+      responses:
+        "200":
+          description: Current catalog evidence and previous selection, if any
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportRecordingCandidatesResponse"
+        "400":
+          $ref: "#/components/responses/PlaylistImportBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/ImportRecordingEntryNotFound"
+        "503":
+          $ref: "#/components/responses/ImportRecordingCatalogUnavailable"
+  /collections/imports/{importId}/entries/{position}/selection:
+    parameters:
+      - $ref: "#/components/parameters/PlaylistImportId"
+      - $ref: "#/components/parameters/PlaylistImportEntryPosition"
+    put:
+      operationId: putImportRecordingSelection
+      tags: [collections]
+      summary: Confirm a full recording for one owned import occurrence
+      description: Requires live tf.collections and tf.search plus browser CSRF. The catalog must still advertise full access and the identical evidence revision; the selection does not grant playback or download access.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutImportRecordingSelectionRequest"
+      responses:
+        "200":
+          description: Selection saved or replayed without changing its timestamp
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportRecordingSelectionResponse"
+        "400":
+          $ref: "#/components/responses/PlaylistImportBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/ImportRecordingEntryNotFound"
+        "409":
+          description: Catalog evidence changed, or the selected entry is not a confirmed full recording
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportRecordingErrorResponse"
+        "413":
+          description: Request body exceeds the raw parser limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistImportErrorResponse"
+        "503":
+          $ref: "#/components/responses/ImportRecordingCatalogUnavailable"
+  /collections/imports/{importId}/entries/{position}/audio/{revision}:
+    parameters:
+      - $ref: "#/components/parameters/PlaylistImportId"
+      - $ref: "#/components/parameters/PlaylistImportEntryPosition"
+      - $ref: "#/components/parameters/ImportRecordingRevision"
+    get:
+      operationId: streamImportRecordingAudio
+      tags: [collections]
+      summary: Play the verified recording selected for one owned import occurrence
+      description: Requires live tf.collections and tf.search, a current saved revision, and reviewed full playback permission. Every request rechecks rights, including requests for a byte range.
+      parameters:
+        - $ref: "#/components/parameters/ImportRecordingByteRange"
+      responses:
+        "200":
+          $ref: "#/components/responses/ImportRecordingMediaBytes"
+        "206":
+          $ref: "#/components/responses/ImportRecordingMediaBytes"
+        "400":
+          $ref: "#/components/responses/PlaylistImportBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/ImportRecordingMediaNotFound"
+        "409":
+          $ref: "#/components/responses/ImportRecordingMediaConflict"
+        "416":
+          $ref: "#/components/responses/ImportRecordingRangeNotSatisfiable"
+        "503":
+          $ref: "#/components/responses/ImportRecordingMediaUnavailable"
+  /collections/imports/{importId}/entries/{position}/file/{revision}:
+    parameters:
+      - $ref: "#/components/parameters/PlaylistImportId"
+      - $ref: "#/components/parameters/PlaylistImportEntryPosition"
+      - $ref: "#/components/parameters/ImportRecordingRevision"
+    get:
+      operationId: downloadImportRecordingFile
+      tags: [collections]
+      summary: Download the verified recording selected for one owned import occurrence
+      description: Requires live tf.collections, tf.search, and tf.downloads plus explicit current download permission. Returns an attachment directly, without creating a download job.
+      parameters:
+        - $ref: "#/components/parameters/ImportRecordingByteRange"
+      responses:
+        "200":
+          $ref: "#/components/responses/ImportRecordingMediaBytes"
+        "206":
+          $ref: "#/components/responses/ImportRecordingMediaBytes"
+        "400":
+          $ref: "#/components/responses/PlaylistImportBadRequest"
+        "401":
+          $ref: "#/components/responses/CollectionUnauthorized"
+        "403":
+          $ref: "#/components/responses/CollectionForbidden"
+        "404":
+          $ref: "#/components/responses/ImportRecordingMediaNotFound"
+        "409":
+          $ref: "#/components/responses/ImportRecordingMediaConflict"
+        "416":
+          $ref: "#/components/responses/ImportRecordingRangeNotSatisfiable"
+        "503":
+          $ref: "#/components/responses/ImportRecordingMediaUnavailable"
   /collections/playlists:
     get:
       operationId: listPlaylists
@@ -968,6 +1263,32 @@ paths:
           $ref: "#/components/responses/CollectionUnavailable"
 components:
   parameters:
+    PlaylistImportId:
+      name: importId
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/PlaylistImportId"
+    PlaylistImportEntryPosition:
+      name: position
+      in: path
+      required: true
+      description: Zero-based occurrence in the immutable import draft.
+      schema:
+        type: string
+        pattern: '^(?:[0-9]|[1-9][0-9]|1[0-9]{2})$'
+    ImportRecordingRevision:
+      name: revision
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/ImportRecordingEvidenceRevision"
+    ImportRecordingByteRange:
+      name: Range
+      in: header
+      description: One byte range, including an open end or a suffix range. Multiple ranges are not supported.
+      schema:
+        type: string
     PlaylistId:
       name: playlistId
       in: path
@@ -994,6 +1315,104 @@ components:
         maxLength: 4096
         pattern: ^(yt|sc|bc|dz)_[A-Za-z0-9_-]+$
   responses:
+    PlaylistImportDetail:
+      description: Import draft with ordered entries, or an identical replay on PUT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PlaylistImportDetailResponse"
+    PlaylistImportBadRequest:
+      description: Noncanonical import UUID, unexpected query, or invalid draft payload
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PlaylistImportErrorResponse"
+    PlaylistImportNotFound:
+      description: Import draft absent from the current account
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PlaylistImportErrorResponse"
+    ImportRecordingEntryNotFound:
+      description: The draft or occurrence is not present for the current account
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ImportRecordingErrorResponse"
+    ImportRecordingCatalogUnavailable:
+      description: Live policy or the recording catalog could not be checked
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ImportRecordingErrorResponse"
+    ImportRecordingMediaBytes:
+      description: Complete verified recording or the requested single byte range
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            enum: [no-store]
+        Accept-Ranges:
+          schema:
+            type: string
+            enum: [bytes]
+        Content-Length:
+          schema:
+            type: integer
+            minimum: 1
+        Content-Range:
+          description: Present only for a partial response.
+          schema:
+            type: string
+        Content-Disposition:
+          description: Attachment filename for the file route only.
+          schema:
+            type: string
+        X-Content-Type-Options:
+          schema:
+            type: string
+            enum: [nosniff]
+      content:
+        audio/wav:
+          schema:
+            $ref: "#/components/schemas/ImportRecordingMediaBinary"
+        audio/mpeg:
+          schema:
+            $ref: "#/components/schemas/ImportRecordingMediaBinary"
+        audio/ogg:
+          schema:
+            $ref: "#/components/schemas/ImportRecordingMediaBinary"
+        audio/flac:
+          schema:
+            $ref: "#/components/schemas/ImportRecordingMediaBinary"
+        audio/mp4:
+          schema:
+            $ref: "#/components/schemas/ImportRecordingMediaBinary"
+    ImportRecordingMediaNotFound:
+      description: The owned import occurrence or its saved selection does not exist
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ImportRecordingErrorResponse"
+    ImportRecordingMediaConflict:
+      description: The saved revision is stale or current recording rights do not permit this operation
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ImportRecordingErrorResponse"
+    ImportRecordingRangeNotSatisfiable:
+      description: The requested byte range is invalid, unsatisfiable, or contains multiple ranges
+      headers:
+        Content-Range:
+          description: Total size of the authorized recording in the form bytes */size.
+          schema:
+            type: string
+    ImportRecordingMediaUnavailable:
+      description: Live policy, catalog, selection storage, or verified media is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ImportRecordingErrorResponse"
     CollectionBadRequest:
       description: Invalid playlist input
       content:
@@ -1065,6 +1484,7 @@ components:
         - soundcloud
         - bandcamp
         - deezer
+        - reviewed
 
     TrackResult:
       type: object
@@ -1106,6 +1526,29 @@ components:
         - source
         - quality
         - score
+
+    ArtistTracksResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+        artist:
+          type: string
+          description: The requested display name after trimming, collapsing whitespace, and NFC normalization, with its case preserved.
+          minLength: 1
+          maxLength: 200
+        results:
+          type: array
+          description: Provider order, with duplicate IDs removed and at most ten results per provider.
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/TrackResult"
+        partial:
+          type: boolean
+          description: True if only one of the two requested providers completed successfully, even when its exact-match result list is empty.
+      required: [schemaVersion, artist, results, partial]
 
     MediaLinkMetadataRequest:
       type: object
@@ -1635,6 +2078,243 @@ components:
             - internal_error
             - playlist_not_found
             - liked_track_not_found
+      required: [error]
+
+    PlaylistImportId:
+      type: string
+      pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+    PlaylistImportSource:
+      type: string
+      description: Client-supplied provenance label only; not provider authorization.
+      enum: [file, spotify_album, spotify_playlist, spotify_liked]
+    PlaylistImportEntry:
+      type: object
+      additionalProperties: false
+      properties:
+        artist:
+          type: string
+          description: Trimmed artist name
+          pattern: '^(?=[\s\S]*\S)(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$'
+          minLength: 1
+          maxLength: 300
+        title:
+          type: string
+          description: Trimmed track title
+          pattern: '^(?=[\s\S]*\S)(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$'
+          minLength: 1
+          maxLength: 500
+        durationSeconds:
+          type: [integer, "null"]
+          # Orval emits number() for integer; multipleOf preserves integrality in generated Zod.
+          multipleOf: 1
+          minimum: 1
+          maximum: 86400
+      required: [artist, title, durationSeconds]
+    PlaylistImportSummary:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/PlaylistImportId"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        source:
+          $ref: "#/components/schemas/PlaylistImportSource"
+        entryCount:
+          type: integer
+          multipleOf: 1
+          minimum: 1
+          maximum: 200
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, name, source, entryCount, createdAt]
+    PlaylistImportDraft:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/PlaylistImportId"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        source:
+          $ref: "#/components/schemas/PlaylistImportSource"
+        entryCount:
+          type: integer
+          multipleOf: 1
+          minimum: 1
+          maximum: 200
+        createdAt:
+          type: string
+          format: date-time
+        entries:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/PlaylistImportEntry"
+      required: [id, name, source, entryCount, createdAt, entries]
+    PutPlaylistImportRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: Draft name, trimmed before validation and storage
+          pattern: '^(?=[\s\S]*\S)(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$'
+          minLength: 1
+          maxLength: 200
+        source:
+          $ref: "#/components/schemas/PlaylistImportSource"
+        entries:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/PlaylistImportEntry"
+      required: [name, source, entries]
+    PlaylistImportListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        imports:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlaylistImportSummary"
+      required: [imports]
+    PlaylistImportDetailResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        draft:
+          $ref: "#/components/schemas/PlaylistImportDraft"
+      required: [draft]
+    PlaylistImportErrorResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum: [bad_request, invalid_request, import_not_found, import_conflict, import_limit, request_too_large]
+      required: [error]
+
+    ImportRecordingCandidateId:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9_-]{0,63}$'
+    ImportRecordingEvidenceRevision:
+      type: string
+      pattern: '^[a-f0-9]{64}$'
+    ImportRecordingMediaBinary:
+      type: string
+      format: binary
+    ImportRecordingCandidate:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/ImportRecordingCandidateId"
+        evidenceRevision:
+          $ref: "#/components/schemas/ImportRecordingEvidenceRevision"
+        artist:
+          type: string
+          minLength: 1
+          maxLength: 300
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+        edition:
+          type: string
+          enum: [original, clean_edit, alternate, unknown]
+        releaseDate:
+          type: [string, "null"]
+          format: date
+        expectedDurationSeconds:
+          type: [integer, "null"]
+          multipleOf: 1
+          minimum: 1
+          maximum: 86400
+        measuredDurationSeconds:
+          type: [integer, "null"]
+          multipleOf: 1
+          minimum: 1
+          maximum: 86400
+        access:
+          type: string
+          enum: [full, preview, blocked, unverified]
+        download:
+          type: string
+          enum: [permitted, not_permitted, unverified]
+        sourceLabel:
+          type: string
+          minLength: 1
+          maxLength: 160
+        sourceUrl:
+          description: HTTPS attribution page, never a media URL or grant.
+          type: [string, "null"]
+          pattern: '^https://'
+          maxLength: 4096
+        mediaBound:
+          type: boolean
+          enum: [true]
+          description: Present only when the full recording has a reviewed local media binding. This is not a playback or download grant.
+      required: [id, evidenceRevision, artist, title, edition, releaseDate, expectedDurationSeconds, measuredDurationSeconds, access, download, sourceLabel, sourceUrl]
+    PutImportRecordingSelectionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        candidateId:
+          $ref: "#/components/schemas/ImportRecordingCandidateId"
+        evidenceRevision:
+          $ref: "#/components/schemas/ImportRecordingEvidenceRevision"
+      required: [candidateId, evidenceRevision]
+    ImportRecordingSelection:
+      type: object
+      additionalProperties: false
+      properties:
+        candidateId:
+          $ref: "#/components/schemas/ImportRecordingCandidateId"
+        evidenceRevision:
+          $ref: "#/components/schemas/ImportRecordingEvidenceRevision"
+        selectedAt:
+          type: string
+          format: date-time
+      required: [candidateId, evidenceRevision, selectedAt]
+    ImportRecordingCandidatesResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [ready, unconfigured]
+        candidates:
+          type: array
+          maxItems: 12
+          items:
+            $ref: "#/components/schemas/ImportRecordingCandidate"
+        selection:
+          anyOf:
+            - $ref: "#/components/schemas/ImportRecordingSelection"
+            - type: "null"
+      required: [status, candidates, selection]
+    ImportRecordingSelectionResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        selection:
+          $ref: "#/components/schemas/ImportRecordingSelection"
+      required: [selection]
+    ImportRecordingErrorResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum: [import_entry_not_found, recording_selection_not_found, recording_selection_changed, recording_not_full, recording_media_not_permitted, recording_catalog_unavailable, recording_media_unavailable, policy_unavailable]
       required: [error]
 
     Playlist:
